@@ -1946,6 +1946,39 @@ function boxSetVolume(v) {
   boxJson('/bridge/command', { method: 'POST', body: { type: 'volume', value: val }, timeout: 4000 }).catch(() => {})
 }
 
+/** 给「正在放的那个」下命令。
+ *
+ *  🔴 2026-10-27 晚修的大坑：`/media?cmd=` 原来**一律**走 mediaCmd() ——
+ *  那是 QQ 音乐那条 python 链路（SMTC + WASAPI）。可是点歌早就换到单身汉
+ *  网页播放器了（musicSrc === 'box'），于是面板「声音」页的上一首/播放暂停/下一首、
+ *  还有 music.html 的整排按钮，全部打给了**没在用的 QQ 音乐**：
+ *  命令递过去没人接 → 网页播放器一动不动 → 主人看到的就是「点了没反应 / 没声音」。
+ *
+ *  命令名两边不一样，这里做一次翻译：
+ *    box: play(空 track = 切歌) / pause / resume / next / prev / volume
+ *    桥:  playpause / play / pause / next / prev / stop / vol
+ *  box 没有 stop，用 pause 代替（它的语义就是「别放了」）。
+ */
+async function boxCmd(cmd, extra = {}) {
+  if (cmd === 'vol') {
+    boxSetVolume(extra.v)
+    return { ok: true, src: 'box', why: '' }
+  }
+  if (!box.alive) return { ok: false, src: 'box', why: box.why || '播放器界面没开（DSH 里把音乐打开）' }
+  const map = {
+    playpause: 'play', play: 'resume', pause: 'pause',
+    next: 'next', prev: 'prev', stop: 'pause',
+  }
+  const type = map[cmd]
+  if (!type) return { ok: false, src: 'box', why: `单身汉播放器没有 ${cmd} 这个命令` }
+  const r = await boxJson('/bridge/command', { method: 'POST', body: { type }, timeout: 6000 })
+  if (!r.ok) return { ok: false, src: 'box', why: r.why || '命令没递进去' }
+  /* 下完命令回读一次 —— 递进去了 ≠ 真放上了（这插件的老毛病，见上面那两个坑） */
+  const s = await boxState()
+  if (s.alive) boxToMusic()
+  return { ok: true, src: 'box', type, playing: Boolean(music.playing), why: '' }
+}
+
 /** 把「音乐基准音量」落到当前播放器上。
  *  面板拖完就立刻生效 —— 否则观众那边还是旧音量，得等下一首才「碰巧」对上。
  *  两条链路分开：插件放歌（网页播放器，走 /bridge/command）和系统播放器
@@ -2219,10 +2252,15 @@ function trackOf(t) {
  *  `/url` 要么不给、要么给一段 30 秒的试听流。不预检的话，垫上去的两首
  *  可能都是三十秒就断 —— 观众听到的是「热榜怎么全是片段」。
  */
+/** 只有「完整音源」才算可播。
+ *  2026-10-27 晚加返回值区分：'full' 完整 / 'trial' 只有试听 / '' 取不到。
+ *  trial 不直接丢掉 —— 整榜都是试听时（音源没登录/没会员）如果全划掉，
+ *  队列会一直是空的，观众听到的是**彻底静音**，比放 30 秒还糟。 */
 async function hotPlayable(track) {
   const u = await boxJson(`/url?id=${encodeURIComponent(track.id)}`, { timeout: 10000 })
   const res = u.result
-  return !!(u.ok && res && res.url && !res.trial)
+  if (!(u.ok && res && res.url)) return ''
+  return res.trial ? 'trial' : 'full'
 }
 
 /** 还缺几首。点歌的排在热榜前面，这里只算总量够不够。 */
@@ -2257,6 +2295,9 @@ async function fillHot() {
     let started = !!(box.now && box.now.trackId) // 播放器空着就先 play 一首
     let need = hotNeed()
     let tries = 0
+    /* 试听片段的先攒在这儿：有完整音源就轮不到它们，
+     * 整榜都只有试听时才拿出来兜底（见下面那段）。 */
+    const trials = []
     while (need > 0 && hotPool.length && tries < 8) {
       tries++
       const track = trackOf(hotPool.shift())
@@ -2267,9 +2308,14 @@ async function fillHot() {
         continue
       }
       /* 放不出来的直接划掉，别下一条命令过去让它静默失败 */
-      if (!(await hotPlayable(track))) {
+      const kind = await hotPlayable(track)
+      if (!kind) {
         hotPlayed.add(track.id)
-        hotWhy = `《${track.name}》取不到完整音源`
+        hotWhy = `《${track.name}》取不到音源`
+        continue
+      }
+      if (kind === 'trial') {
+        trials.push(track)
         continue
       }
       const cmd = started ? { type: 'queue_add', tracks: [track] } : { type: 'play', track }
@@ -2286,6 +2332,29 @@ async function fillHot() {
       hotWhy = ''
       const by = track.artists.length ? ' - ' + track.artists.join('/') : ''
       log(`  ♫ 热榜垫上《${track.name}》${by}`)
+    }
+
+    /* 兜底：整榜只剩试听片段（音源没登录 / 没会员）。
+     * 放 30 秒总比一直静音强 —— 但只在这一轮没凑够时才用，完整音源永远优先。
+     * 🔴 2026-10-27 晚：改之前这里是把 trial 全划掉的，于是「热榜里的今天都放过了」
+     * → 队列永远补不上 → 观众听到的是「放着放着就没声了，再也不响」。 */
+    if (need > 0 && trials.length) {
+      for (const track of trials) {
+        if (need <= 0) break
+        const cmd = started ? { type: 'queue_add', tracks: [track] } : { type: 'play', track }
+        const r = await boxJson('/bridge/command', { method: 'POST', body: cmd, timeout: 6000 })
+        if (!r.ok || r.queued === false) {
+          hotWhy = r.why || '命令没递进去'
+          break
+        }
+        hotPlayed.add(track.id)
+        boxQueue.push(track.name)
+        started = true
+        need--
+        hotWhy = '只有试听片段（音源没登录/没会员）'
+        const by = track.artists.length ? ' - ' + track.artists.join('/') : ''
+        log(`  ♫ 只有试听片段，先垫上《${track.name}》${by} —— 想放全曲得登录音源`)
+      }
     }
     if (boxQueue.length) queue.list = boxQueue.slice(0, QUEUE_MAX)
     saveHotPlayed()
@@ -2817,11 +2886,26 @@ async function replyWorker() {
 
     /* 闲时视频还在放就先收掉 —— 她开口的时候不该有别人的声音在旁边抢戏。
      * 放在 ttsSynth 之前：只在「真要出声」的这一条路上让位，纯字幕不走这儿。
-     * 🔴 例外：观众点播的那段（MEDIA.cur.keep === 'request'）不收 ——
-     * 人家刚喊「放个视频」，你放了一秒就掐掉，比不放还气人。 */
-    if (MEDIA.cur && MEDIA.cur.tier === 0 && MEDIA.cur.keep !== 'request') {
+     *
+     * 🔴 例外：观众点播的那段（`keep === 'request'`）**宽限期内**不收 ——
+     * 人家刚喊「放个视频」，你放了一秒就掐掉，比不放还气人。
+     *
+     * 🔴 2026-10-27 深夜补：宽限期原来等于「整段都不收」，于是点播视频这 120 秒里
+     * 她说的每一句都是**哑的** —— 视频音轨和 TTS 一起出声，人声被盖住。
+     * 主人的原话：「设置里面显示回复了，但是实际直播好像没有回复」。
+     * 日志对得上：22:57:55 点播开播（120s 上限），
+     * 22:58:11 / 22:58:51 / 22:59:00 三句 🗣 全落在视频播放期内，一条都没让位。
+     * 现在只保护前 20 秒（够观众看到「真的放上了」），之后她开口照收。
+     */
+    const graceMs = Number(process.env.ZY_REQUEST_GRACE || 20) * 1000
+    const protecting = Boolean(
+      MEDIA.cur && MEDIA.cur.keep === 'request'
+      && Date.now() - Number(MEDIA.cur.at || 0) < graceMs
+    )
+    if (MEDIA.cur && MEDIA.cur.tier === 0 && !protecting) {
+      const wasRequest = MEDIA.cur.keep === 'request'
       mediaFinish(MEDIA.cur.seq, '她要说话了')
-      log('  🖥 要开口了，闲时视频先收掉')
+      log(`  🖥 要开口了，视频先收掉${wasRequest ? '（点播的宽限期已过）' : ''}`)
     }
     /* 先合成，再**同时**上字幕 + 出声（2026-10-27 改）。
      * 原来是「字幕立刻上屏、声音后补」，观众看到字幕出来了还要等一秒才听到，
@@ -4331,7 +4415,10 @@ const server = http.createServer(async (req, res) => {
       return
     }
     const extra = cmd === 'vol' ? { v: Number(u.searchParams.get('v') ?? 1) } : {}
-    const r = await mediaCmd(cmd, extra)
+    /* 按「现在到底是谁在放」分流 —— 别再一律打给 QQ 音乐（见 boxCmd 上面的注释）。 */
+    const r = musicSrc === 'box'
+      ? await boxCmd(cmd, extra)
+      : await mediaCmd(cmd, extra)
     await pollMusic()
     res.end(JSON.stringify({ ...r, music }))
     return
