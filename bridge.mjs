@@ -300,11 +300,22 @@ function classify(d) {
   if (HAS(d, 'share_type') || HAS(d, 'follow_count') || HAS(d, 'share_target'))
     return 'social'
   if (HAS(d, 'stage') || HAS(d, 'pk_id')) return 'pk'
-  /* 只剩一个 user 字段 —— 这是**礼物**（2026-10-27 实测确认）。
-   * 这个 MCP 把 WebcastGiftMessage 解出来只留了 user，礼物名/数量全丢了：
-   * 主人说「刚刚有人送了个大啤酒」的同一秒，桥日志里就是 `[未知事件] 字段：user`。
-   * 认出来至少能谢到人；名字不知道就说得含糊一点（见 normalize 的 gift 分支）。 */
-  if (HAS(d, 'user') && Object.keys(d).length <= 1) return 'gift'
+  /* 只剩一个 user 字段 —— **不是礼物**，是「进场」的一个变体（2026-10-27 22:15 订正）。
+   *
+   * 以前这里判成 gift，理由是「主人说有人送了礼，日志里正好是 `[未知事件] 字段：user`」。
+   * 那是**巧合**，而且代价很实在：2026-10-27 22:02~22:04 连着四条这种事件，
+   * 桥把四个只是进来看一眼的人当成送礼的，一个个谢过去、还播了 1 档视频；
+   * 主人对着抖音的互动消息一看 —— 那会儿真正送礼的只有一个人。
+   *
+   * 真正的礼物长什么样（同一晚、登录态正常时实测）：
+   *   `comboCount, gift, user`  ← 有 gift 对象和连击数，所以上面第 2 条规则就能认出来。
+   * 换句话说：**登录之后礼物本来就不缺字段**，用不着靠「只剩 user」去猜。
+   * proto3 的 JSON 不序列化默认值，member_count 为 0 的进场消息就只剩 user ——
+   * 这是最合理的解释，也跟「同一秒来了人数变化」对得上。
+   *
+   * 归到 member 而不是 unknown：他们确实进来了，欢迎一句是对的；
+   * 但不能感谢、不能播礼物视频（那才是主人看到的问题）。 */
+  if (HAS(d, 'user') && Object.keys(d).length <= 1) return 'member'
   return 'unknown'
 }
 
@@ -4324,9 +4335,17 @@ const server = http.createServer(async (req, res) => {
         user: { nickname: u.searchParams.get('u') || '测试' },
       })
     } else if (u.searchParams.get('bare') === '1') {
-      /* 复现这个 MCP 真实的礼物事件：**只有 user 一个字段**。
-       * 礼物名 / 数量在 service 层就被丢了，桥只能认出「谁送了东西」。 */
+      /* 复现「只有 user 一个字段」的事件。**它现在是进场，不是礼物** ——
+       * 2026-10-27 22:15 订正：这种形状被当成礼物，导致四个只是进来的人被谢了一通。
+       * 想验礼物请用下面 chat=1 加真礼物字段，或者直接在直播间送一个。 */
       pushEvent({ user: { nickname: u.searchParams.get('u') || '测试' } })
+    } else if (u.searchParams.get('gift') === '1') {
+      /* 真礼物的形状（登录态正常时实测）：gift 对象 + comboCount 都在。 */
+      pushEvent({
+        gift: { name: u.searchParams.get('name') || '小心心' },
+        comboCount: String(u.searchParams.get('n') || '1'),
+        user: { nickname: u.searchParams.get('u') || '测试' },
+      })
     } else if (u.searchParams.get('chat') === '1') {
       /* 真弹幕（走 pushEvent，会真的排进回复队列）—— 用来端到端验点歌 */
       pushEvent({ content: u.searchParams.get('t') || '你好', user: { nickname: u.searchParams.get('u') || '测试' } })
