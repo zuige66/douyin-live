@@ -2481,13 +2481,14 @@ let duckTimer = null
 function duckMusic(ms) {
   if (!music.found || !music.playing) return // 没在放音乐就别去动音量
   duckUntil = Math.max(duckUntil, Date.now() + ms)
+  /* 压到多少由设置页决定（audio.duck，默认 60%），不再写死 0.6。 */
+  const duckTo = Math.min(1, Math.max(0, Number(mediaCfg.audio.duck) / 100))
   if (musicSrc === 'box') {
     /* 插件放歌时，音量是**网页播放器自己的**，系统音量动它没用 ——
-     * 只能通过 /bridge/command 的 volume 命令改。主人要的就是「说话时压到 60%」，
-     * 所以这里是绝对值 0.6，不是相对值。 */
+     * 只能通过 /bridge/command 的 volume 命令改。这里是绝对值，不是相对值。 */
     if (boxDuckSaved == null) boxDuckSaved = boxVol
-    boxSetVolume(Math.min(boxVol, 0.6))
-    log(`  ♫ 音乐压到 ${Math.round(Math.min(boxDuckSaved, 0.6) * 100)}%（说完恢复 ${Math.round(boxDuckSaved * 100)}%）`)
+    boxSetVolume(Math.min(boxVol, duckTo))
+    log(`  ♫ 音乐压到 ${Math.round(Math.min(boxDuckSaved, duckTo) * 100)}%（说完恢复 ${Math.round(boxDuckSaved * 100)}%）`)
   } else {
     if (!MUSIC_ON || mediaDead) return
     mediaCmd('duck', { on: 1 }).then((r) => {
