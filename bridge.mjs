@@ -2903,7 +2903,7 @@ const giftQueue = [] // 礼物：FIFO，最多 2 条
  * 原来点歌和闲聊共用 chatLatest，后面的闲聊会把它顶掉 ——
  * 观众明明点了歌、她一个字都没回、歌也没换，就是这个原因。
  * 点歌是要真去操作播放器的，不能像闲聊那样「算了不回了」。 */
-const songQueue = [] // 最多 3 条，多了就丢最早的
+const songQueue = [] // 上限见 SONG_QUEUE_MAX（6），满了会打日志
 
 /* 点赞：也要有反馈（2026-10-27 加）。
  * 观众双击屏幕飘出来的就是爱心，主播看到的是「有人送爱心」——
@@ -2943,23 +2943,44 @@ function setChatGap(ms) {
 }
 const saidRecent = new Map() // "人|话" → 最后一次的时间，防复读
 
+/* 点歌队列上限。
+ * 🔴 2026-10-28 凌晨：原来是写死的 3，而且超了**一声不响** `shift()` 掉最老的。
+ * 主人在画面里连点了 7 首（一半一半 / 特别的人 / 爱爱爱 / 唯一 / 用背脊唱情歌 /
+ * 相信 / 开始懂了），点歌台只看到 4 首，直接问「是不是说话太快被过滤了」。
+ * 一条点歌背后是 6~10 秒的搜索 + 逐个试流，replyWorker 又只串行跑一条，
+ * 几秒内来三四条就必然溢出 —— 3 个槽位装不下一场直播的正常节奏。
+ * 现在放到 6，并且**丢的时候一定要打日志**：静默丢是最难查的故障。 */
+const SONG_QUEUE_MAX = 6
+
 function queueReply(ctx) {
   if (!REPLY_ON) return
   if (livePaused) return // 已经下播了，别对着空房间自言自语烧 token
 
   if (ctx.kind !== 'gift') {
     const key = `${ctx.user || ''}|${String(ctx.text || '').slice(0, 40)}`
+    const isSong = isSongRequest(ctx.text)
     const last = saidRecent.get(key) || 0
-    if (Date.now() - last < 60000) return // 同一句 60 秒内不重复回
+    if (Date.now() - last < 60000) {
+      /* 同一句 60 秒内不重复回。点歌这种情况尤其容易让人误会 ——
+       * 点了没反应，其实是被当成重复顶掉了。留一行日志，别让它无声无息。 */
+      if (isSong) log(`  🎵 点歌去重：${ctx.user} 一分钟内已经点过「${ctx.text}」，这条不重复处理`)
+      return
+    }
     saidRecent.set(key, Date.now())
     if (saidRecent.size > 300) {
       const cut = Date.now() - 60000
       for (const [k, t] of saidRecent) if (t < cut) saidRecent.delete(k)
     }
-    if (isSongRequest(ctx.text)) {
+    if (isSong) {
       // 点歌不顶别人，也不被别人顶
-      if (songQueue.length >= 3) songQueue.shift()
+      while (songQueue.length >= SONG_QUEUE_MAX) {
+        const gone = songQueue.shift()
+        log(`  🎵 点歌排到 ${SONG_QUEUE_MAX} 条满了，丢掉最早那条：${gone.user || '?'}「${gone.text}」`)
+      }
       songQueue.push(ctx)
+      if (songQueue.length > 1) {
+        log(`  🎵 点歌排队 ${songQueue.length} 条，还在等：${songQueue.map((x) => x.text).join(' / ')}`)
+      }
     } else {
       // 顶掉还没轮到的那条：观众要的是「她现在在理我」，不是「她五秒前理了别人」
       chatLatest = ctx
