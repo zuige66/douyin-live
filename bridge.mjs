@@ -2413,6 +2413,35 @@ async function hotPlayable(track) {
   return res.trial ? 'trial' : 'full'
 }
 
+/** 榜单曲目换源：网易云热榜里大半是 VIP，网易云没登录就只回 30 秒试听。
+ *  主人 2026-10-28 的话是「我 QQ 音乐已经登录了啊，有会员」——
+ *  盯着网易云要会员是死路，拿着歌名+歌手去搜一遍，**挑一个能放整首的源**才对。
+ *  返回换好的曲目（形状跟榜单条目一样），换不到返回 null。 */
+async function hotSwapPlayable(track) {
+  const first = (Array.isArray(track.artists) ? track.artists[0] : '') || ''
+  const q = `${track.name} ${first}`.trim()
+  const r = await boxJson(`/search?keyword=${encodeURIComponent(q)}&limit=8`, { timeout: 9000 })
+  if (!r.ok) return null
+  const list = Array.isArray(r.tracks) ? r.tracks : []
+  if (!list.length) return null
+  /* 打分时带上登录状态：没登录那家的 VIP 会被扣分，登录了的自然排前面 */
+  const auth = await boxAuth()
+  const picked = pickTrack(list, track.name, first, auth)
+  if (!picked) return null
+  for (const cand of [picked.best, ...picked.rest].slice(0, 5)) {
+    if (!cand || !cand.id) continue
+    if (String(cand.id) === String(track.id)) continue // 还是原曲，换了个寂寞
+    const u = await boxJson(`/url?id=${encodeURIComponent(cand.id)}`, { timeout: 10000 })
+    const res = u.result
+    if (u.ok && res && res.url && !res.trial) {
+      log(`  ♫ 换源：《${track.name}》只有试听 → 改放 ${cand.provider} 上的《${cand.name}》`)
+      /* 搜索结果本身就是 trackOf 认的形状（id 带 provider 前缀，还有 songId / mediaMid） */
+      return trackOf(cand)
+    }
+  }
+  return null
+}
+
 /** 还缺几首。点歌的排在热榜前面，这里只算总量够不够。
  *  🔴 先对账再算：拿「几小时前点了但被跳过」的老账当额度，就是 2026-10-27 那场
  *  55 分钟不补歌的事故 —— boxQueue 停在 3 首，HOT_KEEP 是 2，这里永远返回 0。 */
@@ -2480,11 +2509,17 @@ async function fillHot() {
         hotWhy = `《${track.name}》取不到音源`
         continue
       }
+      /* 只有 30 秒试听 → 先在别的源上找整首（主人 QQ 有会员，别死磕网易云） */
+      let use = track
       if (kind === 'trial') {
-        trials.push(track)
-        continue
+        const alt = await hotSwapPlayable(track)
+        if (!alt) {
+          trials.push(track)
+          continue
+        }
+        use = alt
       }
-      const cmd = started ? { type: 'queue_add', tracks: [track] } : { type: 'play', track }
+      const cmd = started ? { type: 'queue_add', tracks: [use] } : { type: 'play', track: use }
       const r = await boxJson('/bridge/command', { method: 'POST', body: cmd, timeout: 6000 })
       if (!r.ok || r.queued === false) {
         hotWhy = r.why || '命令没递进去'
@@ -2492,12 +2527,14 @@ async function fillHot() {
         break
       }
       hotPlayed.add(track.id)
-      boxQueuePush(track.name, true)
+      /* 队列里记**实际播的那个名字**：换过源之后播放器报的是新名字，
+       * 记榜单原名的话 boxQueueSettle 永远对不上号，这笔账就又出不去了。 */
+      boxQueuePush(use.name, true)
       started = true
       need--
       hotWhy = ''
-      const by = track.artists.length ? ' - ' + track.artists.join('/') : ''
-      log(`  ♫ 热榜垫上《${track.name}》${by}`)
+      const by = use.artists && use.artists.length ? ' - ' + use.artists.join('/') : ''
+      log(`  ♫ 热榜垫上《${use.name}》${by}`)
     }
 
     /* 兜底：整榜只剩试听片段（音源没登录 / 没会员）。
