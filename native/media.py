@@ -110,6 +110,21 @@ def _mci_mode():
         return ""
 
 
+def _mci_volume(v):
+    """中途改音量（她说话时桥会把 0 档视频压到 20%）。
+
+    MCI 的 `setaudio volume` 是**播放中**也能生效的，不用停再重开 ——
+    重开会从头上放，观众看到画面跳回去。失败就当没压，不影响画面。
+    """
+    if not _audio_open:
+        return False
+    try:
+        _mci(f"setaudio {_ALIAS} volume to {max(0, min(1000, int(float(v) * 1000)))}", quiet=True)
+        return True
+    except OSError:
+        return False
+
+
 # ── 音频轨缓存（视频里的声音要单独抽出来给 MCI）──────────────────────
 _CACHE = os.path.join(tempfile.gettempdir(), "dymedia-audio")
 
@@ -467,10 +482,28 @@ class Engine:
         cur = m["cur"]
         seq = cur.get("seq")
         if seq == self.seq:
+            # 同一个素材：seq 没变，但**音量可能变了** ——
+            # 她说话时桥会把 0 档视频压到 20%，说完恢复。
+            # 只调音量，不重开（重开会从头放，画面会跳回去）。
+            v = cur.get("volume")
+            if v is not None:
+                self.set_volume(v)
             return False
         self.close()
         self._start(cur, size)
         return True
+
+    def set_volume(self, v):
+        """改当前素材的音量。只对真的有音轨的（视频 / 音频）做。"""
+        try:
+            v = max(0.0, min(1.0, float(v)))
+        except (TypeError, ValueError):
+            return
+        if abs(v - self.volume) < 0.01:
+            return
+        self.volume = v
+        if self.kind in ("video", "audio"):
+            _mci_volume(v)
 
 
 def wave_bars(t, n, h):

@@ -823,6 +823,11 @@ const MEDIA_DEFAULTS = {
      * 抽法是「洗牌袋」—— 四个轮完一轮才重洗，所以不会连着放同一段。
      * 档位只保留一个用处：音量 / 单次时长上限还是按那个文件自己那一档走。 */
     flatGift: false,
+    /* 0 档（闲时 / 点播）视频「放完为止」（2026-10-28，主人选的方案）：
+     * 她开口说话时**不收掉**，改成把视频音量压到 20%（见 mediaVolumeNow）；
+     * 有礼物进来也**不顶掉**，改成排队。
+     * 关掉就回到老行为：她一开口视频直接收，礼物也能顶掉它。 */
+    idleFull: true,
   },
   /* 音量（2026-10-27 主人要求搬进设置页）。单位都是 %，桥内部再换算：
    *   voice = 她说话（TTS）
@@ -880,6 +885,7 @@ function loadMediaCfg() {
       if (typeof j.rules.duckMusic === 'boolean') out.rules.duckMusic = j.rules.duckMusic
       if (Number.isFinite(Number(j.rules.maxQueue))) out.rules.maxQueue = Math.max(1, Math.min(20, Number(j.rules.maxQueue)))
       if (typeof j.rules.flatGift === 'boolean') out.rules.flatGift = j.rules.flatGift
+      if (typeof j.rules.idleFull === 'boolean') out.rules.idleFull = j.rules.idleFull
     }
     if (j.audio) {
       for (const k of ['voice', 'media', 'music', 'duck']) {
@@ -1325,7 +1331,16 @@ function playClipNow(user) {
   const curRank = Number.isFinite(Number(MEDIA.cur.rank))
     ? Number(MEDIA.cur.rank)
     : (Number(MEDIA.cur.tier) || 0)
-  if (mediaCfg.rules.interrupt && meta.rank > curRank) {
+  /* 「0 档放完为止」（2026-10-28）：**观众点播**的视频不因为来了礼物就被顶掉，
+   * 改成排队。理由和「她说话不收」一样 —— 83 秒的片子放 51 秒就断，看着像坏了。
+   *
+   * ⚠️ 只保护 request（点播）。闲时素材（场子冷了自己放的那种）**照样被顶掉**：
+   * 那是填空场的东西，送礼的人等 83 秒才看到反应才是真问题。
+   * 礼物之间（1–4 档）的打断规则不受影响。 */
+  const keepIdle = Boolean(mediaCfg.rules.idleFull)
+    && MEDIA.cur.tier === 0
+    && Boolean(MEDIA.cur.request)
+  if (mediaCfg.rules.interrupt && meta.rank > curRank && !keepIdle) {
     /* 闲时视频（0 档）被礼物顶掉：先把音乐恢复，否则它一直停在暂停上，
      * 新礼物媒体的 duck 也就没东西可压了。 */
     if (MEDIA.cur.tier === 0) resumeMusicAfterMedia()
@@ -1348,9 +1363,29 @@ function playClipNow(user) {
   return { how: '排队', tier: meta.tier }
 }
 
+/* ── 她说话时把 0 档视频的音量压下去（2026-10-28 加）──────────────────
+ * 以前是「她一开口就把 0 档视频**收掉**」：`mediaFinish(..., '她要说话了')`。
+ * 代价是 83 秒的点播视频只放 20 秒就没了 —— 主人：「还有一个普通视频呢！」
+ * （日志对得上：00:01:42 点播 → 00:02:02 被收掉，正好 20 秒宽限期）。
+ *
+ * 现在改成**压低不中断**：画面继续放，她的声音也听得清。
+ * 只压 0 档（闲时 / 点播，自带声音的那种）。礼物视频不压 ——
+ * 它们本来就短，而且是观众花钱换来的「正片」，压了反而没意思。
+ * 0.2 这个值没做成配置项：再高（0.6 那种）人声还是会被盖住，等于没压。 */
+const VIDEO_DUCK_WHEN_SPEAKING = 0.2
+
+/** 这一刻该用多少音量（画面每 0.4 秒读一次，所以这里是「现算」不是「记状态」） */
+function mediaVolumeNow(cur) {
+  if (!cur) return 0
+  const base = Number(cur.volume) || 0
+  if (cur.tier === 0 && Date.now() < speakUntil) {
+    return Math.min(1, Math.max(0, base * VIDEO_DUCK_WHEN_SPEAKING))
+  }
+  return base
+}
+
 /** 给 /state.json 和设置页用的当前状态 */
-function mediaOut() {
-  const scan = scanMedia()
+function mediaOut() {  const scan = scanMedia()
   return {
     on: mediaCfg.on,
     dir: mediaDir(),
@@ -1373,7 +1408,9 @@ function mediaOut() {
         file: MEDIA.cur.file,
         tier: MEDIA.cur.tier, user: MEDIA.cur.user, gift: MEDIA.cur.gift,
         request: MEDIA.cur.request,
-        volume: MEDIA.cur.volume, loop: MEDIA.cur.loop,
+        /* 音量发的是「此刻该用多少」，不是素材的原始音量：
+         * 她说话的时候 0 档视频要压下去（见 mediaVolumeNow）。 */
+        volume: mediaVolumeNow(MEDIA.cur), loop: MEDIA.cur.loop,
         maxMs: MEDIA.cur.maxMs, at: MEDIA.cur.at,
         leftMs: Math.max(0, MEDIA.cur.at + MEDIA.cur.maxMs - Date.now()),
       }
@@ -2812,6 +2849,9 @@ function scheduleUnduck() {
  */
 let ttsBusy = false
 let speakUntil = 0 // 排队的语音大概放到什么时候（只给「自言自语别抢话」用，不再用来挡合成）
+/* ⚠️ 这个变量**声明得比用它的地方靠后**（mediaVolumeNow 在 mediaOut 旁边）。
+ * 之所以没事：函数体是运行时才执行的，那时整个模块早就初始化完了。
+ * 千万别在模块顶层直接调 mediaOut()，会踩 TDZ。 */
 
 /** 只合成，不播。返回 {ok,file,dur,cached,ms}。 */
 async function ttsSynth(text) {
@@ -3128,16 +3168,25 @@ async function replyWorker() {
      * 日志对得上：22:57:55 点播开播（120s 上限），
      * 22:58:11 / 22:58:51 / 22:59:00 三句 🗣 全落在视频播放期内，一条都没让位。
      * 现在只保护前 20 秒（够观众看到「真的放上了」），之后她开口照收。
-     */
+     *
+     * 🔴 2026-10-28 又改：主人选的是「放完为止 + 说话时压低视频音量」。
+     * 所以默认 **不再收掉**（`rules.idleFull`，默认 true），改成让 mediaOut()
+     * 把音量压到 20% —— 画面不断，她的声音也听得清。
+     * 想回到「一开口就收」的老行为：设置页「电脑 → 播放队列与打断」关掉那个开关。 */
     const graceMs = Number(process.env.ZY_REQUEST_GRACE || 20) * 1000
     const protecting = Boolean(
       MEDIA.cur && MEDIA.cur.keep === 'request'
       && Date.now() - Number(MEDIA.cur.at || 0) < graceMs
     )
-    if (MEDIA.cur && MEDIA.cur.tier === 0 && !protecting) {
+    if (MEDIA.cur && MEDIA.cur.tier === 0 && !protecting && !mediaCfg.rules.idleFull) {
       const wasRequest = MEDIA.cur.keep === 'request'
       mediaFinish(MEDIA.cur.seq, '她要说话了')
       log(`  🖥 要开口了，视频先收掉${wasRequest ? '（点播的宽限期已过）' : ''}`)
+    } else if (MEDIA.cur && MEDIA.cur.tier === 0 && !MEDIA.cur.duckLogged) {
+      /* 不收，只压低。下一拍 /state.json 就会带上压低后的音量。
+       * 只记一次 —— 否则她每说一句都刷一行，日志会被淹掉。 */
+      MEDIA.cur.duckLogged = true
+      log('  🖥 要开口了，视频音量压到 20%（画面继续放）')
     }
     /* 先合成，再**同时**上字幕 + 出声（2026-10-27 改）。
      * 原来是「字幕立刻上屏、声音后补」，观众看到字幕出来了还要等一秒才听到，
@@ -3902,12 +3951,64 @@ async function dyRoute(p, u, req) {
     return { ok: Boolean(r.ok), qr: r.qr || null, error: r.why || '' }
   }
   if (p === '/music/login/qq/cookie' && req.method === 'POST') {
-    /* 扫码走不通时的兜底：直接从浏览器贴一段 QQ 音乐 cookie。 */
+    /* 扫码走不通时的兜底：直接从浏览器贴一段 QQ 音乐 cookie。
+     * 2026-10-28 确认这是唯一能给 QQ 会员权益的办法 —— 扫码只回基础态
+     * （uin + 空 p_skey），会员票据 qm_keyst 拿不到。 */
     const b = await readJson(req)
     const cookie = String(b.cookie || '').trim()
     if (!cookie) return { ok: false, error: '没给 cookie' }
     const r = await boxJson('/auth/qq', { method: 'POST', body: { cookie }, timeout: 10000 })
     return { ok: Boolean(r.ok && r.saved), saved: Boolean(r.saved), error: r.ok ? '' : (r.why || '没存上') }
+  }
+
+  /* ── 网易云扫码登录（2026-10-28 加，设置页「音源」那张卡用）──────────
+   * QQ 扫码只回基础态，会员曲取不到音源；网易云走官方接口，非会员也能放
+   * 标准音质整首（会员专享曲除外），是另一条能走通的路。
+   * 一次调用把 key 和二维码都取回来 —— 分两步的话页面要多跑一个来回，
+   * 而二维码只有两分钟寿命，能省就省。 */
+  if (p === '/music/login/netease' && req.method === 'POST') {
+    const a = await boxJson('/auth/netease/qr', { method: 'POST', body: {}, timeout: 15000 })
+    if (!a.ok || !a.key) return { ok: false, error: a.why || '没拿到 key' }
+    const key = String(a.key)
+    const q = await boxJson(`/auth/netease/qr/create?key=${encodeURIComponent(key)}`, { timeout: 20000 })
+    if (!q.ok) return { ok: false, key, error: q.why || '二维码没生成' }
+    return { ok: true, key, img: q.img || '', url: q.url || '' }
+  }
+  if (p === '/music/login/netease/check') {
+    const key = u.searchParams.get('key') || ''
+    if (!key) return { ok: false, error: '没给 key' }
+    const r = await boxJson(`/auth/netease/qr/check?key=${encodeURIComponent(key)}`, { timeout: 12000 })
+    return { ok: Boolean(r.ok), qr: r.qr || null, error: r.why || '' }
+  }
+
+  /* ── 「会员曲到底能不能放」当场验一次（2026-10-28 加）─────────────────
+   * 存完 cookie 之后最想知道的就是这个。别让人去点一首歌碰运气 ——
+   * 直接拿搜索结果里的 VIP 曲逐个试 /url，把「哪家能取到音源」摆出来。 */
+  if (p === '/music/test') {
+    const song = String(u.searchParams.get('song') || '一半一半').trim()
+    const sr = await boxJson(`/search?keyword=${encodeURIComponent(song)}&limit=8`, { timeout: 12000 })
+    if (!sr.ok) return { ok: false, error: sr.why || '搜索失败' }
+    const tracks = Array.isArray(sr.tracks) ? sr.tracks : []
+    /* 只挑 VIP 曲来验 —— 免费曲本来就能放，验了也说明不了会员有没有生效 */
+    const vips = tracks.filter((t) => t && t.vip === true).slice(0, 6)
+    if (!vips.length) return { ok: true, song, tried: [], verdict: `搜「${song}」没搜到 VIP 曲，换个歌名再试` }
+    const tried = []
+    for (const t of vips) {
+      const r = await boxJson(`/url?id=${encodeURIComponent(t.id)}`, { timeout: 12000 })
+      const res = r.result || {}
+      tried.push({
+        provider: String(t.provider || ''),
+        name: String(t.name || ''),
+        artist: Array.isArray(t.artists) ? t.artists.join('/') : String(t.artists || ''),
+        url: Boolean(res.url),
+        trial: res.trial === true,
+      })
+    }
+    const good = tried.filter((x) => x.url && !x.trial)
+    const verdict = good.length
+      ? `✓ ${good[0].provider} 的 VIP 曲能取到整首音源（${good[0].name}）`
+      : '✗ 试过的 VIP 曲都取不到音源 —— 登录态里可能还缺会员票据'
+    return { ok: true, song, tried, verdict }
   }
 
   if (p === '/media/list') {
@@ -3979,6 +4080,8 @@ async function dyRoute(p, u, req) {
       if (Number.isFinite(Number(b.rules.maxQueue))) r.maxQueue = Math.max(1, Math.min(20, Number(b.rules.maxQueue)))
       /* 礼物不分档（2026-10-27 深夜）：打开后不看礼物名，1–4 档混着随机抽 */
       if (typeof b.rules.flatGift === 'boolean') r.flatGift = b.rules.flatGift
+      /* 0 档放完为止（2026-10-28）：说话时不收只压低，礼物来了排队不顶掉 */
+      if (typeof b.rules.idleFull === 'boolean') r.idleFull = b.rules.idleFull
     }
     /* 音量（2026-10-27）：改完立刻生效。
      * 音乐这一项要马上落到播放器上 —— 不然面板拖到 30%，观众那边还是 100%，
@@ -4562,7 +4665,11 @@ const server = http.createServer(async (req, res) => {
    * ══════════════════════════════════════════════════════════════════════ */
   /* ⚠️ `/media` 本身**不放进来** —— 那是音乐接口（music.html 在用）。
    *    电脑展示区走 /media/box、/media/list、/media/config、/media/play… */
-  if (p.startsWith('/dy/') || p.startsWith('/gift/') || p.startsWith('/user/') || p.startsWith('/persona') || (p.startsWith('/media') && p !== '/media') || p === '/room' || p.startsWith('/room/') || p.startsWith('/reply/')) {
+  /* 🔴 `/music/` 这个前缀 2026-10-28 才补进来。5873cd7 那几个音源登录端点
+   *    （/music/auth、/music/login/qq…）当时写进了 dyRoute，但**前缀没挂到
+   *    这里**，于是它们一直是 404 —— 面板那张卡点「扫码登录」当然没反应。
+   *    实测：curl /music/auth → `404 D:\Workplace\zhibo\music\auth`。 */
+  if (p.startsWith('/dy/') || p.startsWith('/gift/') || p.startsWith('/user/') || p.startsWith('/persona') || p.startsWith('/music/') || (p.startsWith('/media') && p !== '/media') || p === '/room' || p.startsWith('/room/') || p.startsWith('/reply/')) {
     res.setHeader('access-control-allow-origin', '*')
     res.setHeader('content-type', 'application/json; charset=utf-8')
     let out
