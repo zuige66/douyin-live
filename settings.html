@@ -313,13 +313,17 @@ const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': 
 async function loadUsers() {
   const q = $('q').value.trim()
   const r = await api('/user/list?limit=200&q=' + encodeURIComponent(q))
-  $('userSub').textContent = q ? `搜到 ${r.users.length} 个 · 一共 ${r.total} 个` : `一共 ${r.total} 个 · 按最近活跃排`
+  /* API 出错时没有 users 字段 —— 兜住，不然整个列表静默不渲染 */
+  const users = Array.isArray(r.users) ? r.users : []
+  $('userSub').textContent = q
+    ? `搜到 ${users.length} 个 · 一共 ${r.total || 0} 个`
+    : `一共 ${r.total || 0} 个 · 按最近活跃排`
   const box = $('ulist')
-  if (!r.users.length) {
+  if (!users.length) {
     box.innerHTML = '<div class="hint">还没有记录。开播后有人说话就会自动记。</div>'
     return
   }
-  box.innerHTML = r.users
+  box.innerHTML = users
     .map((u) => {
       const tag = (u.tags || [])[0] ? `<span class="tag">${esc(u.tags[0])}</span>` : ''
       const initial = esc((u.nick || '?').slice(0, 1))
@@ -538,7 +542,7 @@ $('btnExport').onclick = async () => {
   a.download = 'dafeiyu-users-' + new Date().toISOString().slice(0, 10) + '.json'
   a.click()
   URL.revokeObjectURL(a.href)
-  toast(`导出 ${r.users.length} 个档案`)
+  toast(`导出 ${(r.users || []).length} 个档案`)
 }
 
 $('btnImport').onclick = () => $('file').click()
@@ -574,7 +578,8 @@ let P = null
 
 async function loadPersona() {
   P = await api('/persona')
-  $('plist').innerHTML = P.list
+  const plist = Array.isArray(P.list) ? P.list : []
+  $('plist').innerHTML = plist
     .map(
       (p) => `<div class="pitem ${p.key === P.active ? 'on' : ''}" data-key="${p.key}">
         <div class="pt"><span class="mark"></span>${esc(p.name)}</div>
@@ -592,7 +597,6 @@ async function loadPersona() {
     }
   })
   $('mode').textContent = '性格 · ' + (P.list.find((x) => x.key === P.active) || {}).name
-  $('mode').className = 'chip live'
   $('mode').className = 'chip live'
   fillOver()
 }
