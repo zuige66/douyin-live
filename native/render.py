@@ -46,9 +46,10 @@ INK = (230, 225, 229, 255)    # onSurface
 DIM = (202, 196, 208, 255)    # onSurfaceVariant
 PRI = (208, 188, 255, 255)    # primary（替掉原来的青 TEAL）
 TER = (239, 184, 200, 255)    # tertiary（替掉原来的金 GOLD）
-BG = (23, 19, 31, 255)        # surface，往紫里偏了一点：#17131F
+BG = (30, 24, 42, 255)        # surface，往紫里偏了一点：#17131F
+CARD = (46, 38, 63, 255)      # surfaceContainer：卡片实色，全不透明
 FAINT = (202, 196, 208, 128)  # 次要信息：onSurfaceVariant 半透明
-HAIR = (120, 101, 160, 150)   # outlineVariant 偏紫：卡片 1px 描边
+HAIR = (92, 79, 120, 255)     # outlineVariant 偏紫：卡片 1px 描边（实色）
 
 # 2026-10-27 晚提亮：主人说「整个画面都是挺暗的」。
 # 原来 BG(7,9,12) 几乎是纯黑、正文 233、次要文字 142 —— 在抖音直播伴侣里
@@ -148,6 +149,8 @@ def fit_text(s, max_w, size, bold=False):
 
 
 # ---------------------------------------------------------------- 背景辉光
+# 目前没有调用点：背景改成纯色之后退役了（2026-10-27）。留着是因为
+# 以后要做局部发光（比如礼物特效）还能直接用，不用再写一遍极坐标循环。
 def _glow(size, color, radius_ratio=0.62):
     """低分辨率画径向渐变再放大，比逐像素快得多"""
     sw, sh = 96, 54
@@ -172,15 +175,12 @@ _BG = None
 def background():
     global _BG
     if _BG is None:
+        # 🔴 纯色背景（2026-10-27 晚主人明确要求：「背景纯色，不要有灯光熏晕」）。
+        # 以前这里叠了三层 radial 柔光（左上紫、右下藕粉、顶部托标语）——
+        # 那是"舞台打光"的思路，和 M3E 的平面色块完全相反：
+        # M3E 的背景就是一块 surface，层次靠**卡片的明度差**做，不靠渐变。
+        # 柔光还会在抖音二次压缩后变成一圈圈色带（banding），更脏。
         img = Image.new("RGBA", (W * SS, H * SS), BG)
-        # 两层柔光让画面有纵深。跟着整体提亮一起抬高（26→42 / 22→34），
-        # 不然底色一亮，光晕就看不出来了，画面会变成一块平板。
-        img.alpha_composite(_glow((1500 * SS, 900 * SS), (208, 188, 255, 58)), (60 * SS, -120 * SS))
-        img.alpha_composite(_glow((1300 * SS, 800 * SS), (239, 184, 200, 38)), (1180 * SS, 520 * SS))
-        # 顶部标语（「刷礼物有惊喜」）后面垫一层横向柔光。
-        # 不垫的话，那行紫字孤零零浮在黑色空带里，看着像没画完；
-        # 垫了之后顶部有一个"发光区域"，视线自然先落在那里。
-        img.alpha_composite(_glow((1400 * SS, 460 * SS), (208, 188, 255, 34)), (260 * SS, -170 * SS))
         _BG = img
     return _BG
 
@@ -344,7 +344,7 @@ def build_base(st):
     c1h = 32 + 36 + len(rows) * 46 + 10
     ld.rounded_rectangle(
         (CARD_X * SS, CARD_Y * SS, (CARD_X + CARD_W) * SS, (CARD_Y + c1h) * SS),
-        radius=24 * SS, fill=(37, 31, 51, 232), outline=HAIR, width=SS,
+        radius=24 * SS, fill=CARD, outline=HAIR, width=SS,
     )
     px, py = CARD_X + 30, CARD_Y + 30
     T(px, py, "本场数据", 25, DIM)
@@ -370,7 +370,7 @@ def build_base(st):
     c2h = 32 + 36 + np_h + max(len(songs), 1) * 58 + 78 + 44
     ld.rounded_rectangle(
         (CARD_X * SS, c2y * SS, (CARD_X + CARD_W) * SS, (c2y + c2h) * SS),
-        radius=24 * SS, fill=(37, 31, 51, 232), outline=HAIR, width=SS,
+        radius=24 * SS, fill=CARD, outline=HAIR, width=SS,
     )
     T(px, c2y + 30, "点歌台", 25, DIM)
     q_total = int(((st.get("queue") or {}).get("total")) or 0)
@@ -552,11 +552,11 @@ def draw_danmaku(img, st, d, f):
         for (u, t, bw), m in zip(layout, dm):
             kind = m.get("kind") or ""
             if kind == "gift":
-                fill, ucol = (79, 55, 139, 214), TER
+                fill, ucol = (79, 55, 139, 255), TER
             elif kind == "me":
-                fill, ucol = (99, 59, 72, 214), (255, 216, 228, 255)
+                fill, ucol = (99, 59, 72, 255), (255, 216, 228, 255)
             else:
-                fill, ucol = (33, 31, 38, 206), (204, 194, 220, 255)
+                fill, ucol = (43, 41, 48, 255), (204, 194, 220, 255)
             x0 = DM_RIGHT - bw
             sh, pad = shadow_patch(bw, bh, 20)
             blit(img, sh, x0 - pad, y - pad + 2)
@@ -852,9 +852,9 @@ def compose(st):
         bw2 = int(max(520, min(SUB_W, 30 + tw + 46 + body_w + 30))) // 4 * 4
         sx = (W - bw2) // 2
         sy2 = H - SUB_BOTTOM - SUB_H
-        sh, pad = shadow_patch(bw2, SUB_H, 24, blur=12, alpha=130)
-        blit(img, sh, sx - pad, sy2 - pad + 3)
-        blit(img, rr_patch(bw2, SUB_H, 24, (37, 31, 51, 240)), sx, sy2)
+        # 纯色版不再垫投影（2026-10-27 晚）：卡片和字幕条都是实色，
+        # 底部再加一圈柔边只会让边缘发虚，M3E 的平面语言里也没有投影这一层。
+        blit(img, rr_patch(bw2, SUB_H, 24, CARD), sx, sy2)
         blit(img, rr_patch(int(tw) + 28, 34, 9, PRI), sx + 30, sy2 + 26)
         d.text((sx + 44, sy2 + 32), tag, font=fs_, fill=(56, 30, 114, 255))
         d.text((sx + 30 + tw + 46, sy2 + 22), str(sub), font=f(34), fill=INK)
