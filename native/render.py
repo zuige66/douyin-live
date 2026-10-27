@@ -738,7 +738,16 @@ def draw_computer(img, st, d, f):
     if cur and not err:
         d.text((MON_X, CAP_Y), "正在播放", font=f(20), fill=DIM)
         # 档位徽标（0 档是闲时素材，不叫「档位0」）
-        badge = "闲时" if tier == 0 else f"档位{tier}"
+        # 0 档还分两种：场子冷了自动放的「闲时」/ 观众喊「放个视频」的「点播」。
+        # 只写「闲时」的话，点播那次的画面看着像是自己冒出来的，第二行的观众昵称
+        # 也就变成了没头没尾的一个名字。
+        if tier == 0:
+            # `user` 兜底是为了「桥还没重启」的情况：闲时那一路从来不填 user，
+            # 所以只要第二行有名字，就一定有人点播过。这样这次改动不用为一行
+            # 徽标去重启正在直播的桥。
+            badge = "点播" if (cur.get("request") or cur.get("user")) else "闲时"
+        else:
+            badge = f"档位{tier}"
         bw2 = int(d.textlength(badge, font=f(19, True))) + 20
         blit(img, rr_patch(bw2, 28, 8, (col[0], col[1], col[2], 40),
                            outline=(col[0], col[1], col[2], 110)), MON_X + 96, CAP_Y - 4)

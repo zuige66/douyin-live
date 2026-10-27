@@ -1076,6 +1076,10 @@ function mediaBegin(item, meta) {
     tier,
     user: String(meta.user || ''),
     gift: String(meta.gift || ''),
+    /* 0 档有两种来源：场子冷了自动放（闲时）/ 观众喊「放个视频」（点播）。
+     * 徽标要靠这个字段分开写，否则点播也显示「闲时」，看画面的人（和排查的我）
+     * 都分不清这段是谁让它放的。 */
+    request: Boolean(meta.request),
     /* 档位音量 × 设置页的「素材总音量」。
      * 用乘法不用覆盖：档位之间本来就有相对大小（1 档 0.8 / 4 档 1.0），
      * 总音量只该整体收放，不该把档位差抹平。 */
@@ -1308,6 +1312,7 @@ function mediaOut() {
          *    它得拿到绝对路径才能开文件。只给 name 的话画面只会一直待机。 */
         file: MEDIA.cur.file,
         tier: MEDIA.cur.tier, user: MEDIA.cur.user, gift: MEDIA.cur.gift,
+        request: MEDIA.cur.request,
         volume: MEDIA.cur.volume, loop: MEDIA.cur.loop,
         maxMs: MEDIA.cur.maxMs, at: MEDIA.cur.at,
         leftMs: Math.max(0, MEDIA.cur.at + MEDIA.cur.maxMs - Date.now()),
