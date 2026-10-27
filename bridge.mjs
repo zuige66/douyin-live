@@ -817,6 +817,12 @@ const MEDIA_DEFAULTS = {
     cooldown: 3, // 全局冷却秒（0 = 不限制）
     duckMusic: true, // 播放期间把背景音乐压下去
     maxQueue: 5, // 队列最多压几首，超了丢最新的
+    /* 礼物不分档（2026-10-27 深夜，主人要求）：
+     * 「只要刷礼物，那四个视频就随机选一个播放」。
+     * 打开后**不看礼物名**、也不看 giftMap，任何礼物都从 1–4 档里随机抽一个。
+     * 抽法是「洗牌袋」—— 四个轮完一轮才重洗，所以不会连着放同一段。
+     * 档位只保留一个用处：音量 / 单次时长上限还是按那个文件自己那一档走。 */
+    flatGift: false,
   },
   /* 音量（2026-10-27 主人要求搬进设置页）。单位都是 %，桥内部再换算：
    *   voice = 她说话（TTS）
@@ -873,6 +879,7 @@ function loadMediaCfg() {
       if (Number.isFinite(Number(j.rules.cooldown))) out.rules.cooldown = Math.max(0, Math.min(600, Number(j.rules.cooldown)))
       if (typeof j.rules.duckMusic === 'boolean') out.rules.duckMusic = j.rules.duckMusic
       if (Number.isFinite(Number(j.rules.maxQueue))) out.rules.maxQueue = Math.max(1, Math.min(20, Number(j.rules.maxQueue)))
+      if (typeof j.rules.flatGift === 'boolean') out.rules.flatGift = j.rules.flatGift
     }
     if (j.audio) {
       for (const k of ['voice', 'media', 'music', 'duck']) {
@@ -951,6 +958,9 @@ function scanMedia(force = false) {
       continue
     }
     const t = Number(m[1])
+    /* 把档位挂到条目上（2026-10-27 加）。「礼物不分档」模式下池子是 1–4 混的，
+     * 音量 / 单次时长还得按文件自己那一档走，所以得知道它原来属于哪档。 */
+    item.tier = t
     if (t === 0) idle.push(item) // 0- = 闲时素材，不是礼物档
     else byTier[t].push(item)
   }
@@ -994,6 +1004,11 @@ const MEDIA = {
   endTimer: null,
 }
 
+/* 「礼物不分档」用的洗牌袋：抽完一轮才重洗。
+ * 为什么不用 Math.random 直接抽：四个视频纯随机，连着两次抽到同一个很常见
+ * （1/4 概率），观众看着就像「卡住了 / 没换」。洗牌袋保证四个轮着来。 */
+let flatBag = []
+
 function mediaLog(line, tone) {
   MEDIA.log.unshift({ at: Date.now(), line: String(line), tone: tone || '' })
   if (MEDIA.log.length > 30) MEDIA.log.length = 30
@@ -1003,6 +1018,26 @@ function mediaLog(line, tone) {
  *  0 档不是「礼物档」，池子在 scanMedia().idle 里（`0-xxx.mp4`）。 */
 function pickFile(tier) {
   const scan = scanMedia()
+  /* 'any' = 礼物不分档：1–4 档所有素材混成一个池子。
+   * 主人 2026-10-27 深夜：「只要刷礼物，那四个视频就随机选一个播放」。 */
+  if (tier === 'any') {
+    const pool = [1, 2, 3, 4].flatMap((t) => scan.byTier[t] || [])
+    if (!pool.length) return null
+    const ids = pool.map((x) => x.file)
+    /* 池子变了（加了 / 删了素材）就重洗，别拿着已经不存在的文件名去找 */
+    if (flatBag.some((f) => !ids.includes(f))) flatBag = []
+    if (!flatBag.length) {
+      flatBag = ids.slice()
+      for (let i = flatBag.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1))
+        const tmp = flatBag[i]
+        flatBag[i] = flatBag[j]
+        flatBag[j] = tmp
+      }
+    }
+    const want = flatBag.shift()
+    return pool.find((x) => x.file === want) || pool[0]
+  }
   const pool = tier === 0 ? (scan.idle || []) : (scan.byTier[tier] || [])
   if (!pool.length) return null
   const mode = (mediaCfg.tiers[tier] && mediaCfg.tiers[tier].mode) || 'random'
@@ -1066,7 +1101,9 @@ function mediaBegin(item, meta) {
   const tier = Number.isFinite(rawTier) ? rawTier : 1
   const t = mediaCfg.tiers[tier] || mediaCfg.tiers[1]
   const maxMs = Math.max(1, Number(t.maxSec) || 15) * 1000
-  const label = tier === 0 ? (meta.request ? '点播视频' : '闲时视频') : `档位${tier}`
+  const label = tier === 0
+    ? (meta.request ? '点播视频' : '闲时视频')
+    : (meta.flat ? '礼物视频' : `档位${tier}`)
   MEDIA.seq++
   MEDIA.cur = {
     seq: MEDIA.seq,
@@ -1074,6 +1111,11 @@ function mediaBegin(item, meta) {
     name: item.name,
     kind: item.kind,
     tier,
+    /* 打断比较用的优先级（2026-10-27 加）。正常模式 = 档位数字；
+     * 「礼物不分档」模式下所有礼物都是同一级（1），于是「高档打断低档」
+     * 退化成「礼物能顶掉闲时视频」，礼物之间只排队 —— 这正是主人要的。 */
+    rank: Number.isFinite(Number(meta.rank)) ? Number(meta.rank) : tier,
+    flat: Boolean(meta.flat),
     user: String(meta.user || ''),
     gift: String(meta.gift || ''),
     /* 0 档有两种来源：场子冷了自动放（闲时）/ 观众喊「放个视频」（点播）。
@@ -1095,7 +1137,7 @@ function mediaBegin(item, meta) {
     (meta.gift ? ` · ${meta.gift}` : ''),
     'play'
   )
-  log(`  🖥 ${tier === 0 ? (meta.request ? '点播视频' : '闲时视频') : `礼物媒体·档位${tier}`}：${item.name}（${Math.round(maxMs / 1000)}s 上限）`)
+  log(`  🖥 ${tier === 0 ? (meta.request ? '点播视频' : '闲时视频') : (meta.flat ? '礼物视频（不分档）' : `礼物媒体·档位${tier}`)}：${item.name}（${Math.round(maxMs / 1000)}s 上限）`)
 
   /* 闲时视频**自带声音**，所以音乐要暂停，不是压低 —— 压到 60% 两个声音还是打架。
    * 礼物媒体只是压低（真停了观众会觉得直播断了）。 */
@@ -1238,54 +1280,72 @@ function playClipNow(user) {
  * 返回 {how, why}，只用于日志和面板显示。
  */function triggerGiftMedia(n) {
   if (!mediaCfg.on) return { how: '跳过', why: '媒体总开关关着' }
-  const tier = tierOfGift(n.giftName)
+  /* 「礼物不分档」（2026-10-27 深夜，主人要求）：
+   * 「只要刷礼物，那四个视频就随机选一个播放」——
+   * 打开后完全不看礼物名 / giftMap，1–4 档混成一个池子随机抽。
+   * 档位只剩一个用处：音量 / 单次时长上限按那个文件原来那一档走。 */
+  const flat = Boolean(mediaCfg.rules.flatGift)
+  const tier = flat ? 'any' : tierOfGift(n.giftName)
   if (!tier) return { how: '跳过', why: `礼物「${n.giftName || '?'}」认不出档位` }
   const item = pickFile(tier)
   if (!item) {
-    const why = `档位${tier} 目录里没有素材`
+    const why = flat
+      ? '1–4 档目录里一个素材都没有'
+      : `档位${tier} 目录里没有素材`
     mediaLog(`✕ ${why}`, 'warn')
     log(`  🖥 礼物媒体没播：${why}（${mediaDir()}）`)
     return { how: '跳过', why }
   }
-  const meta = { tier, user: n.user, gift: n.giftName }
+  /* 不分档时：tier 用**文件自己**的（音量/时长），rank 统一 1（打断比较） */
+  const fileTier = flat ? (Number(item.tier) || 1) : Number(tier)
+  const meta = {
+    tier: fileTier,
+    rank: flat ? 1 : Number(tier) || 0,
+    flat,
+    user: n.user,
+    gift: n.giftName,
+  }
+  const tag = flat ? '礼物视频' : `档位${tier}`
   const now = Date.now()
 
   /* 全局冷却：高频礼物不至于把素材刷成幻灯片 */
   const cd = Number(mediaCfg.rules.cooldown) || 0
   if (cd > 0 && MEDIA.lastStartAt && now - MEDIA.lastStartAt < cd * 1000) {
     const why = `冷却中（还差 ${Math.ceil((cd * 1000 - (now - MEDIA.lastStartAt)) / 1000)} 秒）`
-    mediaLog(`✕ 档位${tier} 没播：${why}`, 'warn')
+    mediaLog(`✕ ${tag} 没播：${why}`, 'warn')
     return { how: '跳过', why }
   }
 
   if (!MEDIA.cur) {
     mediaBegin(item, meta)
-    return { how: '播放', tier }
+    return { how: '播放', tier: meta.tier }
   }
 
   /* 正在播着 —— 三条规则依次判 */
-  const curTier = MEDIA.cur.tier
-  if (mediaCfg.rules.interrupt && tier > curTier) {
+  const curRank = Number.isFinite(Number(MEDIA.cur.rank))
+    ? Number(MEDIA.cur.rank)
+    : (Number(MEDIA.cur.tier) || 0)
+  if (mediaCfg.rules.interrupt && meta.rank > curRank) {
     /* 闲时视频（0 档）被礼物顶掉：先把音乐恢复，否则它一直停在暂停上，
      * 新礼物媒体的 duck 也就没东西可压了。 */
-    if (curTier === 0) resumeMusicAfterMedia()
-    mediaLog(`⤵ ${curTier === 0 ? '闲时视频' : `档位${curTier}`} 被档位${tier} 打断`, 'cut')
+    if (MEDIA.cur.tier === 0) resumeMusicAfterMedia()
+    mediaLog(`⤵ ${MEDIA.cur.tier === 0 ? '闲时视频' : `档位${MEDIA.cur.tier}`} 被${tag} 打断`, 'cut')
     clearEndTimer()
     MEDIA.cur = null
     mediaBegin(item, meta)
-    return { how: '打断', tier }
+    return { how: '打断', tier: meta.tier }
   }
-  if (mediaCfg.rules.sameTier === 'merge' && tier === curTier) {
-    mediaLog(`＝ 档位${tier} 连发，合并（不重复播）`, 'merge')
-    return { how: '合并', tier }
+  if (mediaCfg.rules.sameTier === 'merge' && meta.rank === curRank) {
+    mediaLog(`＝ ${tag} 连发，合并（不重复播）`, 'merge')
+    return { how: '合并', tier: meta.tier }
   }
   if (MEDIA.queue.length >= mediaCfg.rules.maxQueue) {
-    mediaLog(`✕ 档位${tier} 队列满了（${mediaCfg.rules.maxQueue}），丢掉`, 'warn')
+    mediaLog(`✕ ${tag} 队列满了（${mediaCfg.rules.maxQueue}），丢掉`, 'warn')
     return { how: '丢弃', why: '队列满' }
   }
   MEDIA.queue.push({ item, meta })
-  mediaLog(`… 档位${tier} 排队（第 ${MEDIA.queue.length} 个）`, 'queue')
-  return { how: '排队', tier }
+  mediaLog(`… ${tag} 排队（第 ${MEDIA.queue.length} 个）`, 'queue')
+  return { how: '排队', tier: meta.tier }
 }
 
 /** 给 /state.json 和设置页用的当前状态 */
@@ -3825,6 +3885,8 @@ async function dyRoute(p, u, req) {
       if (Number.isFinite(Number(b.rules.cooldown))) r.cooldown = Math.max(0, Math.min(600, Number(b.rules.cooldown)))
       if (typeof b.rules.duckMusic === 'boolean') r.duckMusic = b.rules.duckMusic
       if (Number.isFinite(Number(b.rules.maxQueue))) r.maxQueue = Math.max(1, Math.min(20, Number(b.rules.maxQueue)))
+      /* 礼物不分档（2026-10-27 深夜）：打开后不看礼物名，1–4 档混着随机抽 */
+      if (typeof b.rules.flatGift === 'boolean') r.flatGift = b.rules.flatGift
     }
     /* 音量（2026-10-27）：改完立刻生效。
      * 音乐这一项要马上落到播放器上 —— 不然面板拖到 30%，观众那边还是 100%，
