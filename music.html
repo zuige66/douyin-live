@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>大肥鱼 · 音乐台</title>
+<style>
+  /* Material 3 Expressive · dark · teal
+     规矩：只用纯色，任何地方都不许出现渐变。 */
+  :root{
+    --surface:#0f1417;
+    --surface-1:#171d21;
+    --surface-2:#1d2429;
+    --surface-3:#262f35;
+    --surface-4:#313a41;
+    --on-surface:#dfe3e6;
+    --on-variant:#b3bcc1;
+    --primary:#7fddc4;
+    --on-primary:#00382c;
+    --primary-c:#005143;
+    --on-primary-c:#9bfbdf;
+    --warn:#f5c06b;
+    --warn-c:#4a3410;
+    --muted:#6d777d;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{
+    background:var(--surface);
+    color:var(--on-surface);
+    font:15px/1.45 "Google Sans",-apple-system,"Segoe UI","Microsoft YaHei",system-ui,sans-serif;
+    display:flex;align-items:center;justify-content:center;
+    padding:20px;-webkit-font-smoothing:antialiased;
+  }
+  .wrap{width:100%;max-width:400px}
+
+  /* ── 顶部：状态点 + 名字 + 直播 chip ── */
+  .head{display:flex;align-items:center;gap:10px;padding:0 8px;margin-bottom:16px}
+  .dot{width:10px;height:10px;border-radius:50%;background:var(--muted);flex:none}
+  .dot.on{background:var(--primary)}
+  .dot.warn{background:var(--warn)}
+  .name{font-size:20px;font-weight:600;letter-spacing:-.2px;flex:1;
+        overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .chip{
+    font-size:13px;font-weight:600;padding:6px 14px;border-radius:999px;
+    background:var(--surface-3);color:var(--on-variant);white-space:nowrap;
+  }
+  .chip.live{background:var(--primary-c);color:var(--on-primary-c)}
+  .chip.off{background:var(--surface-3);color:var(--muted)}
+
+  /* ── 主卡片 ── */
+  .card{
+    background:var(--surface-1);
+    border-radius:32px;
+    padding:26px 24px 22px;
+  }
+
+  /* ── 曲目 ── */
+  .now{display:flex;gap:18px;align-items:center}
+  .cover{
+    width:92px;height:92px;border-radius:26px;flex:none;
+    background:var(--surface-3);
+    display:grid;place-items:center;
+  }
+  .cover svg{width:36px;height:36px;stroke:var(--primary);fill:none;
+             stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+  .cover.playing svg{stroke:var(--primary)}
+  .meta{min-width:0;flex:1}
+  .title{
+    font-size:24px;font-weight:600;line-height:1.25;letter-spacing:-.3px;
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  }
+  .artist{
+    margin-top:4px;font-size:15px;color:var(--on-variant);
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  }
+  .state{
+    display:inline-block;margin-top:10px;font-size:13px;font-weight:600;
+    padding:5px 13px;border-radius:999px;
+    background:var(--primary-c);color:var(--on-primary-c);
+  }
+  .state.paused{background:var(--warn-c);color:var(--warn)}
+  .state.off{background:var(--surface-3);color:var(--muted)}
+
+  /* ── 进度 ── */
+  .prog{margin:24px 2px 0}
+  .bar{position:relative;height:4px;border-radius:999px;background:var(--surface-4)}
+  .fill{position:absolute;inset:0 auto 0 0;height:4px;border-radius:999px;
+        width:0;background:var(--primary)}
+  .knob{position:absolute;top:-4px;width:12px;height:12px;border-radius:50%;
+        background:var(--primary);left:0;margin-left:-6px}
+  .times{display:flex;justify-content:space-between;margin-top:10px;
+         font-size:13px;color:var(--on-variant);font-variant-numeric:tabular-nums}
+  .prog.hide{display:none}
+
+  /* ── 控制按钮 ── */
+  .ctrl{display:flex;align-items:center;justify-content:center;gap:20px;margin-top:22px}
+  button{
+    border:none;background:var(--surface-3);color:var(--on-surface);
+    width:56px;height:56px;border-radius:50%;display:grid;place-items:center;
+    cursor:pointer;transition:background .15s,transform .12s;
+  }
+  button:hover{background:var(--surface-4)}
+  button:active{transform:scale(.92)}
+  button:disabled{background:var(--surface-2);color:var(--muted);cursor:default;transform:none}
+  button svg{width:22px;height:22px;fill:currentColor}
+  #play{
+    width:80px;height:80px;background:var(--primary);color:var(--on-primary);
+  }
+  #play:hover{background:var(--primary)}
+  #play:disabled{background:var(--surface-3);color:var(--muted)}
+  #play svg{width:32px;height:32px}
+  #play:active{transform:scale(.94)}
+
+  /* ── 音量 ── */
+  .vol{display:flex;align-items:center;gap:14px;margin-top:24px}
+  .vol svg{width:20px;height:20px;fill:var(--on-variant);flex:none}
+  input[type=range]{
+    -webkit-appearance:none;appearance:none;flex:1;height:4px;border-radius:999px;
+    background:var(--surface-4);outline:none;cursor:pointer;
+  }
+  input[type=range]::-webkit-slider-thumb{
+    -webkit-appearance:none;width:16px;height:16px;border-radius:50%;
+    background:var(--primary);border:none;
+  }
+  .volv{width:42px;text-align:right;font-size:13px;color:var(--on-variant);
+        font-variant-numeric:tabular-nums}
+
+  /* ── toast ── */
+  .toast{
+    position:fixed;left:50%;bottom:28px;transform:translate(-50%,16px);
+    background:var(--surface-4);color:var(--on-surface);
+    padding:12px 20px;border-radius:999px;font-size:14px;font-weight:500;
+    opacity:0;pointer-events:none;transition:opacity .2s,transform .2s;
+    max-width:88vw;text-align:center;
+  }
+  .toast.show{opacity:1;transform:translate(-50%,0)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="head">
+    <span class="dot" id="dot"></span>
+    <span class="name" id="appName">音乐台</span>
+    <span class="chip" id="liveChip">直播中</span>
+  </div>
+
+  <div class="card">
+    <div class="now">
+      <div class="cover" id="cover">
+        <svg viewBox="0 0 24 24"><path d="M9 18V5l10-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="16" cy="16" r="3"/></svg>
+      </div>
+      <div class="meta">
+        <div class="title" id="title">没在播放</div>
+        <div class="artist" id="artist"></div>
+        <span class="state off" id="state">未连接</span>
+      </div>
+    </div>
+
+    <div class="prog hide" id="prog">
+      <div class="bar">
+        <div class="fill" id="fill"></div>
+        <div class="knob" id="knob"></div>
+      </div>
+      <div class="times"><span id="tPos">0:00</span><span id="tDur">0:00</span></div>
+    </div>
+
+    <div class="ctrl">
+      <button id="prev" aria-label="上一首">
+        <svg viewBox="0 0 24 24"><path d="M6 5h2v14H6zm12 0v14l-9-7z"/></svg>
+      </button>
+      <button id="play" aria-label="播放或暂停">
+        <svg id="playIcon" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+      </button>
+      <button id="next" aria-label="下一首">
+        <svg viewBox="0 0 24 24"><path d="M16 5h2v14h-2zM6 5l9 7-9 7z"/></svg>
+      </button>
+    </div>
+
+    <div class="vol">
+      <svg viewBox="0 0 24 24"><path d="M4 9v6h4l5 4V5L8 9H4z"/></svg>
+      <input type="range" id="vol" min="0" max="100" value="100">
+      <span class="volv" id="volv">100%</span>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const API = location.origin;
+const $ = (id) => document.getElementById(id);
+const el = {
+  dot: $('dot'), appName: $('appName'), liveChip: $('liveChip'),
+  cover: $('cover'), title: $('title'), artist: $('artist'), state: $('state'),
+  prog: $('prog'), fill: $('fill'), knob: $('knob'), tPos: $('tPos'), tDur: $('tDur'),
+  play: $('play'), playIcon: $('playIcon'), prev: $('prev'), next: $('next'),
+  vol: $('vol'), volv: $('volv'), toast: $('toast'),
+};
+const ICON_PLAY = 'M8 5v14l11-7z';
+const ICON_PAUSE = 'M7 5h4v14H7zm6 0h4v14h-4z';
+
+let cur = null;
+let toastTimer = null;
+let volTouched = 0;
+
+function toast(msg) {
+  el.toast.textContent = msg;
+  el.toast.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.toast.classList.remove('show'), 2000);
+}
+
+const mmss = (s) => {
+  s = Math.max(0, Math.floor(Number(s) || 0));
+  return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
+};
+
+function paint(m) {
+  if (!m) return;
+  cur = m;
+  const found = !!m.found;
+  const playing = !!m.playing;
+
+  el.dot.className = 'dot' + (found ? (playing ? ' on' : ' warn') : '');
+  if (m.app) el.appName.textContent = m.app.replace(/\.exe$/i, '');
+
+  el.title.textContent = m.title || (found ? '没有歌名' : '没在播放');
+  el.artist.textContent = m.artist || '';
+  el.cover.classList.toggle('playing', playing);
+
+  if (!found) {
+    el.state.className = 'state off';
+    el.state.textContent = '未连接';
+  } else if (playing) {
+    el.state.className = 'state';
+    el.state.textContent = '正在播放';
+  } else {
+    el.state.className = 'state paused';
+    el.state.textContent = m.status === 'paused' ? '已暂停' : '已停止';
+  }
+
+  el.playIcon.innerHTML = '<path d="' + (playing ? ICON_PAUSE : ICON_PLAY) + '"/>';
+  for (const b of [el.play, el.prev, el.next]) b.disabled = !found;
+
+  const dur = Number(m.dur) || 0;
+  const pos = Number(m.pos) || 0;
+  if (dur > 0 && found) {
+    el.prog.classList.remove('hide');
+    const pct = Math.min(100, (pos / dur) * 100);
+    el.fill.style.width = pct + '%';
+    el.knob.style.left = pct + '%';
+    el.tPos.textContent = mmss(pos);
+    el.tDur.textContent = mmss(dur);
+  } else {
+    el.prog.classList.add('hide');
+  }
+
+  if (m.volume != null && Date.now() - volTouched > 2500) {
+    const v = Math.round(Number(m.volume) * 100);
+    el.vol.value = v;
+    el.volv.textContent = v + '%';
+  }
+}
+
+function paintLive(l) {
+  if (!l) return;
+  const st = l.status || 'unknown';
+  el.liveChip.className = 'chip' + (st === 'live' ? ' live' : st === 'unknown' ? '' : ' off');
+  el.liveChip.textContent = l.text || (st === 'live' ? '直播中' : '已下播');
+}
+
+async function refresh() {
+  try {
+    const r = await fetch(API + '/media', { cache: 'no-store' });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    paint(await r.json());
+  } catch (e) {
+    el.dot.className = 'dot';
+    el.state.className = 'state off';
+    el.state.textContent = '未连接';
+    el.appName.textContent = '连不上桥';
+  }
+}
+
+async function refreshLive() {
+  try {
+    const r = await fetch(API + '/state.json', { cache: 'no-store' });
+    const j = await r.json();
+    paintLive(j.live);
+  } catch {}
+}
+
+async function cmd(name, extra = '') {
+  try {
+    const r = await fetch(API + '/media?cmd=' + name + extra, { cache: 'no-store' });
+    const j = await r.json();
+    if (j.music) paint(j.music);
+    if (j.ok === false) toast(j.why || '没成功');
+    return j;
+  } catch (e) {
+    toast('连不上桥');
+    return null;
+  }
+}
+
+el.play.onclick = () => cmd('playpause');
+el.prev.onclick = () => cmd('prev');
+el.next.onclick = () => cmd('next');
+
+el.vol.oninput = () => {
+  volTouched = Date.now();
+  el.volv.textContent = el.vol.value + '%';
+};
+el.vol.onchange = () => {
+  volTouched = Date.now();
+  cmd('vol', '&v=' + (Number(el.vol.value) / 100).toFixed(2));
+};
+
+document.addEventListener('keydown', (e) => {
+  if (e.target.tagName === 'INPUT') return;
+  if (e.code === 'Space') { e.preventDefault(); cmd('playpause'); }
+  if (e.code === 'ArrowLeft') { e.preventDefault(); cmd('prev'); }
+  if (e.code === 'ArrowRight') { e.preventDefault(); cmd('next'); }
+});
+
+try {
+  const es = new EventSource(API + '/events');
+  es.onmessage = (ev) => {
+    try {
+      const m = JSON.parse(ev.data);
+      if (m.type === 'music' && m.payload) paint({ ...m.payload, found: true, on: true });
+      if (m.type === 'live' && m.payload) paintLive(m.payload);
+    } catch {}
+  };
+  es.onerror = () => {};
+} catch {}
+
+refresh();
+refreshLive();
+setInterval(refresh, 1000);
+setInterval(refreshLive, 5000);
+</script>
+</body>
+</html>

@@ -1,0 +1,423 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>大肥鱼 · 设置</title>
+<style>
+  /* Material 3 Expressive · dark · teal —— 跟 music.html 同一套变量。
+     规矩照旧：只用纯色，任何地方都不许出现渐变。 */
+  :root{
+    --surface:#0f1417;
+    --surface-1:#171d21;
+    --surface-2:#1d2429;
+    --surface-3:#262f35;
+    --surface-4:#313a41;
+    --on-surface:#dfe3e6;
+    --on-variant:#b3bcc1;
+    --primary:#7fddc4;
+    --on-primary:#00382c;
+    --primary-c:#005143;
+    --on-primary-c:#9bfbdf;
+    --warn:#f5c06b;
+    --warn-c:#4a3410;
+    --danger:#f2b8b5;
+    --danger-c:#3f1412;
+    --muted:#6d777d;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{
+    background:var(--surface);color:var(--on-surface);
+    font:15px/1.45 "Google Sans",-apple-system,"Segoe UI","Microsoft YaHei",system-ui,sans-serif;
+    padding:24px 20px 60px;-webkit-font-smoothing:antialiased;
+  }
+  .wrap{width:100%;max-width:760px;margin:0 auto}
+
+  .head{display:flex;align-items:center;gap:10px;padding:0 8px;margin-bottom:18px}
+  .dot{width:10px;height:10px;border-radius:50%;background:var(--muted);flex:none}
+  .dot.on{background:var(--primary)}
+  .name{font-size:20px;font-weight:600;letter-spacing:-.2px;flex:1}
+  .chip{font-size:13px;font-weight:600;padding:6px 14px;border-radius:999px;
+        background:var(--surface-3);color:var(--on-variant);white-space:nowrap}
+  .chip.live{background:var(--primary-c);color:var(--on-primary-c)}
+
+  .tabs{display:flex;gap:8px;padding:0 8px 16px}
+  .tab{font-size:14px;font-weight:600;padding:9px 18px;border-radius:999px;cursor:pointer;
+       background:var(--surface-2);color:var(--on-variant);border:none;font-family:inherit}
+  .tab.on{background:var(--primary-c);color:var(--on-primary-c)}
+
+  .card{background:var(--surface-1);border-radius:28px;padding:24px;margin-bottom:18px}
+  .card h2{font-size:16px;font-weight:600;margin-bottom:4px}
+  .card .sub{font-size:13px;color:var(--muted);margin-bottom:18px}
+
+  .row{display:flex;gap:10px;align-items:center}
+  .row.wrap{flex-wrap:wrap}
+
+  input[type=text],input[type=number],textarea,select{
+    background:var(--surface-2);border:1px solid var(--surface-4);color:var(--on-surface);
+    border-radius:14px;padding:11px 14px;font:inherit;font-size:14px;width:100%;outline:none;
+  }
+  input:focus,textarea:focus,select:focus{border-color:var(--primary)}
+  textarea{resize:vertical;min-height:76px;line-height:1.6}
+
+  .btn{font:inherit;font-size:14px;font-weight:600;border:none;border-radius:999px;
+       padding:11px 20px;cursor:pointer;background:var(--surface-3);color:var(--on-surface);
+       white-space:nowrap;flex:none}
+  .btn:hover{background:var(--surface-4)}
+  .btn.pri{background:var(--primary);color:var(--on-primary)}
+  .btn.ghost{background:transparent;border:1px solid var(--surface-4)}
+  .btn.warn{background:var(--warn-c);color:var(--warn)}
+  .btn.danger{background:var(--danger-c);color:var(--danger)}
+  .btn:disabled{opacity:.45;cursor:not-allowed}
+
+  .ulist{display:flex;flex-direction:column;gap:2px;margin-top:14px;max-height:420px;overflow:auto}
+  .uitem{display:flex;gap:12px;align-items:center;padding:11px 12px;border-radius:16px;cursor:pointer}
+  .uitem:hover{background:var(--surface-2)}
+  .uitem .av{width:34px;height:34px;border-radius:50%;background:var(--surface-3);flex:none;
+             display:grid;place-items:center;font-size:13px;font-weight:600;color:var(--on-variant)}
+  .uitem .who{flex:1;min-width:0}
+  .uitem .nick{font-size:14px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .uitem .meta{font-size:12px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .uitem .tag{font-size:11px;font-weight:600;padding:3px 9px;border-radius:999px;
+              background:var(--warn-c);color:var(--warn);flex:none}
+
+  .detail{background:var(--surface-2);border-radius:20px;padding:18px;margin-top:14px}
+  .kv{display:grid;grid-template-columns:96px 1fr;gap:8px 14px;font-size:13px;margin-bottom:14px}
+  .kv .k{color:var(--muted)}
+  .kv .v{color:var(--on-surface);word-break:break-all}
+  .field{margin-top:12px}
+  .field label{display:block;font-size:12px;color:var(--muted);margin-bottom:6px}
+
+  .plist{display:flex;flex-direction:column;gap:10px}
+  .pitem{border:1px solid var(--surface-4);border-radius:20px;padding:16px;cursor:pointer;
+         background:var(--surface-2)}
+  .pitem.on{border-color:var(--primary);background:var(--primary-c)}
+  .pitem .pt{font-size:15px;font-weight:600;display:flex;align-items:center;gap:8px}
+  .pitem.on .pt{color:var(--on-primary-c)}
+  .pitem .pd{font-size:12px;color:var(--muted);margin-top:6px;line-height:1.6;
+             max-height:0;overflow:hidden;transition:max-height .18s}
+  .pitem.on .pd{max-height:220px;color:var(--on-primary-c);opacity:.85}
+  .mark{width:16px;height:16px;border-radius:50%;border:2px solid var(--muted);flex:none}
+  .pitem.on .mark{border-color:var(--primary);background:var(--primary)}
+
+  .testbox{margin-top:16px;padding-top:16px;border-top:1px solid var(--surface-3)}
+  .out{margin-top:12px;padding:14px 16px;border-radius:16px;background:var(--surface-2);
+       font-size:15px;line-height:1.6;min-height:48px}
+  .out .len{font-size:11px;color:var(--muted);display:block;margin-top:6px}
+
+  .hint{font-size:12px;color:var(--muted);line-height:1.7;margin-top:10px}
+  .hide{display:none}
+  .toast{position:fixed;left:50%;bottom:28px;transform:translateX(-50%);
+         background:var(--surface-4);color:var(--on-surface);font-size:13px;font-weight:600;
+         padding:11px 20px;border-radius:999px;opacity:0;pointer-events:none;transition:opacity .2s}
+  .toast.on{opacity:1}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="head">
+    <div class="dot on" id="dot"></div>
+    <div class="name">大肥鱼 · 设置</div>
+    <div class="chip" id="mode">—</div>
+  </div>
+
+  <div class="tabs">
+    <button class="tab on" data-tab="users">用户记忆</button>
+    <button class="tab" data-tab="persona">人格性格</button>
+  </div>
+
+  <!-- ══════════════ 卡片 I：用户记忆 ══════════════ -->
+  <section id="tab-users">
+    <div class="card">
+      <h2>用户记忆</h2>
+      <div class="sub" id="userSub">按抖音 uid 记账，只存本机</div>
+      <div class="row">
+        <input type="text" id="q" placeholder="搜昵称或 uid">
+        <button class="btn pri" id="btnSearch">搜索</button>
+      </div>
+      <div class="ulist" id="ulist"></div>
+      <div id="udetail"></div>
+    </div>
+
+    <div class="card">
+      <h2>备份与清空</h2>
+      <div class="sub">档案存在 <code>cache/users.json</code>，不上传任何地方</div>
+      <div class="row wrap">
+        <button class="btn" id="btnExport">导出全部</button>
+        <button class="btn" id="btnImport">导入备份</button>
+        <button class="btn danger" id="btnClear">清空全部</button>
+        <input type="file" id="file" accept="application/json" class="hide">
+      </div>
+      <div class="hint">清空需要输入「清空」两个字确认；导出的是一个 json 文件，可以留着换机器用。</div>
+    </div>
+  </section>
+
+  <!-- ══════════════ 卡片 J：人格性格 ══════════════ -->
+  <section id="tab-persona" class="hide">
+    <div class="card">
+      <h2>当前性格</h2>
+      <div class="sub">切换立刻生效，不用重起桥。三种性格共用同一套记忆和成长值。</div>
+      <div class="plist" id="plist"></div>
+    </div>
+
+    <div class="card">
+      <h2>这套性格的细节</h2>
+      <div class="sub" id="overSub">按当前选中的性格保存</div>
+      <div class="field">
+        <label>口头禅（用 / 或多个空格分开，最多 5 条）</label>
+        <input type="text" id="pCatch" placeholder="就这？ / 行吧 / 你开心就好">
+      </div>
+      <div class="field">
+        <label>禁用词（用逗号分开，最多 5 个）</label>
+        <input type="text" id="pBan" placeholder="主人，宝宝，亲爱的">
+      </div>
+      <div class="field">
+        <label>示例库（一行一句，最多 5 句；模型挂掉时从这里抽一句）</label>
+        <textarea id="pSamples" placeholder="就这？我还以为多大的事&#10;行吧，谢了"></textarea>
+      </div>
+      <div class="row" style="margin-top:14px">
+        <button class="btn pri" id="btnSaveOver">保存</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>试说一句</h2>
+      <div class="sub">用当前性格直接生成，不记进直播的对话</div>
+      <div class="row">
+        <input type="text" id="pTest" placeholder="例如：这歌真好听 / 送出「小心心」×1">
+        <button class="btn pri" id="btnTest">试说</button>
+      </div>
+      <div class="out" id="pOut">等着看效果</div>
+    </div>
+  </section>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+const $ = (id) => document.getElementById(id)
+let toastTimer = null
+function toast(msg) {
+  const t = $('toast')
+  t.textContent = msg
+  t.classList.add('on')
+  clearTimeout(toastTimer)
+  toastTimer = setTimeout(() => t.classList.remove('on'), 1800)
+}
+
+async function api(path, opt) {
+  const r = await fetch(path, opt)
+  return r.json()
+}
+const post = (path, body) =>
+  api(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+
+/* ── tab ── */
+document.querySelectorAll('.tab').forEach((btn) => {
+  btn.onclick = () => {
+    document.querySelectorAll('.tab').forEach((b) => b.classList.toggle('on', b === btn))
+    $('tab-users').classList.toggle('hide', btn.dataset.tab !== 'users')
+    $('tab-persona').classList.toggle('hide', btn.dataset.tab !== 'persona')
+  }
+})
+
+/* ══════════════════ 用户记忆 ══════════════════ */
+function ago(ms) {
+  if (!ms) return '—'
+  const d = Date.now() - ms
+  if (d < 60000) return '刚刚'
+  if (d < 3600000) return Math.floor(d / 60000) + ' 分钟前'
+  if (d < 86400000) return Math.floor(d / 3600000) + ' 小时前'
+  return Math.floor(d / 86400000) + ' 天前'
+}
+const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))
+
+async function loadUsers() {
+  const q = $('q').value.trim()
+  const r = await api('/user/list?limit=200&q=' + encodeURIComponent(q))
+  $('userSub').textContent = q ? `搜到 ${r.users.length} 个 · 一共 ${r.total} 个` : `一共 ${r.total} 个 · 按最近活跃排`
+  const box = $('ulist')
+  if (!r.users.length) {
+    box.innerHTML = '<div class="hint">还没有记录。开播后有人说话就会自动记。</div>'
+    return
+  }
+  box.innerHTML = r.users
+    .map((u) => {
+      const tag = (u.tags || [])[0] ? `<span class="tag">${esc(u.tags[0])}</span>` : ''
+      const initial = esc((u.nick || '?').slice(0, 1))
+      return `<div class="uitem" data-uid="${esc(u.uid)}">
+        <div class="av">${initial}</div>
+        <div class="who">
+          <div class="nick">${esc(u.nick || '（没昵称）')}</div>
+          <div class="meta">${ago(u.lastAt)} · 说话 ${u.chat || 0} · 送礼 ${u.gift || 0}</div>
+        </div>${tag}
+      </div>`
+    })
+    .join('')
+  box.querySelectorAll('.uitem').forEach((el) => {
+    el.onclick = () => openUser(el.dataset.uid)
+  })
+}
+
+async function openUser(uid) {
+  const r = await api('/user/get?uid=' + encodeURIComponent(uid))
+  if (!r.ok) return toast(r.error || '读不到')
+  const u = r.user
+  const gifts = (u.gifts || []).slice(-6).reverse()
+  $('udetail').innerHTML = `<div class="detail">
+    <div class="kv">
+      <div class="k">昵称</div><div class="v">${esc(u.nick || '—')}</div>
+      <div class="k">uid</div><div class="v">${esc(u.uid)}</div>
+      <div class="k">首次出现</div><div class="v">${ago(u.firstAt)}</div>
+      <div class="k">最近互动</div><div class="v">${ago(u.lastAt)}</div>
+      <div class="k">互动次数</div><div class="v">说话 ${u.chat || 0} · 送礼 ${u.gift || 0} · 点赞 ${u.like || 0} · 进场 ${u.member || 0}</div>
+      <div class="k">成长值</div><div class="v">${u.growth || 0}（服装阶段那套还没接，先留着）</div>
+      <div class="k">最近送礼</div><div class="v">${gifts.length ? gifts.map((g) => `${esc(g.name || '礼物')}×${g.n || 1}`).join('、') : '还没送过'}</div>
+    </div>
+    <div class="field"><label>标签（逗号分隔，最多 5 个，例如：老粉,榜一）</label>
+      <input type="text" id="uTags" value="${esc((u.tags || []).join(','))}"></div>
+    <div class="field"><label>备注（只有你看得到）</label>
+      <input type="text" id="uNote" value="${esc(u.note || '')}"></div>
+    <div class="field"><label>成长值（手动调，比如补发）</label>
+      <input type="number" id="uGrowth" value="${u.growth || 0}"></div>
+    <div class="row" style="margin-top:14px">
+      <button class="btn pri" id="uSave">保存</button>
+      <button class="btn danger" id="uDel">删掉这个档案</button>
+      <button class="btn ghost" id="uClose">收起</button>
+    </div>
+    <div class="hint">删掉之后他再来就按新用户算。</div>
+  </div>`
+
+  $('uSave').onclick = async () => {
+    const tags = $('uTags').value.split(/[,，]/).map((s) => s.trim()).filter(Boolean)
+    const note = $('uNote').value.trim()
+    const growth = Number($('uGrowth').value) || 0
+    const o = await post('/user/set', { uid, tags, note, growth })
+    toast(o.ok ? '存好了' : o.error || '存不下')
+    loadUsers()
+  }
+  $('uDel').onclick = async () => {
+    if (!confirm(`删掉「${u.nick || uid}」的档案？他再来会按新用户算。`)) return
+    const o = await post('/user/del', { uid })
+    toast(o.ok ? '已删除' : o.error || '删不掉')
+    $('udetail').innerHTML = ''
+    loadUsers()
+  }
+  $('uClose').onclick = () => ($('udetail').innerHTML = '')
+}
+
+$('btnSearch').onclick = loadUsers
+$('q').onkeydown = (e) => { if (e.key === 'Enter') loadUsers() }
+
+$('btnExport').onclick = async () => {
+  const r = await api('/user/export')
+  const blob = new Blob([JSON.stringify(r, null, 2)], { type: 'application/json' })
+  const a = document.createElement('a')
+  a.href = URL.createObjectURL(blob)
+  a.download = 'dafeiyu-users-' + new Date().toISOString().slice(0, 10) + '.json'
+  a.click()
+  URL.revokeObjectURL(a.href)
+  toast(`导出 ${r.users.length} 个档案`)
+}
+
+$('btnImport').onclick = () => $('file').click()
+$('file').onchange = async (e) => {
+  const f = e.target.files[0]
+  if (!f) return
+  try {
+    const j = JSON.parse(await f.text())
+    const arr = Array.isArray(j.users) ? j.users : Array.isArray(j) ? j : []
+    if (!arr.length) return toast('这个文件里没有 users')
+    if (!confirm(`导入 ${arr.length} 个档案？同 uid 的会被覆盖。`)) return
+    const o = await post('/user/import', { users: arr })
+    toast(o.ok ? `导入了 ${o.imported} 个` : o.error || '导入失败')
+    loadUsers()
+  } catch {
+    toast('这个文件不是 json')
+  } finally {
+    e.target.value = ''
+  }
+}
+
+$('btnClear').onclick = async () => {
+  const word = prompt('这会删掉所有用户档案（不可恢复）。\n确认请输入「清空」两个字：')
+  if (word !== '清空') return toast('没清，还好')
+  const o = await post('/user/clear', { confirm: 'yes' })
+  toast(o.ok ? `清空了 ${o.cleared} 个` : o.error || '清不掉')
+  $('udetail').innerHTML = ''
+  loadUsers()
+}
+
+/* ══════════════════ 人格性格 ══════════════════ */
+let P = null
+
+async function loadPersona() {
+  P = await api('/persona')
+  $('plist').innerHTML = P.list
+    .map(
+      (p) => `<div class="pitem ${p.key === P.active ? 'on' : ''}" data-key="${p.key}">
+        <div class="pt"><span class="mark"></span>${esc(p.name)}</div>
+        <div class="pd">${esc(p.desc.split('\n').filter((l) => l.trim() && !l.startsWith('#') && !l.startsWith('-')).slice(0, 2).join(' '))}</div>
+      </div>`
+    )
+    .join('')
+  $('plist').querySelectorAll('.pitem').forEach((el) => {
+    el.onclick = async () => {
+      const o = await post('/persona', { active: el.dataset.key })
+      if (!o.ok) return toast(o.error || '切不了')
+      toast('切换完成，下一条就说新性格')
+      await loadPersona()
+      fillOver()
+    }
+  })
+  $('mode').textContent = '性格 · ' + (P.list.find((x) => x.key === P.active) || {}).name
+  $('mode').className = 'chip live'
+  $('mode').className = 'chip live'
+  fillOver()
+}
+
+function fillOver() {
+  const o = (P.over && P.over[P.active]) || {}
+  const base = P.list.find((x) => x.key === P.active) || {}
+  $('overSub').textContent = '正在编辑：' + (base.name || '')
+  $('pCatch').value = (o.catch || []).join(' / ')
+  $('pBan').value = (o.ban || []).join('，')
+  // 没自定义过就把内置示例填进去 —— 空着的话主播不知道该写什么味
+  $('pSamples').value = (o.samples && o.samples.length ? o.samples : base.samples || []).join('\n')
+}
+
+$('btnSaveOver').onclick = async () => {
+  const catchs = $('pCatch').value.split(/[\/／,，]/).map((s) => s.trim()).filter(Boolean)
+  const ban = $('pBan').value.split(/[,，、]/).map((s) => s.trim()).filter(Boolean)
+  const samples = $('pSamples').value.split('\n').map((s) => s.trim()).filter(Boolean)
+  const o = await post('/persona/over', { key: P.active, catch: catchs, ban, samples })
+  toast(o.ok ? '存好了' : o.error || '存不下')
+  if (o.ok) { P = o; fillOver() }
+}
+
+$('btnTest').onclick = async () => {
+  const text = $('pTest').value.trim()
+  if (!text) return toast('先说点什么')
+  $('btnTest').disabled = true
+  $('pOut').textContent = '想想…'
+  try {
+    const o = await post('/persona/test', { text })
+    if (!o.ok) {
+      $('pOut').textContent = o.error || '没说出来'
+    } else {
+      $('pOut').innerHTML = `${esc(o.out)}<span class="len">${o.out.length} 字 · ${esc((P.list.find((x) => x.key === o.active) || {}).name || '')}</span>`
+      $('pTest').value = ''
+    }
+  } catch (e) {
+    $('pOut').textContent = '桥没回话：' + e.message
+  } finally {
+    $('btnTest').disabled = false
+  }
+}
+$('pTest').onkeydown = (e) => { if (e.key === 'Enter') $('btnTest').click() }
+
+/* ── 起来 ── */
+loadUsers()
+loadPersona()
+</script>
+</body>
+</html>

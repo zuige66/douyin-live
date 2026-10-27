@@ -1,0 +1,635 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>抖音直播 overlay · 1080×1920</title>
+<style>
+  :root{
+    --sw:1080px;          /* 画布尺寸：竖屏 9:16，body.wide 下改成横屏 16:9 */
+    --sh:1920px;
+    --ink:#E9EDF2;
+    --dim:#8E99A8;
+    --teal:#46E0C0;
+    --gold:#F2C14E;
+    --pink:#FF7BA9;
+    --card:rgba(10,14,18,.62);
+    --stroke:rgba(255,255,255,.10);
+    --stroke-2:rgba(255,255,255,.18);
+    font-family:"PingFang SC","Microsoft YaHei","Noto Sans SC",system-ui,sans-serif;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%;overflow:hidden;background:#07090c}
+  body.obs{background:transparent}
+
+  #wrap{position:fixed;inset:0;display:grid;place-items:center}
+  #stage{
+    position:relative;width:var(--sw);height:var(--sh);
+    transform-origin:center center;
+    background:
+      radial-gradient(1100px 700px at 18% 22%, rgba(70,224,192,.06), transparent 60%),
+      radial-gradient(900px 620px at 84% 74%, rgba(255,123,169,.05), transparent 60%);
+  }
+  body.obs #stage{background:none}
+
+  .hint{
+    position:absolute;left:0;right:0;bottom:14px;text-align:center;
+    font-size:20px;color:rgba(255,255,255,.28);letter-spacing:.4px;
+    display:none;
+  }
+  body.showhint .hint{display:block}
+  body.obs .hint{display:none}
+
+  .card{
+    background:var(--card);
+    border:1px solid var(--stroke);
+    border-radius:24px;
+    /* 原来这里还有 backdrop-filter:blur(14px)，是渲染进程 OOM 的帮凶：
+       背景里有动画元素时，毛玻璃每帧都要重拍一次背景快照。深色画布上肉眼几乎看不出差别。 */
+  }
+
+  /* ---------- 左上：主播牌 ---------- */
+  .brand{position:absolute;left:56px;top:72px;display:flex;align-items:center;gap:20px}
+  .avatar{
+    width:104px;height:104px;border-radius:50%;
+    background:conic-gradient(from 200deg,#46E0C0,#4a7dff,#ff7ba9,#46E0C0);
+    display:grid;place-items:center;position:relative;
+  }
+  .avatar::after{
+    content:"";position:absolute;inset:-6px;border-radius:50%;
+    border:2px solid rgba(70,224,192,.35);
+    animation:pulse 3.2s ease-in-out infinite;
+  }
+  @keyframes pulse{0%,100%{opacity:.35;transform:scale(1)}50%{opacity:.9;transform:scale(1.03)}}
+  .avatar i{
+    width:88px;height:88px;border-radius:50%;background:#0b1015;
+    display:grid;place-items:center;font-style:normal;
+    font-size:40px;font-weight:600;color:var(--teal);
+  }
+  .avatar img{
+    width:88px;height:88px;border-radius:50%;object-fit:cover;
+    object-position:50% 42%;display:block;position:relative;
+  }
+
+  /* 中间：皮套位
+     注意：这里**不能用 filter:drop-shadow**。给一个正在做 transform 动画的元素加
+     50px 高斯阴影 = 每帧重新栅格化整块带模糊的图层，iGPU 上会烧 CPU 并撑爆显存。
+     阴影改用下面那个 .pi-shadow 的径向渐变椭圆，纯填充，几乎零成本。 */
+  .pi{
+    position:absolute;left:50%;bottom:370px;width:600px;
+    transform:translateX(-50%);
+    animation:float 6s ease-in-out infinite;
+    will-change:transform;
+  }
+  .pi img{
+    width:100%;display:block;
+    animation:breathe 4.2s ease-in-out infinite;
+    transform-origin:50% 92%;
+  }
+  .pi-shadow{
+    position:absolute;left:50%;bottom:340px;width:440px;height:72px;
+    transform:translateX(-50%);
+    background:radial-gradient(50% 50% at 50% 50%,rgba(0,0,0,.55),rgba(0,0,0,0) 72%);
+    animation:floatS 6s ease-in-out infinite;
+    pointer-events:none;
+  }
+  @keyframes floatS{
+    0%,100%{transform:translateX(-50%) scale(1);opacity:.9}
+    50%{transform:translateX(-50%) scale(.96);opacity:.72}
+  }
+  @keyframes float{
+    0%,100%{transform:translateX(-50%) translateY(0)}
+    50%{transform:translateX(-50%) translateY(-12px)}
+  }
+  @keyframes breathe{
+    0%,100%{transform:scale(1)}
+    50%{transform:scale(1.018)}
+  }
+  /* 说话时轻微起伏，让静态图看起来还有气 */
+  body.talking .pi img{animation:breathe 1.6s ease-in-out infinite}
+  .who b{display:block;font-size:38px;font-weight:600;letter-spacing:.5px;color:var(--ink);line-height:1.15}
+  .who span{display:flex;align-items:center;gap:10px;margin-top:12px;font-size:22px;color:var(--dim)}
+  .dot{width:12px;height:12px;border-radius:50%;background:var(--teal);box-shadow:0 0 14px var(--teal)}
+  .dot.busy{background:var(--gold);box-shadow:0 0 14px var(--gold)}
+
+  /* ---------- 左栏 ---------- */
+  .leftcol{position:absolute;left:56px;top:300px;width:406px;display:flex;flex-direction:column;gap:20px}
+
+  .card.pad{padding:26px 26px 24px}
+  .k{font-size:21px;color:var(--dim);letter-spacing:.6px;margin-bottom:16px;display:flex;justify-content:space-between;align-items:baseline}
+  .k em{font-style:normal;font-size:19px;color:rgba(255,255,255,.38)}
+  .big{font-size:56px;font-weight:600;color:var(--ink);line-height:1;font-variant-numeric:tabular-nums}
+  .big small{font-size:24px;color:var(--dim);font-weight:400;margin-left:8px}
+
+  .bar{height:10px;border-radius:99px;background:rgba(255,255,255,.09);overflow:hidden;margin-top:20px}
+  .bar i{display:block;height:100%;width:0;border-radius:99px;
+    background:linear-gradient(90deg,var(--teal),#7fe0ff);transition:width .9s cubic-bezier(.2,.8,.2,1)}
+
+  .rows{display:flex;flex-direction:column;gap:14px}
+  .row{display:flex;justify-content:space-between;align-items:center;font-size:23px;color:var(--dim)}
+  .row b{color:var(--ink);font-weight:500;font-variant-numeric:tabular-nums}
+  .row b.hot{color:var(--gold)}
+
+  /* 点歌台 */
+  .song{display:flex;gap:14px;align-items:center;padding:12px 0;border-top:1px solid rgba(255,255,255,.06)}
+  .song:first-of-type{border-top:0;padding-top:0}
+  .idx{width:26px;font-size:20px;color:rgba(255,255,255,.3);font-variant-numeric:tabular-nums}
+  .song .t{flex:1;min-width:0}
+  .song .t b{display:block;font-size:24px;font-weight:500;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .song .t span{display:block;font-size:19px;color:var(--dim);margin-top:5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .song.now .idx{color:var(--teal)}
+  .song.now .t b{color:var(--teal)}
+  .eq{display:flex;align-items:flex-end;gap:3px;height:22px}
+  .eq i{width:4px;background:var(--teal);border-radius:2px;animation:eq .9s ease-in-out infinite}
+  .eq i:nth-child(1){height:9px;animation-delay:0s}
+  .eq i:nth-child(2){height:18px;animation-delay:.15s}
+  .eq i:nth-child(3){height:12px;animation-delay:.3s}
+  .eq i:nth-child(4){height:20px;animation-delay:.45s}
+  @keyframes eq{0%,100%{transform:scaleY(.45)}50%{transform:scaleY(1)}}
+
+  /* ---------- 右栏弹幕 ---------- */
+  .rightcol{position:absolute;right:56px;bottom:1040px;width:400px;display:flex;flex-direction:column;justify-content:flex-end;gap:12px}
+  .dm{
+    align-self:flex-end;max-width:100%;
+    padding:14px 20px;border-radius:18px 18px 20px 6px;
+    background:rgba(10,14,18,.80);border:1px solid var(--stroke);
+    font-size:24px;line-height:1.45;color:var(--ink);word-break:break-word;
+    animation:in .34s cubic-bezier(.2,.9,.25,1) both;
+  }
+  .dm u{text-decoration:none;color:var(--teal);margin-right:10px;font-size:21px;opacity:.92}
+  .dm.gift{border-color:rgba(242,193,78,.45);background:rgba(56,42,12,.72)}
+  .dm.gift u{color:var(--gold)}
+  .dm.me{border-color:rgba(70,224,192,.45);background:rgba(8,44,40,.72)}
+  @keyframes in{from{opacity:0;transform:translateY(14px) scale(.97)}to{opacity:1;transform:none}}
+  .dm.out{animation:out .3s ease-in forwards}
+  @keyframes out{to{opacity:0;transform:translateY(-10px)}}
+  /* ?preview=1 校对版式时关掉入场动画，方便截图 */
+  body.preview .dm{animation:none}
+
+  /* ---------- 底部字幕 ---------- */
+  .subtitle{
+    position:absolute;left:50%;bottom:246px;transform:translateX(-50%);
+    width:820px;min-height:96px;padding:24px 34px;border-radius:22px;
+    background:rgba(8,12,16,.88);border:1px solid var(--stroke-2);
+    display:flex;align-items:center;gap:18px;
+    opacity:0;transition:opacity .35s ease;
+  }
+  .subtitle.on{opacity:1}
+  .subtitle .tag{
+    flex:none;font-size:19px;color:#08120f;background:var(--teal);
+    padding:6px 12px;border-radius:8px;letter-spacing:.5px;
+  }
+  .subtitle p{font-size:30px;line-height:1.45;color:var(--ink)}
+  .caret{display:inline-block;width:3px;height:30px;background:var(--teal);vertical-align:-5px;animation:blink 1s steps(1) infinite}
+  @keyframes blink{50%{opacity:0}}
+
+  /* ---------- 右下角元信息 ---------- */
+  .foot{position:absolute;right:56px;bottom:56px;text-align:right;font-size:20px;color:rgba(255,255,255,.34);line-height:1.7}
+  .foot b{color:rgba(255,255,255,.6);font-weight:500}
+
+  /* ================= 16:9 横屏布局 =================
+     加 ?ar=16:9，或者窗口本身就是横的，就自动切到这套。
+     注意：横屏不只是把画布变宽——同样的 px 字号放到 1920 宽的画布上
+     会显得很小，所以字号要同步放大一圈。 */
+  body.wide{--sw:1920px;--sh:1080px}
+
+  body.wide #stage{
+    background:
+      radial-gradient(1600px 800px at 16% 26%, rgba(70,224,192,.06), transparent 62%),
+      radial-gradient(1400px 700px at 85% 76%, rgba(255,123,169,.05), transparent 62%);
+  }
+
+  body.wide .brand{left:64px;top:54px;gap:22px}
+  body.wide .avatar{width:126px;height:126px}
+  body.wide .avatar::after{inset:-7px}
+  body.wide .avatar img,body.wide .avatar i{width:108px;height:108px;font-size:50px}
+  body.wide .who b{font-size:46px}
+  body.wide .who span{font-size:26px;margin-top:14px;gap:12px}
+  body.wide .dot{width:14px;height:14px}
+
+  body.wide .leftcol{left:64px;top:236px;width:452px;gap:24px}
+  body.wide .card.pad{padding:30px 30px 28px}
+  body.wide .k{font-size:25px;margin-bottom:18px}
+  body.wide .k em{font-size:22px}
+  body.wide .rows{gap:16px}
+  body.wide .row{font-size:27px}
+  body.wide .song{gap:16px;padding:14px 0}
+  body.wide .idx{width:30px;font-size:24px}
+  body.wide .song .t b{font-size:29px}
+  body.wide .song .t span{font-size:22px;margin-top:6px}
+  body.wide .eq{height:26px}
+  body.wide .eq i{width:5px}
+
+  /* 皮套：横屏只有 1080 高，底部还要留字幕条，所以给 570 宽 */
+  body.wide .pi{width:570px;bottom:126px}
+  body.wide .pi-shadow{width:420px;height:66px;bottom:104px}
+
+  body.wide .rightcol{right:64px;bottom:206px;width:470px;gap:14px}
+  body.wide .dm{font-size:28px;padding:16px 22px}
+  body.wide .dm u{font-size:24px}
+
+  body.wide .subtitle{width:900px;min-height:86px;bottom:34px;padding:20px 30px}
+  body.wide .subtitle p{font-size:34px}
+  body.wide .subtitle .tag{font-size:21px;padding:7px 14px}
+  body.wide .caret{height:34px}
+
+  body.wide .foot{right:64px;bottom:40px;font-size:22px}
+
+  /* ================= 轻量模式（默认开启） =================
+     常驻动画一律关掉。原因很硬：这个页面只要有一个像素在动，
+     浏览器就得一帧一帧重画整块图层——实测那台机器上渲染进程
+     36 秒里烧掉 18~24 秒 CPU，然后 abort() 崩掉。
+     关掉之后页面彻底静止，只在弹幕进来时重绘那一小块，CPU 近似为 0。
+     想看动效就加 ?fx=1。 */
+  body:not(.fx) .pi,
+  body:not(.fx) .pi img,
+  body:not(.fx) .pi-shadow,
+  body:not(.fx) .avatar::after,
+  body:not(.fx) .eq i,
+  body:not(.fx) .caret{animation:none}
+  body:not(.fx) .avatar::after{opacity:.55}
+  body:not(.fx) .eq i{transform:scaleY(.62)}
+  /* 弹幕气泡的入场动画保留：只跑 0.34 秒就停，属于一次性开销 */
+
+</style>
+</head>
+<body>
+
+<div id="wrap">
+  <div id="stage">
+
+    <div class="brand">
+      <div class="avatar"><img id="avatarimg" alt=""><i id="initial">鱼</i></div>
+      <div class="who">
+        <b id="streamer">小鱼</b>
+        <span><i class="dot" id="dot"></i><em id="state" style="font-style:normal">待机中</em></span>
+      </div>
+    </div>
+
+    <div class="leftcol">
+      <div class="card pad" id="progcard">
+        <div class="k"><span id="ktitle">本场进度</span><em id="round">0 / 12</em></div>
+        <div class="big"><span id="pct">0</span><small>%</small></div>
+        <div class="bar"><i id="barfill"></i></div>
+      </div>
+
+      <div class="card pad">
+        <div class="k"><span id="ktitle2">今晚刷到的</span><em>实时</em></div>
+        <div class="rows">
+          <div class="row"><span id="k1">看过视频</span><b id="s1">0</b></div>
+          <div class="row"><span id="k2">值得一看</span><b id="s2" class="hot">0</b></div>
+          <div class="row"><span id="k3">回复弹幕</span><b id="s3">0</b></div>
+        </div>
+      </div>
+
+      <div class="card pad">
+        <div class="k"><span>点歌台</span><em id="songcount">3 首排队</em></div>
+        <div id="songs"></div>
+      </div>
+    </div>
+
+    <div class="pi-shadow"></div>
+    <div class="pi" id="pi"><img id="piimg" alt="大肥鱼"></div>
+
+    <div class="rightcol" id="dm"></div>
+
+    <div class="subtitle" id="sub">
+      <span class="tag">说话</span>
+      <p><span id="subtext"></span><span class="caret"></span></p>
+    </div>
+
+    <div class="foot">
+      在线 <b id="online">3</b> · 本场 <b id="dur">00:00</b><br>
+      饭钱 <b id="token">17.54</b>
+    </div>
+
+    <div class="hint">本地预览 · 放 OBS / 直播伴侣 时加 <code>?obs=1</code> 走透明</div>
+  </div>
+</div>
+
+<script>
+(function () {
+  const q = new URLSearchParams(location.search);
+  const OBS = q.get('obs') === '1';
+  if (OBS) document.body.classList.add('obs');
+  if (q.get('hint') === '1') document.body.classList.add('showhint');
+  // ?fx=1 才开常驻动画，默认是静止版（更省 CPU）
+  if (q.get('fx') === '1') document.body.classList.add('fx');
+
+  // 直播模式：用 http 打开（桥自带的页面）就默认连桥；
+  // 用 file:// 打开要显式 ?live=1&bridge=http://127.0.0.1:18081
+  const BRIDGE = q.get('bridge') || (location.origin !== 'null' ? location.origin : '');
+  const LIVE = q.get('demo') === '1' ? false
+    : (q.get('live') === '1' || /^https?:$/.test(location.protocol));
+
+  // 画布朝向：显式 ?ar=16:9 / ?ar=9:16，否则按窗口本身的宽高自动判断。
+  // 直播伴侣的画布如果是横屏，就必须用 body.wide 那套布局，不然竖屏内容
+  // 只会被塞成中间一条、两边留大黑边。
+  const AR = q.get('ar');
+  const wantWide = () => (AR === '16:9' ? true : AR === '9:16' ? false : innerWidth > innerHeight);
+  if (wantWide()) document.body.classList.add('wide');
+
+  const name = q.get('name') || '大肥鱼';
+  document.getElementById('streamer').textContent = name;
+  document.getElementById('initial').textContent = name.slice(0, 1);
+
+  // 形象：默认用 assets/ 里抠好的大肥鱼。?pi=0 关掉皮套，?pi=<路径> 换图；
+  // ?avatar=<路径> 换左上角小头像，?avatar=0 退回首字。
+  const piBox = document.getElementById('pi');
+  const PI_SRC = q.get('pi');
+  if (PI_SRC === '0' || PI_SRC === 'off') piBox.style.display = 'none';
+  else document.getElementById('piimg').src = PI_SRC || 'assets/dafeiyu.png';
+
+  const avImg = document.getElementById('avatarimg');
+  const avInitial = document.getElementById('initial');
+  const AV_SRC = q.get('avatar');
+  if (AV_SRC === '0' || AV_SRC === 'off') avImg.style.display = 'none';
+  else {
+    avImg.onload = function () { avInitial.style.display = 'none'; };
+    avImg.onerror = function () { avImg.style.display = 'none'; };
+    avImg.src = AV_SRC || 'assets/dafeiyu-face.png';
+  }
+
+  const $ = (id) => document.getElementById(id);
+  const stage = $('stage');
+  const bg = q.get('bg');
+  if (bg && !OBS) stage.style.background = '#07090c url("' + bg + '") center/cover no-repeat';
+  const fit = () => {
+    // 窗口被拉成横向就切横屏版式，退回竖向就切回竖屏——两边都能直接用
+    document.body.classList.toggle('wide', wantWide());
+    const s = Math.min(innerWidth / stage.offsetWidth, innerHeight / stage.offsetHeight);
+    stage.style.transform = 'scale(' + s + ')';
+  };
+  addEventListener('resize', fit); fit();
+
+  /* ---------- 数据 ---------- */
+  const S = { pct: 0, round: 0, total: 12, seen: 0, picked: 0, replied: 0, online: 3, token: 17.54, sec: 0 };
+
+  function render() {
+    $('pct').textContent = Math.round(S.pct);
+    $('barfill').style.width = S.pct + '%';
+    $('round').textContent = S.round + ' / ' + S.total;
+    $('s1').textContent = S.seen;
+    $('s2').textContent = S.picked;
+    $('s3').textContent = S.replied;
+    $('online').textContent = S.online;
+    $('token').textContent = S.token.toFixed(2);
+    const m = String(Math.floor(S.sec / 60)).padStart(2, '0');
+    const ss = String(S.sec % 60).padStart(2, '0');
+    $('dur').textContent = m + ':' + ss;
+  }
+  setInterval(() => { S.sec++; render(); }, 1000);
+
+  /* ---------- 弹幕 ---------- */
+  const list = $('dm');
+  const MAX = 7;
+
+  function pushDanmaku(o) {
+    const el = document.createElement('div');
+    el.className = 'dm' + (o.kind === 'gift' ? ' gift' : o.kind === 'me' ? ' me' : '');
+    const u = document.createElement('u');
+    u.textContent = o.user || '观众';
+    el.append(u, document.createTextNode(o.text || ''));
+    list.appendChild(el);
+    while (list.children.length > MAX) {
+      const old = list.firstElementChild;
+      old.classList.add('out');
+      setTimeout(() => old.remove(), 300);
+    }
+  }
+
+  /* ---------- 字幕（打字机） ---------- */
+  let typing = null;
+  function say(text) {
+    const box = $('sub'), t = $('subtext');
+    if (typing) clearInterval(typing);
+    document.body.classList.add('talking');
+    box.classList.add('on');
+    $('dot').classList.remove('busy');
+    $('state').textContent = '说话中';
+    t.textContent = '';
+    let i = 0;
+    typing = setInterval(() => {
+      t.textContent = text.slice(0, ++i);
+      if (i >= text.length) {
+        clearInterval(typing); typing = null;
+        setTimeout(() => {
+          if (!typing) {
+            box.classList.remove('on');
+            document.body.classList.remove('talking');
+            $('state').textContent = '待机中';
+          }
+        }, 2600);
+      }
+    }, 62);
+  }
+
+  function think() {
+    $('dot').classList.add('busy');
+    $('state').textContent = '思考中';
+  }
+
+  /* ---------- 点歌台 ---------- */
+  const songs = [
+    { t: '只因你太美', by: '蔡徐坤' },
+    { t: '晴天', by: '周杰伦' },
+    { t: '海阔天空', by: 'Beyond' },
+  ];
+  function renderSongs() {
+    const box = $('songs');
+    box.innerHTML = '';
+    songs.forEach((s, i) => {
+      const d = document.createElement('div');
+      d.className = 'song' + (i === 0 ? ' now' : '');
+      d.innerHTML =
+        '<span class="idx">' + (i + 1) + '</span>' +
+        '<span class="t"><b></b><span></span></span>' +
+        (i === 0 ? '<span class="eq"><i></i><i></i><i></i><i></i></span>' : '');
+      d.querySelector('b').textContent = s.t;
+      d.querySelector('.t span').textContent = s.by;
+      box.appendChild(d);
+    });
+    $('songcount').textContent = songs.length + ' 首排队';
+  }
+  renderSongs();
+  function nextSong() { songs.push(songs.shift()); renderSongs(); }
+
+  /* ---------- 对外 API（后面接 DSH 用的就是这几个） ---------- */
+  window.overlay = {
+    danmaku: pushDanmaku,
+    say, think,
+    stats(patch) { Object.assign(S, patch); render(); },
+    addSong(s) { songs.push(s); renderSongs(); },
+    nextSong,
+  };
+  addEventListener('message', (e) => {
+    const d = e.data || {};
+    if (d.type === 'danmaku') pushDanmaku(d.payload || {});
+    else if (d.type === 'say') say(d.payload || '');
+    else if (d.type === 'think') think();
+    else if (d.type === 'stats') window.overlay.stats(d.payload || {});
+  });
+
+  /* ---------- 直播模式：接桥（SSE） ---------- */
+  function connectLive() {
+    document.body.classList.add('live');
+    // 左栏文案换成直播口径，进度条对直播没意义，直接收起来
+    const pc = $('progcard');
+    if (pc) pc.style.display = 'none';
+    $('ktitle2').textContent = '本场数据';
+    $('k1').textContent = '收到弹幕';
+    $('k2').textContent = '收到礼物';
+    $('k3').textContent = '已回复';
+
+    if (!BRIDGE) {
+      $('state').textContent = '未连桥';
+      return;
+    }
+    $('state').textContent = '连接中';
+    let es;
+    try {
+      es = new EventSource(BRIDGE + '/events');
+    } catch (e) {
+      $('state').textContent = '连不上';
+      return;
+    }
+    es.onopen = () => {
+      $('state').textContent = '直播中';
+      $('dot').classList.remove('busy');
+    };
+    es.onerror = () => {
+      $('state').textContent = '重连中';
+    };
+    es.onmessage = (ev) => {
+      let m;
+      try { m = JSON.parse(ev.data); } catch (e) { return; }
+      const d = m.payload || {};
+      if (m.type === 'danmaku') {
+        pushDanmaku(d);
+      } else if (m.type === 'say') {
+        say(typeof d === 'string' ? d : (d.text || ''));
+      } else if (m.type === 'think') {
+        think();
+      } else if (m.type === 'stats') {
+        if (d.online != null) S.online = d.online;
+        if (d.seen != null) S.seen = d.seen;
+        if (d.picked != null) S.picked = d.picked;
+        if (d.replied != null) S.replied = d.replied;
+        render();
+      }
+    };
+  }
+
+  /* ---------- 演示数据 ---------- */
+  const feed = [
+    ['阿伟', '这歌真的好听', ''],
+    ['momo', '主播今天状态不错啊', ''],
+    ['夜色', '送出一个「小心心」', 'gift'],
+    ['小蒋', '这是 AI 吗 好像真人', ''],
+    ['路人甲', '点歌：孤勇者', ''],
+    ['枫', '这段我循环三遍了', ''],
+    ['K', '送出一个「抖音一号」', 'gift'],
+    ['никто', '刚才那个视频我也刷到过', ''],
+    ['阿七', '关注了 明天还来', ''],
+    ['小鱼', '谢谢夜色的小心心～', 'me'],
+  ];
+  let fi = 0;
+  function loopDanmaku() {
+    const [u, t, k] = feed[fi++ % feed.length];
+    pushDanmaku({ user: u, text: t, kind: k });
+    S.online = Math.max(3, S.online + (Math.random() > .5 ? 1 : -1));
+    if (k === 'gift') S.token = Math.max(0, S.token - 0.05);
+    render();
+    setTimeout(loopDanmaku, 1900 + Math.random() * 1600);
+  }
+
+  const lines = [
+    '刚刷到一条修键盘的，居然把轴拆开一个个洗，我服了。',
+    '这条美食视频不建议深夜看，我是受害者。',
+    '今晚第十二轮了，筛出来三条，等会儿发你。',
+    '有人点孤勇者，下一首就放它。',
+  ];
+  let li = 0;
+  function loopTalk() {
+    think();
+    setTimeout(() => {
+      say(lines[li++ % lines.length]);
+      S.picked = Math.min(S.total, S.picked + 1);
+      S.seen += 6 + Math.floor(Math.random() * 5);
+      S.replied += 1;
+      S.round = Math.min(S.total, S.round + 1);
+      S.pct = (S.round / S.total) * 100;
+      render();
+    }, 1400);
+    setTimeout(loopTalk, 11000);
+  }
+
+  /* ---------- 内存看门狗 ----------
+     Chrome 渲染进程真崩了，页面会被替换成「喔唷，崩溃啦」，外面救不回来。
+     这里只能兜住 JS 堆这一侧：涨到阈值就自动重载，别等它崩。
+     GPU 侧的超支靠的是上面去掉 filter/backdrop-filter，那个看门狗管不了。 */
+  (function memGuard() {
+    const mem = performance.memory;
+    if (!mem) return;                      // 非 Chrome 内核没有这个 API
+    setInterval(() => {
+      const mb = mem.usedJSHeapSize / 1048576;
+      if (mb > 220) {
+        console.warn('[overlay] JS 堆 ' + mb.toFixed(0) + 'MB，自动重载');
+        location.reload();
+      }
+    }, 20000);
+  })();
+
+  /* ---------- 遥测：每 5 秒把堆大小/节点数送给桥 ----------
+     崩了之后 Bridge 那边的 hb.log 会留着最后几个点，
+     能看出到底是「内存一路涨上去」还是「一直很稳但突然死」。 */
+  (function telemetry() {
+    if (!BRIDGE) return;
+    const mem = performance.memory;
+    const beat = () => {
+      try {
+        const p = new URLSearchParams({
+          m: mem ? (mem.usedJSHeapSize / 1048576).toFixed(1) : '-',
+          n: String(document.getElementsByTagName('*').length),
+          s: String(S.sec),
+        });
+        fetch(BRIDGE + '/hb?' + p, { keepalive: true }).catch(() => {});
+      } catch (e) { /* 遥测永远不该影响画面 */ }
+    };
+    beat();
+    setInterval(beat, 5000);
+  })();
+
+  if (LIVE) {
+    $('state').textContent = '待连接';
+    render();
+    connectLive();
+    // ?preview=1 只塞几条假弹幕校对版式，开播时千万别带
+    if (q.get('preview') === '1') {
+      document.body.classList.add('preview');
+      [
+        { user: '阿伟', text: '这歌真的好听', kind: '' },
+        { user: 'momo', text: '主播今天状态不错啊', kind: '' },
+        { user: '夜色', text: '送出一个「小心心」', kind: 'gift' },
+        { user: '小蒋', text: '这是 AI 吗 好像真人', kind: '' },
+      ].forEach(pushDanmaku);
+      $('state').textContent = '直播中';
+    }
+  } else {
+    S.round = 4; S.picked = 9; S.replied = 26; S.seen = 137;
+    S.pct = (S.round / S.total) * 100;
+    let n = 0;
+    const tick = setInterval(() => {
+      n += 3; S.seen = 137 + n; render();
+      if (n >= 30) clearInterval(tick);
+    }, 70);
+    render();
+
+    setTimeout(loopDanmaku, 600);
+    setTimeout(loopTalk, 1800);
+    setTimeout(nextSong, 24000);
+  }
+})();
+</script>
+</body>
+</html>
