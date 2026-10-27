@@ -88,6 +88,20 @@
   .field{margin-top:12px}
   .field label{display:block;font-size:12px;color:var(--muted);margin-bottom:6px}
 
+  /* ── 音源那张卡（2026-10-28） ── */
+  .srcs{display:flex;flex-direction:column;gap:8px}
+  .src{display:flex;align-items:center;gap:12px;padding:12px 14px;border-radius:16px;
+       background:var(--surface-2)}
+  .src .nm{font-size:14px;font-weight:600;flex:1}
+  .src .st{font-size:12px;font-weight:600;padding:4px 12px;border-radius:999px;
+           background:var(--surface-4);color:var(--muted)}
+  .src.on .st{background:var(--primary-c);color:var(--on-primary-c)}
+  .src .tip{font-size:11px;color:var(--muted)}
+  .qrwrap{background:#fff;border-radius:20px;padding:14px;width:230px;height:230px;
+          display:grid;place-items:center;margin-bottom:12px}
+  .qrwrap img{width:100%;height:100%;object-fit:contain;display:block}
+  a.btn{display:inline-flex;align-items:center}
+
   .plist{display:flex;flex-direction:column;gap:10px}
   .pitem{border:1px solid var(--surface-4);border-radius:20px;padding:16px;cursor:pointer;
          background:var(--surface-2)}
@@ -124,6 +138,7 @@
   <div class="tabs">
     <button class="tab on" data-tab="users">用户记忆</button>
     <button class="tab" data-tab="persona">人格性格</button>
+    <button class="tab" data-tab="music">音源</button>
   </div>
 
   <!-- ══════════════ 卡片 I：用户记忆 ══════════════ -->
@@ -190,6 +205,67 @@
       <div class="out" id="pOut">等着看效果</div>
     </div>
   </section>
+
+  <!-- ══════════════ 卡片 III：音源（点歌放不放得出整首就看这里）══════════════ -->
+  <section id="tab-music" class="hide">
+    <div class="card">
+      <h2>音源登录</h2>
+      <div class="sub">点歌和热榜都是从这三家里找歌。没登录的那家，VIP 曲只给 30 秒试听、或者干脆取不到音源。</div>
+      <div class="srcs" id="srcList">
+        <div class="hint">正在问…</div>
+      </div>
+      <div class="row" style="margin-top:14px">
+        <button class="btn ghost" id="btnSrcRefresh">刷新状态</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>网易云 · 扫码登录</h2>
+      <div class="sub">官方接口，最省事。非会员也能放标准音质的整首（会员专享曲除外）。</div>
+      <div class="row wrap">
+        <button class="btn pri" id="btnNeQr">显示二维码</button>
+        <a class="btn ghost" id="neLink" href="#" target="_blank" rel="noopener"
+           style="display:none;text-decoration:none;line-height:20px">在浏览器里打开登录页</a>
+      </div>
+      <div id="neBox" class="hide" style="margin-top:16px">
+        <div class="qrwrap"><img id="neImg" alt="网易云登录二维码"></div>
+        <div class="out" id="neState">用手机上的网易云音乐扫它</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>QQ 音乐 · 粘贴 Cookie</h2>
+      <div class="sub">
+        扫码这条路只能拿到「基础登录态」（uin 有了，会员票据没有），会员曲照样取不到音源。
+        要放 VIP 原唱，得从已经登录的浏览器里复制一整条 Cookie。
+      </div>
+      <div class="field">
+        <label>Cookie（整条粘进来，形如 uin=xxx; qm_keyst=xxx; …）</label>
+        <textarea id="qqCookie" placeholder="uin=3865077183; qm_keyst=...; p_skey=..."></textarea>
+      </div>
+      <div class="row wrap" style="margin-top:12px">
+        <button class="btn pri" id="btnQqSave">保存</button>
+        <button class="btn ghost" id="btnQqHow">怎么拿？</button>
+      </div>
+      <div id="qqHow" class="hint hide">
+        1. 浏览器打开 <b>y.qq.com</b>，确认右上角是你的会员账号（已登录）<br>
+        2. 按 F12 → 切到 <b>Network</b> → 刷新页面 → 点任意一个请求<br>
+        3. 在 Request Headers 里找到 <b>Cookie:</b>，把冒号后面那一整行复制下来<br>
+        4. 粘到上面的框里，点「保存」<br>
+        <span style="color:var(--warn)">关键的键是 qm_keyst；只有 uin 的话会员曲还是放不了。</span>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>测一下会员曲</h2>
+      <div class="sub">存完 Cookie 最想知道的就是「到底行不行」。这里直接拿 VIP 曲去试音源，不用去直播里碰运气。</div>
+      <div class="row">
+        <input type="text" id="testSong" value="一半一半" placeholder="歌名">
+        <button class="btn pri" id="btnTestSong">测试</button>
+      </div>
+      <div class="out" id="testOut">还没测</div>
+    </div>
+  </section>
 </div>
 <div class="toast" id="toast"></div>
 
@@ -215,8 +291,11 @@ const post = (path, body) =>
 document.querySelectorAll('.tab').forEach((btn) => {
   btn.onclick = () => {
     document.querySelectorAll('.tab').forEach((b) => b.classList.toggle('on', b === btn))
-    $('tab-users').classList.toggle('hide', btn.dataset.tab !== 'users')
-    $('tab-persona').classList.toggle('hide', btn.dataset.tab !== 'persona')
+    /* 按 id 自动切，别再一个个写死 —— 加一张卡就要改三行太容易漏 */
+    document.querySelectorAll('section[id^="tab-"]').forEach((s) => {
+      s.classList.toggle('hide', s.id !== 'tab-' + btn.dataset.tab)
+    })
+    if (btn.dataset.tab === 'music') loadSrc()
   }
 })
 
@@ -305,8 +384,151 @@ async function openUser(uid) {
   $('uClose').onclick = () => ($('udetail').innerHTML = '')
 }
 
-$('btnSearch').onclick = loadUsers
-$('q').onkeydown = (e) => { if (e.key === 'Enter') loadUsers() }
+/* ══════════════════ 音源 ══════════════════ */
+const SRC_NAME = {
+  netease: '网易云音乐',
+  qq: 'QQ 音乐',
+  kugou: '酷狗音乐',
+}
+
+/** 三个音源现在的登录状态。
+ *  🔴 重要（2026-10-28 凌晨实测，别再让主人白扫一次码）：
+ *     QQ 的「已登录」是**基础态** —— cookie 里只有 uin，会员票据 qm_keyst 拿不到，
+ *     所以会员曲依然取不到音源。扫码流程再走一遍也没用，只能从已登录的浏览器里复制
+ *     完整的 Cookie。这句话要摆在界面上，不然主人会一直以为是自己没扫成功。 */
+async function loadSrc() {
+  const box = $('srcList')
+  box.innerHTML = '<div class="hint">正在问…</div>'
+  let r = null
+  try {
+    r = await api('/music/auth')
+  } catch (e) {
+    box.innerHTML = '<div class="hint">问不到：' + esc(e.message) + '（弹幕桥在跑吗？）</div>'
+    return
+  }
+  if (!r.ok) {
+    box.innerHTML =
+      '<div class="hint">问不到：' + esc(r.error || '') + '（DSH 里的单身汉播放器开着吗？）</div>'
+    return
+  }
+  const list = Array.isArray(r.providers) ? r.providers : []
+  if (!list.length) {
+    box.innerHTML = '<div class="hint">插件没说有几家 —— 单身汉播放器可能还没加载。</div>'
+    return
+  }
+  box.innerHTML = list
+    .map((p) => {
+      const key = String(p.provider || '')
+      return `<div class="src ${p.loggedIn ? 'on' : ''}">
+        <div class="nm">${esc(SRC_NAME[key] || key)}</div>
+        <div class="st">${p.loggedIn ? '已登录' : '未登录'}</div>
+      </div>`
+    })
+    .join('')
+}
+
+$('btnSrcRefresh').onclick = loadSrc
+
+/* ── QQ：粘贴 Cookie ── */
+$('btnQqSave').onclick = async () => {
+  const cookie = $('qqCookie').value.trim()
+  if (!cookie) return toast('先把 Cookie 粘进来')
+  if (!/uin=/i.test(cookie)) return toast('这条里没有 uin=，看着不像 QQ 的 Cookie')
+  const btn = $('btnQqSave')
+  btn.disabled = true
+  try {
+    const o = await post('/music/login/qq/cookie', { cookie })
+    if (!o.ok || !o.saved) return toast(o.error || '没存上')
+    toast('存好了，点下面「测一下」看看会员曲行不行')
+    $('qqCookie').value = ''
+    await loadSrc()
+    await testSong()
+  } finally {
+    btn.disabled = false
+  }
+}
+
+$('btnQqHow').onclick = () => $('qqHow').classList.toggle('hide')
+
+/* ── 会员曲实测 ── */
+async function testSong() {
+  const song = String($('testSong').value || '').trim() || '一半一半'
+  const out = $('testOut')
+  out.textContent = '正在试…'
+  try {
+    const r = await api('/music/test?song=' + encodeURIComponent(song))
+    if (!r.ok) {
+      out.textContent = r.error || '试不出来'
+      return
+    }
+    const lines = (r.tried || []).map((x) => {
+      const who = [x.name, x.artist].filter(Boolean).join(' - ')
+      const what = x.url ? (x.trial ? '只有 30 秒试听' : '✓ 整首音源') : '取不到音源'
+      return `${esc(SRC_NAME[x.provider] || x.provider)} ${esc(who)} → ${esc(what)}`
+    })
+    out.innerHTML = (
+      lines.join('<br>') + (lines.length ? '<br>' : '') + '<b>' + esc(r.verdict || '') + '</b>'
+    )
+  } catch (e) {
+    /* 试音源本来就是「可能失败」的操作，别让异常把按钮卡死 */
+    out.textContent = '试不出来：' + String((e && e.message) || e)
+  }
+}
+
+$('btnTestSong').onclick = testSong
+$('testSong').onkeydown = (e) => { if (e.key === 'Enter') testSong() }
+
+/* ── 网易云：扫码登录 ── */
+let neKey = ''
+let neTimer = null
+$('btnNeQr').onclick = async () => {
+  const btn = $('btnNeQr')
+  btn.disabled = true
+  btn.textContent = '正在取码…'
+  try {
+    const r = await post('/music/login/netease', {})
+    if (!r.ok || !r.key) return toast(r.error || '没拿到 key')
+    neKey = String(r.key)
+    $('neImg').src = r.img || ''
+    $('neBox').classList.remove('hide')
+    if (r.url) {
+      const a = $('neLink')
+      a.href = r.url
+      a.style.display = ''
+    }
+    $('neState').textContent = '用手机上的网易云音乐扫它，扫完点「确认登录」'
+    clearInterval(neTimer)
+    neTimer = setInterval(pollNe, 2000)
+  } finally {
+    btn.disabled = false
+    btn.textContent = '重新取一张二维码'
+  }
+}
+
+async function pollNe() {
+  if (!neKey) return
+  try {
+    const r = await api('/music/login/netease/check?key=' + encodeURIComponent(neKey))
+    const qr = r.qr || {}
+    const code = Number(qr.code || 0)
+    if (code === 800) {
+      clearInterval(neTimer)
+      neTimer = null
+      $('neState').textContent = '二维码过期了 —— 点「重新取一张」'
+      return
+    }
+    if (code === 803) {
+      clearInterval(neTimer)
+      neTimer = null
+      $('neState').textContent = '登录成功！点歌和热榜现在都能放整首。'
+      await loadSrc()
+      return
+    }
+    $('neState').textContent = code === 802 ? '扫到了，在手机上点「确认登录」' : '等你扫码'
+  } catch (e) {
+    /* 轮询别刷屏，出错就等下一拍 */
+  }
+}
 
 $('btnExport').onclick = async () => {
   const r = await api('/user/export')
@@ -414,6 +636,9 @@ $('btnTest').onclick = async () => {
   }
 }
 $('pTest').onkeydown = (e) => { if (e.key === 'Enter') $('btnTest').click() }
+
+$('btnSearch').onclick = loadUsers
+$('q').onkeydown = (e) => { if (e.key === 'Enter') loadUsers() }
 
 /* ── 起来 ── */
 loadUsers()
