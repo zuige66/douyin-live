@@ -1118,8 +1118,11 @@ function mediaBegin(item, meta) {
     kind: item.kind,
     tier,
     /* 打断比较用的优先级（2026-10-27 加）。正常模式 = 档位数字；
-     * 「礼物不分档」模式下所有礼物都是同一级（1），于是「高档打断低档」
-     * 退化成「礼物能顶掉闲时视频」，礼物之间只排队 —— 这正是主人要的。 */
+     * 「礼物不分档」模式下所有礼物都是同一级（1）。
+     * ⚠️ 2026-10-28 改：当初以为「礼物之间只排队」是主人要的，结果碰上
+     * 4-瑞克摇（212 秒）后面的礼物要等三分半 —— 看着像「刷了没反应」。
+     * 现在 flat 模式下新礼物直接换掉正在放的礼物视频（见 triggerGiftMedia
+     * 的 flatCut），rank 只留着给「礼物能顶掉闲时视频」这条用。 */
     rank: Number.isFinite(Number(meta.rank)) ? Number(meta.rank) : tier,
     flat: Boolean(meta.flat),
     user: String(meta.user || ''),
@@ -1340,11 +1343,23 @@ function playClipNow(user) {
   const keepIdle = Boolean(mediaCfg.rules.idleFull)
     && MEDIA.cur.tier === 0
     && Boolean(MEDIA.cur.request)
-  if (mediaCfg.rules.interrupt && meta.rank > curRank && !keepIdle) {
+  /* 「礼物不分档」下 rank 全是 1 —— `meta.rank > curRank` 永远不成立，
+   * 于是第二个礼物只会排队。碰上 `4-瑞克摇.mp4`（212 秒）就得干等三分半，
+   * 观众那边看着就是「刷了礼物没反应」，和「刷了就放一个」完全相反。
+   * 所以 flat 模式下：新礼物直接换掉正在放的**礼物视频**。
+   * 连刷不会抽搐 —— 上面那道 cooldown（默认 3 秒）挡着；
+   * 观众点播的 0 档仍然受 keepIdle 保护，闲时素材照旧让位。 */
+  const flatCut = flat
+    && Boolean(mediaCfg.rules.interrupt)
+    && Number(MEDIA.cur.tier) >= 1
+  if (mediaCfg.rules.interrupt && (meta.rank > curRank || flatCut) && !keepIdle) {
     /* 闲时视频（0 档）被礼物顶掉：先把音乐恢复，否则它一直停在暂停上，
      * 新礼物媒体的 duck 也就没东西可压了。 */
     if (MEDIA.cur.tier === 0) resumeMusicAfterMedia()
-    mediaLog(`⤵ ${MEDIA.cur.tier === 0 ? '闲时视频' : `档位${MEDIA.cur.tier}`} 被${tag} 打断`, 'cut')
+    const curTag = MEDIA.cur.tier === 0
+      ? '闲时视频'
+      : (MEDIA.cur.flat ? '礼物视频' : `档位${MEDIA.cur.tier}`)
+    mediaLog(`⤵ ${curTag} 被${tag} 打断`, 'cut')
     clearEndTimer()
     MEDIA.cur = null
     mediaBegin(item, meta)
@@ -4100,7 +4115,11 @@ async function dyRoute(p, u, req) {
     mediaScanAt = 0
     log(`  🖥 媒体设置已更新：${mediaCfg.on ? '开' : '关'} · 冷却 ${mediaCfg.rules.cooldown}s · ` +
       `${mediaCfg.rules.interrupt ? '高档打断' : '不打断'} · 同档${mediaCfg.rules.sameTier === 'merge' ? '合并' : '排队'} · ` +
-      `音量 说话${mediaCfg.audio.voice}% 素材${mediaCfg.audio.media}% 音乐${mediaCfg.audio.music}%`)
+      `音量 说话${mediaCfg.audio.voice}% 素材${mediaCfg.audio.media}% 音乐${mediaCfg.audio.music}%` +
+      /* 这两项不写出来，主人改完只能在日志里干等「到底生效没有」——
+       * 礼物不分档尤其需要一句话确认，不然他分不清是没开还是没抽中。 */
+      (mediaCfg.rules.flatGift ? ' · 礼物不分档（1–4 混着抽）' : '') +
+      (mediaCfg.rules.idleFull ? ' · 0 档放完为止（说话只压低）' : ''))
     if (b.idlePlay && typeof b.idlePlay === 'object') {
       const ip = mediaCfg.idlePlay
       log(`  🕐 闲时自动放：${ip.on ? '开' : '关'} · 安静 ${ip.quietSec}s 算闲 · 两条隔 ${ip.gapSec}s · 开播 ${ip.startSec}s 后才开始`)
