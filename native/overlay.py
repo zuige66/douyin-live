@@ -567,9 +567,12 @@ def main():
             # 0 也要算进去 —— 少了它，`0-梁圣巡演.mp4` 在截图里会被标成「档位1」，
             # 跟真实运行（闲时）对不上，看截图的人会以为桥判错了档。
             tier = int(base[0]) if base[:1].isdigit() else 1
+            # 档位 0 = 闲时/点播，不是礼物档，所以没有「送了什么」——
+            # 直接查字典会 KeyError:0（.isdigit() 那行改完就踩到了）。
+            gift_name = {1: "小心心", 2: "棒棒糖", 3: "跑车", 4: "嘉年华"}.get(tier, "")
             cur = {"seq": 1, "file": p, "name": base, "kind": kind,
-                   "tier": tier, "user": "阿伟",
-                   "gift": {1: "小心心", 2: "棒棒糖", 3: "跑车", 4: "嘉年华"}[tier],
+                   "tier": tier, "user": "阿伟" if tier else "",
+                   "gift": gift_name,
                    "volume": 1.0, "loop": False, "maxMs": 15000,
                    "at": int(time.time() * 1000)}
             st.data["media"] = {"on": True, "idle": "standby", "cur": cur,

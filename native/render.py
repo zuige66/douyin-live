@@ -666,14 +666,19 @@ def draw_computer(img, st, d, f):
     cx = MON_X + MON_W // 2
     sh, pad = shadow_patch(250, 26, 12, blur=16, alpha=145)
     blit(img, sh, cx - 125 - pad, FOOT_Y + 4 - pad)
-    # 脖子：从屏幕底下伸出来的梯形，右亮左暗 = 光从左上来
-    d.polygon([(cx - 44, NECK_Y), (cx + 44, NECK_Y),
-               (cx + 30, FOOT_Y + 3), (cx - 30, FOOT_Y + 3)],
+    # 脖子：真显示器是「挂板 + 细柱 + 底部外扩」，不是一块倒三角。
+    # 第一版画成上宽下窄（88→60），放大看像冰淇淋甜筒，反而更怪 —— 改成下宽上窄。
+    d.polygon([(cx - 22, NECK_Y + 4), (cx + 22, NECK_Y + 4),
+               (cx + 28, FOOT_Y + 3), (cx - 28, FOOT_Y + 3)],
               fill=(52, 59, 70, 255))
-    d.line([(cx + 44, NECK_Y), (cx + 30, FOOT_Y + 3)], fill=(255, 255, 255, 58), width=2)
-    d.line([(cx - 44, NECK_Y), (cx - 30, FOOT_Y + 3)], fill=(0, 0, 0, 130), width=2)
-    # 屏幕和脖子之间的接缝：不画的话两块颜色一撞，像个「倒 T 字」
-    d.line([(cx - 44, NECK_Y), (cx + 44, NECK_Y)], fill=(0, 0, 0, 120), width=2)
+    # 一道竖向高光偏右 = 圆柱被左上方来的光打亮，平面色块立刻有体积
+    d.line([(cx + 9, NECK_Y + 5), (cx + 12, FOOT_Y + 2)], fill=(255, 255, 255, 22), width=3)
+    d.line([(cx + 22, NECK_Y + 4), (cx + 28, FOOT_Y + 3)], fill=(255, 255, 255, 58), width=2)
+    d.line([(cx - 22, NECK_Y + 4), (cx - 28, FOOT_Y + 3)], fill=(0, 0, 0, 130), width=2)
+    # 挂板：贴在屏幕下沿的一块窄条，把「屏幕」和「脖子」接起来。
+    # 不画它，柱子直接从屏幕上长出来，接缝那道黑线会像个「倒 T 字」。
+    blit(img, rr_patch(92, 8, 3, (44, 50, 60, 255), outline=(255, 255, 255, 40)),
+         cx - 46, NECK_Y - 1)
     # 底座：下盘（宽）+ 上盘（窄、更亮）= 有厚度的感觉
     blit(img, rr_patch(238, 17, 8, (66, 74, 88, 255), outline=(255, 255, 255, 56)),
          cx - 119, FOOT_Y + 1)

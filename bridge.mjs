@@ -818,6 +818,14 @@ const MEDIA_DEFAULTS = {
     duckMusic: true, // 播放期间把背景音乐压下去
     maxQueue: 5, // 队列最多压几首，超了丢最新的
   },
+  /* 音量（2026-10-27 主人要求搬进设置页）。单位都是 %，桥内部再换算：
+   *   voice = 她说话（TTS）
+   *   media = 素材视频（**乘在**档位音量上，不覆盖它 —— 档位之间还有相对大小）
+   *   music = 音乐基准音量（说话前后都回到这个值）
+   *   duck  = 她说话时音乐压到这个比例
+   * 之所以放在 media.json 里，是因为「电脑展示区」和「声音」本来就是同一套
+   * 播放链路，分两个文件存迟早对不上。 */
+  audio: { voice: 100, media: 100, music: 100, duck: 60 },
 }
 
 const MEDIA_KINDS = {
@@ -865,6 +873,13 @@ function loadMediaCfg() {
       if (Number.isFinite(Number(j.rules.cooldown))) out.rules.cooldown = Math.max(0, Math.min(600, Number(j.rules.cooldown)))
       if (typeof j.rules.duckMusic === 'boolean') out.rules.duckMusic = j.rules.duckMusic
       if (Number.isFinite(Number(j.rules.maxQueue))) out.rules.maxQueue = Math.max(1, Math.min(20, Number(j.rules.maxQueue)))
+    }
+    if (j.audio) {
+      for (const k of ['voice', 'media', 'music', 'duck']) {
+        if (Number.isFinite(Number(j.audio[k]))) {
+          out.audio[k] = Math.max(0, Math.min(100, Math.round(Number(j.audio[k]))))
+        }
+      }
     }
   } catch {
     /* 没有配置文件就用默认 —— 第一次跑就是这条路径 */
@@ -1061,7 +1076,10 @@ function mediaBegin(item, meta) {
     tier,
     user: String(meta.user || ''),
     gift: String(meta.gift || ''),
-    volume: Number(t.volume),
+    /* 档位音量 × 设置页的「素材总音量」。
+     * 用乘法不用覆盖：档位之间本来就有相对大小（1 档 0.8 / 4 档 1.0），
+     * 总音量只该整体收放，不该把档位差抹平。 */
+    volume: Math.min(1, Math.max(0, Number(t.volume) * (mediaCfg.audio.media / 100))),
     loop: Boolean(t.loop),
     maxMs,
     at: Date.now(),
@@ -1798,7 +1816,9 @@ async function boxBase() {
 let box = { ok: false, alive: false, why: '还没连上', at: 0, now: null, pending: 0 }
 /** 音乐从哪儿来：'box' = 插件（DSH 里放），'qq' = 本机 QQ 音乐 */
 let musicSrc = 'box'
-let boxVol = 1 // 我们下发过的音量（闪避要用它算）
+/* 我们下发过的音量（闪避要用它算）。初值取配置里的「音乐基准音量」，
+ * 这样重启后不会先把音乐顶到 100% 再被改回来。 */
+let boxVol = Math.min(1, Math.max(0, Number(mediaCfg.audio.music) / 100))
 let boxDuckSaved = null // 闪避前的音量，恢复时还原
 let boxQueue = [] // 观众点过的歌（点歌台显示「接下来」用）
 /* ⚠️ 别塞进 box 对象里：boxState() 每次都整个换一个新对象，塞进去就丢了，
@@ -1919,6 +1939,20 @@ function boxSetVolume(v) {
   if (!Number.isFinite(val)) return
   boxVol = val
   boxJson('/bridge/command', { method: 'POST', body: { type: 'volume', value: val }, timeout: 4000 }).catch(() => {})
+}
+
+/** 把「音乐基准音量」落到当前播放器上。
+ *  面板拖完就立刻生效 —— 否则观众那边还是旧音量，得等下一首才「碰巧」对上。
+ *  两条链路分开：插件放歌（网页播放器，走 /bridge/command）和系统播放器
+ *  （QQ 音乐，走 python 的 vol 命令）。 */
+function applyMusicVolume() {
+  const v = Math.min(1, Math.max(0, Number(mediaCfg.audio.music) / 100))
+  if (musicSrc === 'box') {
+    boxSetVolume(v)
+    return
+  }
+  if (!MUSIC_ON || mediaDead) return
+  mediaCmd('vol', { v }).catch(() => {})
 }
 
 /** 点歌时给候选打分，返回 {best, rest}（rest 是备选，取流失败时依次再试）。
@@ -2535,7 +2569,8 @@ function playFile(syn) {
    * 覆盖的话 speakUntil 会比真实结束时间早，自言自语那条判断就会抢话。 */
   speakUntil = Math.max(Date.now(), speakUntil) + dur * 1000
   // 超时要盖住「上一条还在播」的等待：player 是串行的
-  PLAY_SVC.cmd({ file: syn.file, volume: 1000 }, Math.max(20000, (dur + 30) * 1000))
+  /* 说话音量走设置页的 audio.voice（0~100 → 播放器要 0~1000） */
+  PLAY_SVC.cmd({ file: syn.file, volume: Math.round(mediaCfg.audio.voice * 10) }, Math.max(20000, (dur + 30) * 1000))
     .then((p) => {
       if (!p || !p.ok) log(`  [player] ${p?.why || p?.error || '没回包'}`)
     })
@@ -3569,10 +3604,24 @@ async function dyRoute(p, u, req) {
       if (typeof b.rules.duckMusic === 'boolean') r.duckMusic = b.rules.duckMusic
       if (Number.isFinite(Number(b.rules.maxQueue))) r.maxQueue = Math.max(1, Math.min(20, Number(b.rules.maxQueue)))
     }
+    /* 音量（2026-10-27）：改完立刻生效。
+     * 音乐这一项要马上落到播放器上 —— 不然面板拖到 30%，观众那边还是 100%，
+     * 得等下一首歌才「碰巧」对上。 */
+    if (b.audio && typeof b.audio === 'object') {
+      const before = { ...mediaCfg.audio }
+      for (const k of ['voice', 'media', 'music', 'duck']) {
+        if (Number.isFinite(Number(b.audio[k]))) {
+          mediaCfg.audio[k] = Math.max(0, Math.min(100, Math.round(Number(b.audio[k]))))
+        }
+      }
+      if (mediaCfg.audio.music !== before.music) applyMusicVolume()
+      if (mediaCfg.audio.duck !== before.duck) log(`  ♫ 说话时音乐压到 ${mediaCfg.audio.duck}%`)
+    }
     saveMediaCfg()
     mediaScanAt = 0
     log(`  🖥 媒体设置已更新：${mediaCfg.on ? '开' : '关'} · 冷却 ${mediaCfg.rules.cooldown}s · ` +
-      `${mediaCfg.rules.interrupt ? '高档打断' : '不打断'} · 同档${mediaCfg.rules.sameTier === 'merge' ? '合并' : '排队'}`)
+      `${mediaCfg.rules.interrupt ? '高档打断' : '不打断'} · 同档${mediaCfg.rules.sameTier === 'merge' ? '合并' : '排队'} · ` +
+      `音量 说话${mediaCfg.audio.voice}% 素材${mediaCfg.audio.media}% 音乐${mediaCfg.audio.music}%`)
     return { ok: true, cfg: mediaCfg, ...mediaOut() }
   }
 
