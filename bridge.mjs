@@ -2185,13 +2185,19 @@ function pickTrack(tracks, want, artist = '', auth = {}) {
       s += 2 // 没给歌手时，「单人署名」仍旧是最弱的原唱信号
     }
 
-    /* VIP 曲「能不能放整首」完全取决于那个音源登录了没：
-     * 登录着 → 正版原唱，加分；没登录 → 只给 30 秒试听，比放别人唱的还差。
-     * auth 是空对象（老调用点 / 查不到登录状态）时按老规矩 +8，不做惩罚。 */
+    /* VIP 曲是**风险项**，不是优点（2026-10-28 凌晨实测推翻原来那句「正版优先」）。
+     * 两种失败方式都很实在：
+     *   网易云未登录 → VIP 曲回 trial，只放 30 秒；
+     *   QQ「已登录」但 cookie 缺 p_skey → VIP 曲直接 QQ_URL_EMPTY，一个音源都取不到。
+     * 所以 vip=true 一律扣分，vip=false 加分；登录了的那家少扣一点（至少还有机会）。
+     * 🔴 这条是 00:04 那次点歌翻车换来的：观众点《一半一半》没成，
+     *    因为 QQ 的四个 VIP 版本拿到最高分排在前面，全回 QQ_URL_EMPTY，
+     *    而下面明明有 QQ 和网易云的**非 VIP 原版**能放整首。 */
     if (t.vip === true) {
       const known = Object.prototype.hasOwnProperty.call(auth, t.provider)
-      if (!known) s += 8
-      else s += auth[t.provider] ? 8 : -35
+      s += known && auth[t.provider] ? -8 : -20
+    } else {
+      s += 6
     }
     if (t.provider === 'kugou') s -= 30 // 酷狗只能搜不能放
     if (t.provider === 'qq') s += 4
@@ -2234,10 +2240,12 @@ async function boxRequestSong(want, artist = '') {
   let hit = null
   let lastWhy = ''
   let trialHit = null // 只有试听片段的候选：整张候选表都找不到正片时才退回来用它
-  /* 候选从 3 个放宽到 5 个。正版原唱现在排第一，未登录时它**必然**取不到流，
-   * 得能一路退到能放的版本；3 个有时不够 —— 前几名常常是同一首 VIP 曲在
-   * 不同音质、不同平台上的多个条目，占满了名额却没一个能放。 */
-  for (const cand of [picked.best, ...picked.rest].slice(0, 5)) {
+  /* 候选从 3 个放宽到 5 个，2026-10-28 再放宽到 8 个。
+   * 一次搜索最多 24 条（三家各 8 条），前面几名常常是同一首歌在 VIP / 不同音质 /
+   * 不同平台上的多个条目，占满名额却一个都放不出来 —— 00:04 那次《一半一半》
+   * 就是前 5 个全是 QQ 的 VIP 版、全回 QQ_URL_EMPTY，而第 9 条开始就有能放的原版。
+   * 每个候选多花一次 /url（约 0.3~1 秒），点歌本来就要等，换来得是「真能放」。 */
+  for (const cand of [picked.best, ...picked.rest].slice(0, 8)) {
     const u = await boxJson(`/url?id=${encodeURIComponent(cand.id)}`, { timeout: 12000 })
     const res = u.result
     if (u.ok && res && res.url) {
