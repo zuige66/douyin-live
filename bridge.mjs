@@ -1825,7 +1825,61 @@ let musicSrc = 'box'
  * 这样重启后不会先把音乐顶到 100% 再被改回来。 */
 let boxVol = Math.min(1, Math.max(0, Number(mediaCfg.audio.music) / 100))
 let boxDuckSaved = null // 闪避前的音量，恢复时还原
-let boxQueue = [] // 观众点过的歌（点歌台显示「接下来」用）
+/* 观众点过的歌（点歌台显示「接下来」用）。**每项都带时间戳**，原因见下面 boxQueueSettle。
+ * 形状：[{ name, at, hot }]  —— hot 表示这首是热榜垫的，不是观众点的。 */
+let boxQueue = []
+
+/* 队列对账参数。
+ * STALE：在放的东西不是观众点的那首时，队里等多久算「已经被跳过」。
+ * MAX_WAIT：不管什么情况，等多久都从点歌台撤掉（这是最后的兜底）。 */
+const QUEUE_STALE_MS = Number(process.env.ZY_QUEUE_STALE || 10 * 60 * 1000)
+const QUEUE_MAX_WAIT = Number(process.env.ZY_QUEUE_MAXWAIT || 20 * 60 * 1000)
+
+function boxQueueNames() {
+  return boxQueue.map((x) => x.name)
+}
+function boxQueuePush(name, hot = false) {
+  const n = String(name || '').trim()
+  if (!n) return
+  boxQueue.push({ name: n, at: Date.now(), hot: !!hot })
+  while (boxQueue.length > QUEUE_MAX) boxQueue.shift()
+}
+/** 对账：让 boxQueue 重新等于「播放器里真正还没轮到的那几首」。
+ *
+ *  🔴 2026-10-27 深夜的播出事故（主人原话：「点了歌曲，一直不往下播放，我的唯一都好久之前了」）。
+ *  根因就在这个队列**只增不减** —— 原来唯一的清理点是「标题变了、且新标题跟队里某首同名」。
+ *  于是只要有一首被跳过的歌留在队里，它就永远出不去：
+ *    · 22:47 / 22:52 热榜垫的《周旋》《回到你身边》进队后一首都没放成；
+ *    · 23:16 观众又点了一次《唯一》，进队；
+ *    · 三笔老账把队列撑到 3 首，而 HOT_KEEP 是 2 —— hotNeed() 永远是 0，
+ *      **热榜补歌从 22:52 起彻底停工 55 分钟**（日志里这段时间一条「热榜垫上」都没有），
+ *      后备歌放完就没了下一首。点歌台里那三首歌也就一直挂着，几小时前点的。
+ *
+ *  现在靠两条规矩算账：
+ *    ① 播放器是 FIFO —— 正在放的这首如果在队里，它和它**前面**的一律已经过去；
+ *    ② 正在放的**不在**队里（热榜 play 跳走 / 操作员手点 / 换源失败被自动跳过），
+ *       就按时间算：等太久的认它是被跳过了。
+ *  返回「有没有变」，方便调用方决定要不要广播。 */
+function boxQueueSettle(nowTitle) {
+  const before = boxQueueNames().join('|')
+  const now = Date.now()
+  const title = String(nowTitle || '')
+  let hit = -1
+  if (title) {
+    /* 从后往前找：同名歌在队里出现两次时，以最后一次为准（前面的肯定已经放过） */
+    for (let i = boxQueue.length - 1; i >= 0; i--) {
+      if (sameTitle(boxQueue[i].name, title)) {
+        hit = i
+        break
+      }
+    }
+  }
+  if (hit >= 0) boxQueue = boxQueue.slice(hit + 1)
+  else if (title) boxQueue = boxQueue.filter((x) => now - x.at < QUEUE_STALE_MS)
+  boxQueue = boxQueue.filter((x) => now - x.at < QUEUE_MAX_WAIT)
+  queue.list = boxQueueNames().slice(0, QUEUE_MAX)
+  return before !== boxQueueNames().join('|')
+}
 /* ⚠️ 别塞进 box 对象里：boxState() 每次都整个换一个新对象，塞进去就丢了，
  * 结果「播放中」这个判断永远成立，日志每 1.5 秒刷一行。 */
 let boxLastPlaying = null
@@ -1909,12 +1963,12 @@ function boxToMusic() {
   if (music.title && (music.title !== prevTitle || music.playing !== boxLastPlaying)) {
     log(`  ♫ ${music.title}${music.artist ? ' - ' + music.artist : ''}${music.playing ? '' : '（暂停）'}`)
     broadcast('music', music)
-    /* 点歌队列里已经放到的那首剔掉，剩下的就是「接下来」 */
-    if (music.title !== prevTitle) {
-      boxQueue = boxQueue.filter((t) => !sameTitle(t, music.title))
-      queue.list = boxQueue.slice(0, QUEUE_MAX)
-    }
   }
+  /* 点歌队列对账。**每次轮询都要跑**，不能只在换歌时跑 ——
+   * 一首歌能放四五分钟，而「等太久就算被跳过」这条是跟时间赛跑的：
+   * 只在换歌时跑的话，卡住的那几分钟里 hotNeed() 一直以为还有歌，
+   * 热榜就一直不补。n 最多 20 项，1.5 秒一次的开销可以忽略。 */
+  if (music.title) boxQueueSettle(music.title)
   boxLastPlaying = music.playing
 }
 
@@ -2126,7 +2180,18 @@ async function boxRequestSong(want, artist = '') {
   const by = (Array.isArray(hit.artists) ? hit.artists.join('/') : String(hit.artists || '')).trim()
   const trialOnly = hit === trialHit
 
-  const cur = s.now && s.now.trackId ? s.now : null
+  /* 「在放」还是「停住了」？（2026-10-27 深夜补）
+   * 插件默认 order 模式，队列放到底会停在最后一首的末尾但 trackId 还在。
+   * 只看 trackId 的话这里会判成 `cur` 有值 → 只发 queue_add →
+   * 歌进了队尾而 index 已经到底，永远轮不到 —— 观众点了个寂寞。
+   * 认「停在末尾」这个特征就够了；手动暂停停在中间的不算。 */
+  const cur0 = s.now && s.now.trackId ? s.now : null
+  const curStuck = Boolean(
+    cur0 && cur0.playing === false && Number(cur0.durationSec) > 0
+    && Number(cur0.positionSec) >= Number(cur0.durationSec) - 3
+    && !musicPausedByMedia
+  )
+  const cur = curStuck ? null : cur0
   /* 正在放闲时视频 → 先收掉它，不然视频的声音和音乐打架。
    * 注意这里**不** resume 音乐：紧接着的 play / queue_add 会接管播放，
    * 先 resume 一下只会让旧歌响半秒再被切走。 */
@@ -2165,9 +2230,8 @@ async function boxRequestSong(want, artist = '') {
    * 🔴 原来这里 `if (s2.pending > 0) return` 提前返回、**不写 boxQueue** ——
    * 排队成功（最常见的情况）时点歌台看不到刚点的那首，等于白点。
    * 现在不管 pending 有没有归零，都把歌记进队列，点歌台才有东西显示。 */
-  boxQueue.push(hit.name)
-  if (boxQueue.length > QUEUE_MAX) boxQueue.shift()
-  queue.list = boxQueue.slice(0, QUEUE_MAX)
+  boxQueuePush(hit.name)
+  queue.list = boxQueueNames().slice(0, QUEUE_MAX)
   if (s2.pending > 0) log(`  ♫ 《${hit.name}》还堆在命令队列里（${s2.pending} 条），浏览器还没取走`)
   return { ok: true, title: hit.name, by, trial: trialOnly, how: 'queue' }
 }
@@ -2263,8 +2327,11 @@ async function hotPlayable(track) {
   return res.trial ? 'trial' : 'full'
 }
 
-/** 还缺几首。点歌的排在热榜前面，这里只算总量够不够。 */
+/** 还缺几首。点歌的排在热榜前面，这里只算总量够不够。
+ *  🔴 先对账再算：拿「几小时前点了但被跳过」的老账当额度，就是 2026-10-27 那场
+ *  55 分钟不补歌的事故 —— boxQueue 停在 3 首，HOT_KEEP 是 2，这里永远返回 0。 */
 function hotNeed() {
+  boxQueueSettle(music.title)
   return Math.max(0, HOT_KEEP - boxQueue.length)
 }
 
@@ -2292,7 +2359,20 @@ async function fillHot() {
       if (list.length) log(`  ♫ 热榜 ${list.length} 首，可用 ${hotPool.length} 首`)
     }
 
-    let started = !!(box.now && box.now.trackId) // 播放器空着就先 play 一首
+    /* 播放器里到底有没有东西**在响**？
+     * 🔴 光看 trackId 不够（2026-10-27 深夜）。插件默认是 mode=order（顺序播放），
+     * 队列放到底时 jumpToNext 直接 `set({playing:false})` 就停了 ——
+     * 而 queue_add 只往队尾加，index 已经到底不会自己往前挪，
+     * 于是歌加进去了、界面也显示了，**就是不出声**，而且永远起不来。
+     * 所以「有 trackId、没在放、而且正好停在那一刻的末尾」也当成空播放器：
+     * 第一首用 play 直接起播。
+     * 只认「停在末尾」这个特征，不认「只是暂停了」—— 操作员手动按暂停是想让人听清他说话，
+     * 这时候拿 play 把歌跳走就是捣乱。同理闲时视频压出来的暂停也不碰（musicPausedByMedia）。 */
+    const now0 = box.now
+    const atEnd = Boolean(now0 && now0.durationSec > 0 && now0.positionSec >= now0.durationSec - 3)
+    const stopped = !(now0 && now0.trackId)
+      || (now0.playing === false && atEnd && !musicPausedByMedia)
+    let started = !stopped
     let need = hotNeed()
     let tries = 0
     /* 试听片段的先攒在这儿：有完整音源就轮不到它们，
@@ -2326,7 +2406,7 @@ async function fillHot() {
         break
       }
       hotPlayed.add(track.id)
-      boxQueue.push(track.name)
+      boxQueuePush(track.name, true)
       started = true
       need--
       hotWhy = ''
@@ -2348,7 +2428,7 @@ async function fillHot() {
           break
         }
         hotPlayed.add(track.id)
-        boxQueue.push(track.name)
+        boxQueuePush(track.name, true)
         started = true
         need--
         hotWhy = '只有试听片段（音源没登录/没会员）'
@@ -2356,7 +2436,7 @@ async function fillHot() {
         log(`  ♫ 只有试听片段，先垫上《${track.name}》${by} —— 想放全曲得登录音源`)
       }
     }
-    if (boxQueue.length) queue.list = boxQueue.slice(0, QUEUE_MAX)
+    if (boxQueue.length) queue.list = boxQueueNames().slice(0, QUEUE_MAX)
     saveHotPlayed()
   } finally {
     hotFilling = false

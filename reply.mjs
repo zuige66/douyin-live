@@ -109,9 +109,22 @@ export function songOf(text) {
   return songAsk(text).title
 }
 
+/** 在聊「点歌这件事」，不是在点歌。
+ *
+ *  🔴 2026-10-27 深夜实测事故：观众问「大肥鱼，点歌台为什么只有三首歌？」
+ *     这句话同时含「点歌」和「什么歌」，被 RE.song 判成点歌指令；
+ *     songAsk 又把「点歌」后面剩下的字整个吃成歌名 —— 得到「台为什么只有三首歌」，
+ *     真去搜了这句鬼话，还排进一首《也不知道为什么会有这么一首歌》，
+ *     把观众点的那首往后挤了一格。日志原文：
+ *       23:29:34 🎵 点歌「台为什么只有三首歌」→ 排进歌单《也不知道为什么会有这么一首歌》
+ *     所以带「点歌台 / 队列」这类词的句子一律不进点歌分支，交给普通闲聊去答。 */
+const SONG_TALK = /点歌台|点歌列表|点歌队列|队列/
+
 /** 这条弹幕是不是在点歌。bridge 用它决定「要不要真去切歌」。 */
 export function isSongRequest(text) {
-  return RE.song.test(String(text || ''))
+  const t = String(text || '')
+  if (SONG_TALK.test(t)) return false
+  return RE.song.test(t)
 }
 
 /** 这条弹幕是不是在要视频。bridge 用它决定「要不要真去放 0 档素材」。
