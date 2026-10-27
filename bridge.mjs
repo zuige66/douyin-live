@@ -3642,6 +3642,42 @@ async function dyRoute(p, u, req) {
     return { ok: true, ...mediaOut(), cfg: mediaCfg, rules: mediaCfg.rules }
   }
 
+  /* ── 音源登录（2026-10-27 深夜加）────────────────────────────────────
+   * 主人有 QQ 音乐会员：登录之后 VIP 曲才给完整音源，不登录只有 30 秒试听
+   * （日志里的「⚠ 只有试听片段」就是这个）。实测三家全是 loggedIn:false。
+   *
+   * 为什么在面板里内嵌二维码、不跳网页：DSH 的网页端口要鉴权，
+   * 裸 URL 直接打开是 401。二维码本来就是 base64 data URI，塞进 <img> 就行。
+   */
+  if (p === '/music/auth') {
+    const r = await boxJson('/auth/status', { timeout: 6000 })
+    if (!r.ok) return { ok: false, error: r.why || '问不到登录状态', providers: [] }
+    return { ok: true, providers: Array.isArray(r.providers) ? r.providers : [] }
+  }
+  if (p === '/music/login/qq' && req.method === 'POST') {
+    const r = await boxJson('/auth/qq/qr', { method: 'POST', body: {}, timeout: 15000 })
+    if (!r.ok) return { ok: false, error: r.why || '二维码没拿到' }
+    return { ok: true, qrsig: r.qrsig, ptLoginSig: r.ptLoginSig, img: r.img }
+  }
+  if (p === '/music/login/qq/check') {
+    const qrsig = u.searchParams.get('qrsig') || ''
+    const sig = u.searchParams.get('ptLoginSig') || ''
+    if (!qrsig || !sig) return { ok: false, error: '没给 qrsig / ptLoginSig' }
+    const r = await boxJson(
+      `/auth/qq/qr/check?qrsig=${encodeURIComponent(qrsig)}&ptLoginSig=${encodeURIComponent(sig)}`,
+      { timeout: 9000 },
+    )
+    return { ok: Boolean(r.ok), qr: r.qr || null, error: r.why || '' }
+  }
+  if (p === '/music/login/qq/cookie' && req.method === 'POST') {
+    /* 扫码走不通时的兜底：直接从浏览器贴一段 QQ 音乐 cookie。 */
+    const b = await readJson(req)
+    const cookie = String(b.cookie || '').trim()
+    if (!cookie) return { ok: false, error: '没给 cookie' }
+    const r = await boxJson('/auth/qq', { method: 'POST', body: { cookie }, timeout: 10000 })
+    return { ok: Boolean(r.ok && r.saved), saved: Boolean(r.saved), error: r.ok ? '' : (r.why || '没存上') }
+  }
+
   if (p === '/media/list') {
     const s = scanMedia(true)
     return {
