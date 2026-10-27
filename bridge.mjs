@@ -3583,6 +3583,22 @@ async function dyRoute(p, u, req) {
     if (typeof b.idle === 'string' && ['standby', 'black', 'wallpaper'].includes(b.idle)) mediaCfg.idle = b.idle
     if (Number.isFinite(Number(b.tierDefault))) mediaCfg.tierDefault = Math.max(0, Math.min(4, Number(b.tierDefault)))
     if (typeof b.dir === 'string') mediaCfg.dir = b.dir.slice(0, 400)
+    /* 闲时自动放素材（2026-10-27 晚加的功能，但这里一直漏了 —— 只有手改
+     * cache/media.json 再重启桥才能调，面板和 API 都改不了）。
+     * 夹取范围和 loadMediaCfg() 里读盘时保持一致，别两处不一样。 */
+    if (b.idlePlay && typeof b.idlePlay === 'object') {
+      const ip = mediaCfg.idlePlay
+      if (typeof b.idlePlay.on === 'boolean') ip.on = b.idlePlay.on
+      if (Number.isFinite(Number(b.idlePlay.quietSec))) {
+        ip.quietSec = Math.max(10, Math.min(3600, Number(b.idlePlay.quietSec)))
+      }
+      if (Number.isFinite(Number(b.idlePlay.gapSec))) {
+        ip.gapSec = Math.max(30, Math.min(7200, Number(b.idlePlay.gapSec)))
+      }
+      if (Number.isFinite(Number(b.idlePlay.startSec))) {
+        ip.startSec = Math.max(0, Math.min(3600, Number(b.idlePlay.startSec)))
+      }
+    }
     if (b.giftMap && typeof b.giftMap === 'object') {
       const m = {}
       for (const [k, v] of Object.entries(b.giftMap)) {
@@ -3628,6 +3644,10 @@ async function dyRoute(p, u, req) {
     log(`  🖥 媒体设置已更新：${mediaCfg.on ? '开' : '关'} · 冷却 ${mediaCfg.rules.cooldown}s · ` +
       `${mediaCfg.rules.interrupt ? '高档打断' : '不打断'} · 同档${mediaCfg.rules.sameTier === 'merge' ? '合并' : '排队'} · ` +
       `音量 说话${mediaCfg.audio.voice}% 素材${mediaCfg.audio.media}% 音乐${mediaCfg.audio.music}%`)
+    if (b.idlePlay && typeof b.idlePlay === 'object') {
+      const ip = mediaCfg.idlePlay
+      log(`  🕐 闲时自动放：${ip.on ? '开' : '关'} · 安静 ${ip.quietSec}s 算闲 · 两条隔 ${ip.gapSec}s · 开播 ${ip.startSec}s 后才开始`)
+    }
     return { ok: true, cfg: mediaCfg, ...mediaOut() }
   }
 

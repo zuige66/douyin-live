@@ -1345,6 +1345,14 @@ zhibo/media/
 | 两段闲时视频之间至少隔多久 | 240 秒 | `ZY_IDLE_GAP` |
 | 总开关 | 开 | `ZY_IDLE=0` 关掉 |
 
+这四项也能在 `cache/media.json` 的 `idlePlay` 里存（`on` / `startSec` / `quietSec` /
+`gapSec`），插件「电脑」页的「闲时自动放」卡改的就是它，`POST /media/config` 收
+`idlePlay`。**环境变量优先级最高** —— 起桥时带了 `ZY_IDLE_*` 就盖过面板上的值。
+
+> 🔴 2026-10-27 修：`POST /media/config` 一开始**漏了 `idlePlay` 这一整块**，
+> 于是面板上加了卡也存不进去、API 也改不了，只能手改文件再重启桥。
+> 面板那边同时漏了「0 档素材列表」和「试播 0 档」（`Number(tier) || 1` 的老坑）。
+
 另外还要求：没在说话（`say`）、没在回复（`replying`）、没有媒体在播或在排队。
 
 **播放时音乐是暂停，不是压低** —— 视频自己有声音，压到 60% 两个声音还是打架。
