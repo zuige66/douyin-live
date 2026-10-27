@@ -30,14 +30,25 @@ ASSETS = os.path.join(os.path.dirname(HERE), "assets")
 W, H = 1920, 1080
 SS = 2  # 静态层超采样倍数：先按 2 倍画再缩回去，圆角和图才不毛糙
 
-INK = (246, 249, 252, 255)
-DIM = (180, 191, 204, 255)
-TEAL = (70, 224, 192, 255)
-GOLD = (242, 193, 78, 255)
-PINK = (255, 123, 169, 255)
-BG = (21, 26, 33, 255)
-FAINT = (255, 255, 255, 112)
-HAIR = (255, 255, 255, 36)
+# ── 配色：M3 Expressive 深色 + 紫（2026-10-27 晚：「用 m3e 的紫色优雅一点」）──
+# 数值全部取自 Material 3 深色方案的标准 role，不自己挑紫 —— 这样"紫"才是 M3 的紫，
+# 而不是随便一个紫。改色请对着 role 改，别凭感觉报色号。
+#   surface              #141218   画面底
+#   surfaceContainerLow  #1D1B20   屏幕待机底
+#   surfaceContainer     #211F26   卡片
+#   surfaceContainerHigh #2B2930   显示器外壳
+#   onSurface            #E6E1E5   正文
+#   onSurfaceVariant     #CAC4D0   次要文字
+#   primary              #D0BCFF   强调紫
+#   tertiary             #EFB8C8   藕粉
+#   outlineVariant       #49454F   描边
+INK = (230, 225, 229, 255)    # onSurface
+DIM = (202, 196, 208, 255)    # onSurfaceVariant
+PRI = (208, 188, 255, 255)    # primary（替掉原来的青 TEAL）
+TER = (239, 184, 200, 255)    # tertiary（替掉原来的金 GOLD）
+BG = (23, 19, 31, 255)        # surface，往紫里偏了一点：#17131F
+FAINT = (202, 196, 208, 128)  # 次要信息：onSurfaceVariant 半透明
+HAIR = (120, 101, 160, 150)   # outlineVariant 偏紫：卡片 1px 描边
 
 # 2026-10-27 晚提亮：主人说「整个画面都是挺暗的」。
 # 原来 BG(7,9,12) 几乎是纯黑、正文 233、次要文字 142 —— 在抖音直播伴侣里
@@ -83,11 +94,11 @@ DANMAKU_ON = os.environ.get("ZY_DANMAKU", "0") == "1"
 
 TIER_COL = {
     # 0 档是「闲时素材」，不是礼物 —— 用中性青灰，别和礼物档抢颜色。
-    0: (150, 170, 186, 255),  # 闲时 · 青灰
-    1: (70, 224, 192, 255),   # 小额 · 青
-    2: (255, 123, 169, 255),  # 中额 · 粉
-    3: (242, 193, 78, 255),   # 大额 · 金
-    4: (255, 138, 76, 255),   # 特效 · 橙
+    0: (147, 143, 153, 255),  # 闲时 · outline 灰紫，不是礼物，别抢镜头
+    1: (208, 188, 255, 255),  # 小额 · primary 淡紫
+    2: (239, 184, 200, 255),  # 中额 · tertiary 藕粉
+    3: (244, 212, 175, 255),  # 大额 · 香槟（和紫搭在一起显贵，不用纯金）
+    4: (255, 176, 196, 255),  # 特效 · 玫红（比 tertiary 更艳，只有这一档用）
 }
 
 _fonts = {}
@@ -164,8 +175,12 @@ def background():
         img = Image.new("RGBA", (W * SS, H * SS), BG)
         # 两层柔光让画面有纵深。跟着整体提亮一起抬高（26→42 / 22→34），
         # 不然底色一亮，光晕就看不出来了，画面会变成一块平板。
-        img.alpha_composite(_glow((1500 * SS, 900 * SS), (70, 224, 192, 42)), (60 * SS, -120 * SS))
-        img.alpha_composite(_glow((1300 * SS, 800 * SS), (255, 123, 169, 34)), (1180 * SS, 520 * SS))
+        img.alpha_composite(_glow((1500 * SS, 900 * SS), (208, 188, 255, 58)), (60 * SS, -120 * SS))
+        img.alpha_composite(_glow((1300 * SS, 800 * SS), (239, 184, 200, 38)), (1180 * SS, 520 * SS))
+        # 顶部标语（「刷礼物有惊喜」）后面垫一层横向柔光。
+        # 不垫的话，那行紫字孤零零浮在黑色空带里，看着像没画完；
+        # 垫了之后顶部有一个"发光区域"，视线自然先落在那里。
+        img.alpha_composite(_glow((1400 * SS, 460 * SS), (208, 188, 255, 34)), (260 * SS, -170 * SS))
         _BG = img
     return _BG
 
@@ -325,11 +340,11 @@ def build_base(st):
         ld.text((x * SS, y * SS), s, font=font(size, bold), fill=color, anchor=anchor)
 
     # ---- 左上：本场数据（原来上面还有一张主播牌，2026-10-27 晚按主人要求删掉）----
-    rows = [("收到弹幕", GOLD), ("收到礼物", None), ("已回复", GOLD)]
+    rows = [("收到弹幕", TER), ("收到礼物", None), ("已回复", TER)]
     c1h = 32 + 36 + len(rows) * 46 + 10
     ld.rounded_rectangle(
         (CARD_X * SS, CARD_Y * SS, (CARD_X + CARD_W) * SS, (CARD_Y + c1h) * SS),
-        radius=24 * SS, fill=(31, 38, 47, 224), outline=HAIR, width=SS,
+        radius=24 * SS, fill=(37, 31, 51, 232), outline=HAIR, width=SS,
     )
     px, py = CARD_X + 30, CARD_Y + 30
     T(px, py, "本场数据", 25, DIM)
@@ -355,7 +370,7 @@ def build_base(st):
     c2h = 32 + 36 + np_h + max(len(songs), 1) * 58 + 78 + 44
     ld.rounded_rectangle(
         (CARD_X * SS, c2y * SS, (CARD_X + CARD_W) * SS, (c2y + c2h) * SS),
-        radius=24 * SS, fill=(31, 38, 47, 224), outline=HAIR, width=SS,
+        radius=24 * SS, fill=(37, 31, 51, 232), outline=HAIR, width=SS,
     )
     T(px, c2y + 30, "点歌台", 25, DIM)
     q_total = int(((st.get("queue") or {}).get("total")) or 0)
@@ -368,13 +383,13 @@ def build_base(st):
         # 不然观众会以为卡住了。
         # ⚠️ 别用 ♪ / ♫ 这类符号：思源黑体里没有，会渲染成豆腐块（实测过）。
         #    小圆点自己画，一定不会缺字。
-        ld.ellipse(((px + 3) * SS, (sy + 9) * SS, (px + 13) * SS, (sy + 19) * SS), fill=TEAL)
+        ld.ellipse(((px + 3) * SS, (sy + 9) * SS, (px + 13) * SS, (sy + 19) * SS), fill=PRI)
         T(px + 24, sy + 2, "正在播放", 21, FAINT)
         for j, hh in enumerate((10, 18, 13, 20) if np_playing else (5, 5, 5, 5)):
             bx = CARD_X + CARD_W - 30 - (4 - j) * 9
             ld.rounded_rectangle(
                 (bx * SS, (sy + 24 - hh) * SS, (bx + 5) * SS, (sy + 24) * SS),
-                radius=3 * SS, fill=TEAL if np_playing else FAINT,
+                radius=3 * SS, fill=PRI if np_playing else FAINT,
             )
         T(px, sy + 30, np_title, 28, INK, bold=True)
         if np_by:
@@ -400,8 +415,8 @@ def build_base(st):
             title = str(song)
         title = fit_text(title, CARD_W - 76 - 40 - 20, 29, bold=(i == 0))
         hot = i == 0
-        T(px, sy + 4, str(i + 1), 24, TEAL if hot else FAINT)
-        T(px + 40, sy, title, 29, TEAL if hot else INK, bold=hot)
+        T(px, sy + 4, str(i + 1), 24, PRI if hot else FAINT)
+        T(px + 40, sy, title, 29, PRI if hot else INK, bold=hot)
         # 第一首用 teal 标出来是「下一首」，但不画音柱 ——
         # 音柱是「正在放」的符号，上面「正在播放」那块已经有了，
         # 这里再画一根，观众会以为列表第一首就是当前歌。
@@ -423,7 +438,7 @@ def build_base(st):
     # 现在挪到画面最上方、角色头顶正上方那条空带里 —— 那里本来就什么都没有，
     # 左右两张卡（本场数据 x≤516、显示器 x≥1262）都离得远，放一行大字不打架。
     # ★ 用 W//2 居中，不跟卡片对齐：这条带子是整幅画面的，不属于左栏。
-    T(W // 2, 26, "刷礼物有惊喜", 50, INK, bold=True, anchor="ma")
+    T(W // 2, 26, "刷礼物有惊喜", 50, PRI, bold=True, anchor="ma")
 
     # ---- 皮套脚下的影子 ----
     # 人物本身每帧都要换（会呼吸），所以它挪到 compose() 里画了；
@@ -537,11 +552,11 @@ def draw_danmaku(img, st, d, f):
         for (u, t, bw), m in zip(layout, dm):
             kind = m.get("kind") or ""
             if kind == "gift":
-                fill, ucol = (52, 40, 12, 214), GOLD
+                fill, ucol = (79, 55, 139, 214), TER
             elif kind == "me":
-                fill, ucol = (8, 42, 38, 214), TEAL
+                fill, ucol = (99, 59, 72, 214), (255, 216, 228, 255)
             else:
-                fill, ucol = (11, 15, 20, 206), (112, 198, 184, 255)
+                fill, ucol = (33, 31, 38, 206), (204, 194, 220, 255)
             x0 = DM_RIGHT - bw
             sh, pad = shadow_patch(bw, bh, 20)
             blit(img, sh, x0 - pad, y - pad + 2)
@@ -568,14 +583,14 @@ def _screen_idle(d, f, st, med):
     """
     if str(med.get("idle") or "standby") == "black":
         # 纯黑：屏幕像关了机。只在中间留一个几乎看不见的小点，免得观众以为画面挂了。
-        d.rectangle((SCR_X, SCR_Y, SCR_X + SCR_W, SCR_Y + SCR_H), fill=(4, 5, 7, 255))
+        d.rectangle((SCR_X, SCR_Y, SCR_X + SCR_W, SCR_Y + SCR_H), fill=(8, 7, 10, 255))
         d.ellipse((SCR_X + SCR_W // 2 - 2, SCR_Y + SCR_H // 2 - 2,
                    SCR_X + SCR_W // 2 + 2, SCR_Y + SCR_H // 2 + 2),
                   fill=(255, 255, 255, 16))
         return
 
     # 底色别跟页面背景 (7,9,12) 一样 —— 一样就只剩一圈框，看不出「屏亮着」。
-    d.rectangle((SCR_X, SCR_Y, SCR_X + SCR_W, SCR_Y + SCR_H), fill=(34, 40, 52, 255))
+    d.rectangle((SCR_X, SCR_Y, SCR_X + SCR_W, SCR_Y + SCR_H), fill=(33, 29, 44, 255))
     # 细网格 —— 有「屏幕亮着」的感觉，又不会抢戏
     for gx in range(SCR_X + 18, SCR_X + SCR_W, 26):
         d.line((gx, SCR_Y, gx, SCR_Y + SCR_H), fill=(255, 255, 255, 26))
@@ -613,7 +628,7 @@ def _screen_audio(d, f, st, cur, tsec):
         x = SCR_X + 30 + i * (bw + gap)
         # 🔴 别写 `or 1`：闲时档就是 0，or 会把它变成礼物 1 档的颜色
         _t = cur.get("tier")
-        col = TIER_COL.get(0 if _t is None else int(_t), TEAL)
+        col = TIER_COL.get(0 if _t is None else int(_t), PRI)
         d.rounded_rectangle((x, base_y - hgt, x + bw, base_y), radius=4,
                             fill=(col[0], col[1], col[2], 210))
     # ⚠️ 别用 ♪ / ♫ —— 思源黑体里没有，会渲染成豆腐块（这个坑 2026-10-26 踩过）
@@ -663,7 +678,7 @@ def draw_computer(img, st, d, f):
     frame = st.get("_media_frame")
     err = str(st.get("_media_error") or "")
     tier = int((cur or {}).get("tier") or 0)
-    col = TIER_COL.get(tier, TEAL)
+    col = TIER_COL.get(tier, PRI)
     tsec = (time.time() - (cur.get("at") or 0) / 1000.0) if cur else 0.0
 
     lay = _lay()
@@ -682,35 +697,35 @@ def draw_computer(img, st, d, f):
     # 第一版画成上宽下窄（88→60），放大看像冰淇淋甜筒，反而更怪 —— 改成下宽上窄。
     d.polygon([(cx - 22, NECK_Y + 4), (cx + 22, NECK_Y + 4),
                (cx + 28, FOOT_Y + 3), (cx - 28, FOOT_Y + 3)],
-              fill=(52, 59, 70, 255))
+              fill=(70, 64, 86, 255))
     # 一道竖向高光偏右 = 圆柱被左上方来的光打亮，平面色块立刻有体积
     d.line([(cx + 9, NECK_Y + 5), (cx + 12, FOOT_Y + 2)], fill=(255, 255, 255, 22), width=3)
     d.line([(cx + 22, NECK_Y + 4), (cx + 28, FOOT_Y + 3)], fill=(255, 255, 255, 58), width=2)
     d.line([(cx - 22, NECK_Y + 4), (cx - 28, FOOT_Y + 3)], fill=(0, 0, 0, 130), width=2)
     # 挂板：贴在屏幕下沿的一块窄条，把「屏幕」和「脖子」接起来。
     # 不画它，柱子直接从屏幕上长出来，接缝那道黑线会像个「倒 T 字」。
-    blit(img, rr_patch(92, 8, 3, (44, 50, 60, 255), outline=(255, 255, 255, 40)),
+    blit(img, rr_patch(92, 8, 3, (64, 58, 78, 255), outline=(255, 255, 255, 40)),
          cx - 46, NECK_Y - 1)
     # 底座：下盘（宽）+ 上盘（窄、更亮）= 有厚度的感觉
-    blit(img, rr_patch(238, 17, 8, (66, 74, 88, 255), outline=(255, 255, 255, 56)),
+    blit(img, rr_patch(238, 17, 8, (88, 82, 104, 255), outline=(255, 255, 255, 56)),
          cx - 119, FOOT_Y + 1)
-    blit(img, rr_patch(196, 8, 4, (92, 102, 119, 255)),
+    blit(img, rr_patch(196, 8, 4, (116, 110, 136, 255)),
          cx - 98, FOOT_Y + 1)
 
     # ---- 显示器外壳 ----
     # 边框比背景只亮一点点（23,27,33 vs 21,26,33），所以轮廓线得靠得住：
     # 原来 255/38 太淡，屏幕像是直接浮在背景上。抬到 62，并在顶边压一道高光。
-    blit(img, rr_patch(MON_W, MON_H, 20, (26, 31, 38, 255),
+    blit(img, rr_patch(MON_W, MON_H, 20, (48, 43, 60, 255),
                        outline=(255, 255, 255, 62), width=1), MON_X, MON_Y)
     d.line([(MON_X + 20, MON_Y + 1), (MON_X + MON_W - 20, MON_Y + 1)],
            fill=(255, 255, 255, 26), width=1)
     # 屏幕四周的一圈内沿，让「屏」和「框」分得开
-    blit(img, rr_patch(SCR_W + 8, SCR_H + 8, 12, (8, 10, 13, 255)),
+    blit(img, rr_patch(SCR_W + 8, SCR_H + 8, 12, (10, 9, 13, 255)),
          SCR_X - 4, SCR_Y - 4)
 
     # ---- 屏幕内容 ----
     if err:
-        d.rectangle((SCR_X, SCR_Y, SCR_X + SCR_W, SCR_Y + SCR_H), fill=(26, 12, 12, 255))
+        d.rectangle((SCR_X, SCR_Y, SCR_X + SCR_W, SCR_Y + SCR_H), fill=(30, 14, 20, 255))
         d.text((SCR_X + SCR_W // 2, SCR_Y + SCR_H // 2 - 18), "素材放不出来",
                font=f(30, True), fill=(255, 150, 140, 235), anchor="mm")
         d.text((SCR_X + SCR_W // 2, SCR_Y + SCR_H // 2 + 22),
@@ -761,10 +776,13 @@ def draw_computer(img, st, d, f):
         else:
             badge = f"档位{tier}"
         bw2 = int(d.textlength(badge, font=f(19, True))) + 20
-        blit(img, rr_patch(bw2, 28, 8, (col[0], col[1], col[2], 40),
-                           outline=(col[0], col[1], col[2], 110)), MON_X + 96, CAP_Y - 4)
+        # 徽标：底色只留一点档位 hue，**字用亮的 INK**。
+        # 原来字也用档位色，配青/金那种高饱和色还挺清楚；换成浅紫之后
+        # 字和底几乎同色，「档位1」糊成一团（截图里实测）。
+        blit(img, rr_patch(bw2, 28, 8, (col[0], col[1], col[2], 46),
+                           outline=(col[0], col[1], col[2], 140)), MON_X + 96, CAP_Y - 4)
         d.text((MON_X + 96 + bw2 // 2, CAP_Y + 10), badge, font=f(19, True),
-               fill=col, anchor="mm")
+               fill=INK, anchor="mm")
         nm = os.path.splitext(str(cur.get("name") or ""))[0]
         d.text((MON_X + 96 + bw2 + 12, CAP_Y), fit_text(nm, MON_W - 96 - bw2 - 12, 20),
                font=f(20), fill=INK)
@@ -799,8 +817,8 @@ def compose(st):
     c1h = 32 + 36 + 3 * 46 + 10
     ry = CARD_Y + 30 + 60
     for val, col in (
-        (st.get("chat", 0), INK),
-        (st.get("gift", 0), GOLD),
+        (st.get("chat", 0), PRI),
+        (st.get("gift", 0), TER),
         (st.get("replied", 0), INK),
     ):
         d.text((CARD_X + CARD_W - 30, ry), str(val), font=f(27), fill=col, anchor="ra")
@@ -812,7 +830,7 @@ def compose(st):
     d.text((W - 64, H - 96), f"在线 {st.get('online', 0)} · 本场 {mm:02d}:{ss_:02d}",
            font=f(22), fill=FAINT, anchor="ra")
     d.text((W - 64, H - 60), f"饭钱 {float(st.get('money', st.get('token', 0)) or 0):.2f}",
-           font=f(22), fill=GOLD if float(st.get('money', st.get('token', 0)) or 0) <= 1 else FAINT,
+           font=f(22), fill=TER if float(st.get('money', st.get('token', 0)) or 0) <= 1 else FAINT,
            anchor="ra")
 
     # ---- 右侧：礼物档位「电脑」展示区（2026-10-27 换掉原来的弹幕列） ----
@@ -836,9 +854,9 @@ def compose(st):
         sy2 = H - SUB_BOTTOM - SUB_H
         sh, pad = shadow_patch(bw2, SUB_H, 24, blur=12, alpha=130)
         blit(img, sh, sx - pad, sy2 - pad + 3)
-        blit(img, rr_patch(bw2, SUB_H, 24, (8, 12, 16, 226)), sx, sy2)
-        blit(img, rr_patch(int(tw) + 28, 34, 9, TEAL), sx + 30, sy2 + 26)
-        d.text((sx + 44, sy2 + 32), tag, font=fs_, fill=(8, 18, 15, 255))
+        blit(img, rr_patch(bw2, SUB_H, 24, (37, 31, 51, 240)), sx, sy2)
+        blit(img, rr_patch(int(tw) + 28, 34, 9, PRI), sx + 30, sy2 + 26)
+        d.text((sx + 44, sy2 + 32), tag, font=fs_, fill=(56, 30, 114, 255))
         d.text((sx + 30 + tw + 46, sy2 + 22), str(sub), font=f(34), fill=INK)
 
     return img
