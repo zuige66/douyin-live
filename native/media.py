@@ -29,6 +29,7 @@ import ctypes
 import hashlib
 import os
 import subprocess
+import sys
 import tempfile
 import time
 
@@ -137,6 +138,51 @@ def _extract_audio(path, mtime):
     return ""
 
 
+_AUDIO_PROBE = {}
+
+
+def _has_audio(path, mtime):
+    """这个文件里到底有没有音轨？—— 用来区分「文件本来就没声音」和「抽轨失败」。
+
+    2026-10-27 查「放视频成功了，但是没有声音」时发现：`0-梁圣巡演.mp4`、
+    `2-man.mp4`、`4-瑞克摇.mp4` 三个素材**本身就没有音轨**（不是播放链路的锅）。
+    以前 `_extract_audio` 抽失败只是静默返回 ""，日志里一个字都没有，看起来像
+    MCI 挂了。现在把「没有音轨」这件事明确写出来，省得下次又从头查一遍。
+
+    imageio-ffmpeg 只带 ffmpeg.exe，没有 ffprobe，所以用 `-i` 的 stream info
+    去认（stderr 里有没有 `Audio:`）。结果按 路径+mtime 缓存，一个文件只探一次。
+    """
+    if not FFMPEG:
+        return None
+    key = hashlib.sha1(f"{path}|{mtime}".encode("utf-8", "ignore")).hexdigest()[:16]
+    if key in _AUDIO_PROBE:
+        return _AUDIO_PROBE[key]
+    got = None
+    try:
+        p = subprocess.run(
+            [FFMPEG, "-hide_banner", "-i", path],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            timeout=20,
+            creationflags=0x08000000,
+        )
+        txt = (p.stderr or b"").decode("utf-8", "ignore")
+        got = "Audio:" in txt
+    except Exception:  # noqa: BLE001
+        got = None
+    _AUDIO_PROBE[key] = got
+    return got
+
+
+def _warn(msg):
+    """写一行到 stderr（overlay.log 收着）。media.py 跑在画面进程里，没有 logger。"""
+    try:
+        sys.stderr.write(msg + "\n")
+        sys.stderr.flush()
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _fit(im, w, h, bg=(6, 8, 10)):
     """按 contain 缩放并居中，四周补底色。不裁切 —— 宁可留边，也别把内容切掉。"""
     im = im.convert("RGB")
@@ -231,6 +277,8 @@ class Engine:
         self._eof = False
         self._reported = False
         self._audio_ok = False
+        # True = 素材本身没音轨（不是播放链路的问题）。给上层 / 日志一个明确的区分。
+        self.silent = False
         self._next_at = 0.0
 
         if not self.path or not os.path.exists(self.path):
@@ -289,6 +337,14 @@ class Engine:
         wav = _extract_audio(self.path, mtime)
         if wav:
             self._audio_ok = _mci_play(wav, self.volume)
+        else:
+            # 没声音的时候要说清楚是哪一种，否则「放视频没声音」永远是个谜
+            has = _has_audio(self.path, mtime)
+            if has is False:
+                _warn(f"  ⓘ {os.path.basename(self.path)} 本身没有音轨 —— 画面正常，声音是素材里就没有")
+                self.silent = True
+            elif has:
+                _warn(f"  ⚠ {os.path.basename(self.path)} 有音轨但抽不出来（ffmpeg 抽轨失败），这次没声音")
 
         self._fps = 15
         self._frame_bytes = w * h * 3

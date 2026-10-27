@@ -488,6 +488,35 @@ class Overlay:
 
 
 # -------------------------------------------------------------------- main
+def hide_own_console():
+    """把「自己那块控制台」藏掉（2026-10-27 修「怎么出现了一个空白的终端」）。
+
+    谁开的控制台已经查清了：DSH 插件用 python.exe 直接 spawn overlay.py，
+    python.exe 是控制台程序 → Windows 给分配一个终端（这台机器默认终端是
+    Windows Terminal），而它的 stdout 被插件重定向进了 zhibo-overlay.log，
+    于是屏幕上多出一个**一个字都没有**的终端窗口，看着像卡死了。
+
+    正解是插件那边改用 pythonw.exe（config.json 的 zhiboPython 已改）。这里是
+    兜底：万一又被 python.exe 拉起来（手动双击、旧配置、别人 fork 的脚本），
+    至少它自己会把窗口收起来，不会一直挂在那儿碍事。
+
+    只藏自己的：GetConsoleWindow() 返回的就是本进程附着的那个控制台窗口，
+    别的终端一概不碰。没有控制台（pythonw）时返回 0，直接跳过。
+
+    **只在输出被重定向时藏**。手动 `python native\\overlay.py` 跑的时候 stdout
+    是接在终端上的（isatty），那说明人就坐在终端前看日志，藏掉等于把他眼前的
+    东西抢走，不能藏。
+    """
+    if sys.stdout is not None and sys.stdout.isatty():
+        return  # 人在终端前看着，别动
+    try:
+        hwnd = ctypes.windll.kernel32.GetConsoleWindow()
+        if hwnd:
+            ctypes.windll.user32.ShowWindow(hwnd, 0)  # SW_HIDE
+    except Exception:
+        pass  # 藏不掉不算错，画面照跑
+
+
 def main():
     ap = argparse.ArgumentParser(add_help=True)
     ap.add_argument("--bridge", default="http://127.0.0.1:18081")
@@ -535,7 +564,9 @@ def main():
                     "anim" if ext in media.ANIM_EXT else "image")
             # 档位从文件名开头推（跟桥的规则一致），别写死 —— 否则截图里
             # 会出现「档位2 · 4-嘉年华.gif」这种自相矛盾的画面。
-            tier = int(base[0]) if base[:1] in "1234" else 1
+            # 0 也要算进去 —— 少了它，`0-梁圣巡演.mp4` 在截图里会被标成「档位1」，
+            # 跟真实运行（闲时）对不上，看截图的人会以为桥判错了档。
+            tier = int(base[0]) if base[:1].isdigit() else 1
             cur = {"seq": 1, "file": p, "name": base, "kind": kind,
                    "tier": tier, "user": "阿伟",
                    "gift": {1: "小心心", 2: "棒棒糖", 3: "跑车", 4: "嘉年华"}[tier],
@@ -581,6 +612,7 @@ def main():
         return 0
 
     src = "demo（自己造弹幕）" if a.demo else a.bridge
+    hide_own_console()
     t = threading.Thread(
         target=demo_feed if a.demo else poll_bridge,
         args=(st, stop) if a.demo else (a.bridge, st, stop),

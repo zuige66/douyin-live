@@ -658,19 +658,35 @@ def draw_computer(img, st, d, f):
     d = ImageDraw.Draw(lay)  # 从这里开始，d 画的是带 alpha 的那一层
 
     # ---- 底座 + 脖子（漫画风：扁平色块 + 极淡描边，不做渐变）----
+    # 🔴 2026-10-27 晚改：原来脖子 (26,30,36)、底座 (30,34,41)，而背景是 (21,26,33) ——
+    #    只差 5~9 个色阶，远看就是「一块悬空的屏幕」。主人原话：「不像电脑，
+    #    是不是下面的支架显得颜色不显眼」。对，就是支架看不见。
+    #    改法：支架整体抬到 50~90 区间（跟屏幕壳的 23,27,33 明确分开），
+    #    两侧一明一暗、底座两层，靠明暗差把「这是一台立着的显示器」讲清楚。
     cx = MON_X + MON_W // 2
-    sh, pad = shadow_patch(230, 22, 11, blur=14, alpha=120)
-    blit(img, sh, cx - 115 - pad, FOOT_Y + 2 - pad)
-    blit(img, rr_patch(212, 14, 7, (30, 34, 41, 255), outline=(255, 255, 255, 30)),
-         cx - 106, FOOT_Y)
-    d.polygon([(cx - 40, NECK_Y), (cx + 40, NECK_Y), (cx + 28, FOOT_Y), (cx - 28, FOOT_Y)],
-              fill=(26, 30, 36, 255))
-    d.line([(cx + 40, NECK_Y), (cx + 28, FOOT_Y)], fill=(255, 255, 255, 26), width=1)
-    d.line([(cx - 40, NECK_Y), (cx - 28, FOOT_Y)], fill=(0, 0, 0, 90), width=1)
+    sh, pad = shadow_patch(250, 26, 12, blur=16, alpha=145)
+    blit(img, sh, cx - 125 - pad, FOOT_Y + 4 - pad)
+    # 脖子：从屏幕底下伸出来的梯形，右亮左暗 = 光从左上来
+    d.polygon([(cx - 44, NECK_Y), (cx + 44, NECK_Y),
+               (cx + 30, FOOT_Y + 3), (cx - 30, FOOT_Y + 3)],
+              fill=(52, 59, 70, 255))
+    d.line([(cx + 44, NECK_Y), (cx + 30, FOOT_Y + 3)], fill=(255, 255, 255, 58), width=2)
+    d.line([(cx - 44, NECK_Y), (cx - 30, FOOT_Y + 3)], fill=(0, 0, 0, 130), width=2)
+    # 屏幕和脖子之间的接缝：不画的话两块颜色一撞，像个「倒 T 字」
+    d.line([(cx - 44, NECK_Y), (cx + 44, NECK_Y)], fill=(0, 0, 0, 120), width=2)
+    # 底座：下盘（宽）+ 上盘（窄、更亮）= 有厚度的感觉
+    blit(img, rr_patch(238, 17, 8, (66, 74, 88, 255), outline=(255, 255, 255, 56)),
+         cx - 119, FOOT_Y + 1)
+    blit(img, rr_patch(196, 8, 4, (92, 102, 119, 255)),
+         cx - 98, FOOT_Y + 1)
 
     # ---- 显示器外壳 ----
-    blit(img, rr_patch(MON_W, MON_H, 20, (23, 27, 33, 255),
-                       outline=(255, 255, 255, 38), width=1), MON_X, MON_Y)
+    # 边框比背景只亮一点点（23,27,33 vs 21,26,33），所以轮廓线得靠得住：
+    # 原来 255/38 太淡，屏幕像是直接浮在背景上。抬到 62，并在顶边压一道高光。
+    blit(img, rr_patch(MON_W, MON_H, 20, (26, 31, 38, 255),
+                       outline=(255, 255, 255, 62), width=1), MON_X, MON_Y)
+    d.line([(MON_X + 20, MON_Y + 1), (MON_X + MON_W - 20, MON_Y + 1)],
+           fill=(255, 255, 255, 26), width=1)
     # 屏幕四周的一圈内沿，让「屏」和「框」分得开
     blit(img, rr_patch(SCR_W + 8, SCR_H + 8, 12, (8, 10, 13, 255)),
          SCR_X - 4, SCR_Y - 4)
