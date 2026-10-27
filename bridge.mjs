@@ -2134,7 +2134,24 @@ function applyMusicVolume() {
  *    kugou      → KUGOU_URL_UNAVAILABLE（只能当搜索源）
  *  「能不能真放出来」由后面的逐个试流兜着，不靠提前扣分来赌。
  */
-function pickTrack(tracks, want, artist = '') {
+/* 各家的登录状态（VIP 曲能不能放整首就看它）。
+ * 🔴 2026-10-27 深夜实测：网易云**没登录**、QQ **已登录**，
+ *    可 pickTrack 里 `vip === true` 是无条件 +8 分，
+ *    于是「网易云 + 正版 VIP」永远排第一 → 观众点《唯一》放 30 秒就断，
+ *    而同一个 QQ 源上明明有整首。观众的原话是「今天一直在抽」。
+ *    规则改成：**登录了才叫正版加分，没登录的 VIP 曲是坑，要扣分。** */
+let authState = { at: 0, ok: {} }
+async function boxAuth() {
+  if (Date.now() - authState.at < 5 * 60 * 1000) return authState.ok
+  const r = await boxJson('/auth/status', { timeout: 4000 })
+  const ok = {}
+  if (r.ok) for (const p of r.providers || []) ok[String(p.provider)] = Boolean(p.loggedIn)
+  /* 拿不到就当全都登录着 —— 别因为一次 401 把候选排序带歪 */
+  authState = { at: Date.now(), ok }
+  return ok
+}
+
+function pickTrack(tracks, want, artist = '', auth = {}) {
   const w = normTitle(want)
   if (!w) return null
   const a = normTitle(artist)
@@ -2168,7 +2185,14 @@ function pickTrack(tracks, want, artist = '') {
       s += 2 // 没给歌手时，「单人署名」仍旧是最弱的原唱信号
     }
 
-    if (t.vip === true) s += 8 // 正版优先，但不再因为它「可能取不到流」而提前判死刑
+    /* VIP 曲「能不能放整首」完全取决于那个音源登录了没：
+     * 登录着 → 正版原唱，加分；没登录 → 只给 30 秒试听，比放别人唱的还差。
+     * auth 是空对象（老调用点 / 查不到登录状态）时按老规矩 +8，不做惩罚。 */
+    if (t.vip === true) {
+      const known = Object.prototype.hasOwnProperty.call(auth, t.provider)
+      if (!known) s += 8
+      else s += auth[t.provider] ? 8 : -35
+    }
     if (t.provider === 'kugou') s -= 30 // 酷狗只能搜不能放
     if (t.provider === 'qq') s += 4
     else if (t.provider === 'netease') s += 3
@@ -2198,7 +2222,9 @@ async function boxRequestSong(want, artist = '') {
   if (!r.ok) return { ok: false, why: r.why || '搜索失败' }
   const tracks = Array.isArray(r.tracks) ? r.tracks : []
   if (!tracks.length) return { ok: false, why: '搜不到这首歌' }
-  const picked = pickTrack(tracks, want, artist)
+  /* 把「哪家登录了」交给打分：没登录那家的 VIP 曲只能放 30 秒，得让它往后站 */
+  const auth = await boxAuth()
+  const picked = pickTrack(tracks, want, artist, auth)
   if (!picked) return { ok: false, why: `搜到 ${tracks.length} 首，但都不叫这个` }
 
   /* 取流预检：挑出来的这首**真能放**才往下走。
