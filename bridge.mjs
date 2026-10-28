@@ -867,7 +867,7 @@ function loadMediaCfg() {
       out.giftMap = {}
       for (const [k, v] of Object.entries(j.giftMap)) {
         const n = Number(v)
-        if (String(k).trim() && n >= 1 && n <= 4) out.giftMap[String(k).trim().slice(0, 20)] = n
+        if (String(k).trim() && n >= 0 && n <= 4) out.giftMap[String(k).trim().slice(0, 20)] = n
       }
     }
     for (const t of [0, 1, 2, 3, 4]) {
@@ -1031,10 +1031,13 @@ function mediaLog(line, tone) {
  *  0 档不是「礼物档」，池子在 scanMedia().idle 里（`0-xxx.mp4`）。 */
 function pickFile(tier) {
   const scan = scanMedia()
-  /* 'any' = 礼物不分档：1–4 档所有素材混成一个池子。
-   * 主人 2026-10-27 深夜：「只要刷礼物，那四个视频就随机选一个播放」。 */
+  /* 'any' = 礼物不分档：所有素材混成一个池子。
+   * 主人 2026-10-27 深夜：「只要刷礼物，那四个视频就随机选一个播放」。
+   * 2026-10-28 加了 0 档：主人原话「发礼物也可以放 0 档」——
+   * 0 档那几条（闲时/点播用的）现在也会被礼物带出来。
+   * 想让礼物只放 1–4 档，就在设置页关掉「礼物不分档」。 */
   if (tier === 'any') {
-    const pool = [1, 2, 3, 4].flatMap((t) => scan.byTier[t] || [])
+    const pool = [...(scan.idle || []), ...[1, 2, 3, 4].flatMap((t) => scan.byTier[t] || [])]
     if (!pool.length) return null
     const ids = pool.map((x) => x.file)
     /* 池子变了（加了 / 删了素材）就重洗，别拿着已经不存在的文件名去找 */
@@ -1405,7 +1408,10 @@ const VIDEO_DUCK_WHEN_SPEAKING = 0.2
 function mediaVolumeNow(cur) {
   if (!cur) return 0
   const base = Number(cur.volume) || 0
-  if (cur.tier === 0 && Date.now() < speakUntil) {
+  /* 0 档说话时压低 —— 但**礼物带出来的 0 档不压**（2026-10-28）：
+   * 那是观众花了钱换来的「正片」，压了就没意思，跟 1–4 档礼物视频一个道理。
+   * 用 cur.gift 区分来源，别用 tier 一刀切。 */
+  if (cur.tier === 0 && !cur.gift && Date.now() < speakUntil) {
     return Math.min(1, Math.max(0, base * VIDEO_DUCK_WHEN_SPEAKING))
   }
   return base
@@ -1959,7 +1965,8 @@ let boxDeadSince = 0
 let boxVol = Math.min(1, Math.max(0, Number(mediaCfg.audio.music) / 100))
 let boxDuckSaved = null // 闪避前的音量，恢复时还原
 /* 观众点过的歌（点歌台显示「接下来」用）。**每项都带时间戳**，原因见下面 boxQueueSettle。
- * 形状：[{ name, at, hot }]  —— hot 表示这首是热榜垫的，不是观众点的。 */
+ * 形状：[{ name, id, at, hot }]  —— hot 表示这首是热榜垫的，不是观众点的。
+ * **id 是 2026-10-28 加的**：只靠歌名对账会误删，见 sameTrack() 那段。 */
 let boxQueue = []
 
 /* 队列对账参数。
@@ -1971,11 +1978,35 @@ const QUEUE_MAX_WAIT = Number(process.env.ZY_QUEUE_MAXWAIT || 20 * 60 * 1000)
 function boxQueueNames() {
   return boxQueue.map((x) => x.name)
 }
-function boxQueuePush(name, hot = false) {
+function boxQueuePush(name, hot = false, id = '') {
   const n = String(name || '').trim()
   if (!n) return
-  boxQueue.push({ name: n, at: Date.now(), hot: !!hot })
+  boxQueue.push({ name: n, id: String(id || ''), at: Date.now(), hot: !!hot })
   while (boxQueue.length > QUEUE_MAX) boxQueue.shift()
+}
+
+/** 队列对账专用：这两条**是不是同一首**。
+ *
+ *  🔴 2026-10-28 的「歌被顶了」事故就是这里判错造成的。
+ *  `sameTitle()` 用的是 `x.includes(y) || y.includes(x)`，而 `normTitle()` 会把
+ *  括号里的内容整段删掉 —— 于是：
+ *      《DAMIDAMI(哈基米版)》 → damidami
+ *      《DAMIDAMI》          → damidami      ← 两首不同的歌被判成同一首
+ *  播 Sihan 的《DAMIDAMI》时，对账从后往前找到《DAMIDAMI(哈基米版)》那一项，
+ *  把它和它前面的**全部**当成"已经放过"清掉 → 队列账本清空 →
+ *  后面每首点歌的 offset 都算成 0 → 后点的插到最前 → **播放顺序整个倒过来**，
+ *  而《我不难过》这类还没播的直接从点歌台消失（主人：「我的歌曲被顶了」）。
+ *
+ *  所以对账一律先比 trackId（`netease:xxx` 这种，唯一且不会被标题规范化影响），
+ *  只有拿不到 id 的老数据才退回歌名比较，且**要求归一化后完全相等**，
+ *  不再用包含关系。搜索打分那边仍然用宽松的 sameTitle()，两件事分开。 */
+function sameTrack(item, id, title) {
+  const a = String((item && item.id) || '')
+  const b = String(id || '')
+  if (a && b) return a === b
+  const x = normTitle(item && item.name)
+  const y = normTitle(title)
+  return Boolean(x) && x === y
 }
 
 /* 观众点过的歌（2026-10-28）。画面现在**只显示观众点的歌**，热榜只后台放。
@@ -2034,15 +2065,16 @@ function markRequested(id) {
  *    ② 正在放的**不在**队里（热榜 play 跳走 / 操作员手点 / 换源失败被自动跳过），
  *       就按时间算：等太久的认它是被跳过了。
  *  返回「有没有变」，方便调用方决定要不要广播。 */
-function boxQueueSettle(nowTitle) {
+function boxQueueSettle(nowTitle, nowId) {
   const before = boxQueueNames().join('|')
   const now = Date.now()
   const title = String(nowTitle || '')
+  const id = String(nowId || '')
   let hit = -1
-  if (title) {
-    /* 从后往前找：同名歌在队里出现两次时，以最后一次为准（前面的肯定已经放过） */
+  if (title || id) {
+    /* 从后往前找：同一首在队里出现两次时，以最后一次为准（前面的肯定已经放过） */
     for (let i = boxQueue.length - 1; i >= 0; i--) {
-      if (sameTitle(boxQueue[i].name, title)) {
+      if (sameTrack(boxQueue[i], id, title)) {
         hit = i
         break
       }
@@ -2144,7 +2176,7 @@ function boxToMusic() {
    * 一首歌能放四五分钟，而「等太久就算被跳过」这条是跟时间赛跑的：
    * 只在换歌时跑的话，卡住的那几分钟里 hotNeed() 一直以为还有歌，
    * 热榜就一直不补。n 最多 20 项，1.5 秒一次的开销可以忽略。 */
-  if (music.title) boxQueueSettle(music.title)
+  if (music.title) boxQueueSettle(music.title, music.trackId)
   boxLastPlaying = music.playing
   checkStuck()
 }
@@ -2696,7 +2728,7 @@ async function boxRequestSong(want, artist = '') {
    * 🔴 原来这里 `if (s2.pending > 0) return` 提前返回、**不写 boxQueue** ——
    * 排队成功（最常见的情况）时点歌台看不到刚点的那首，等于白点。
    * 现在不管 pending 有没有归零，都把歌记进队列，点歌台才有东西显示。 */
-  boxQueuePush(hit.name)
+  boxQueuePush(hit.name, false, hit.id)
   /* 记下"这首是观众点的"—— 画面只显示点过的歌（热榜一律不显示）。
    * 必须在这里记，不能靠歌名比对：热榜里可能有同名翻唱。 */
   markRequested(hit.id)
@@ -2840,7 +2872,7 @@ async function hotSwapPlayable(track) {
  *  等点歌全放完、队列真空了，才正常垫热榜到 HOT_KEEP 首。 */
 let songRequesting = 0
 function hotNeed() {
-  boxQueueSettle(music.title)
+  boxQueueSettle(music.title, music.trackId)
   if (songRequesting > 0) return 0
   if (boxQueue.some((x) => !x.hot)) return 0
   return Math.max(0, HOT_KEEP - boxQueue.length)
@@ -2939,7 +2971,7 @@ async function fillHot() {
       hotPlayed.add(track.id)
       /* 队列里记**实际播的那个名字**：换过源之后播放器报的是新名字，
        * 记榜单原名的话 boxQueueSettle 永远对不上号，这笔账就又出不去了。 */
-      boxQueuePush(use.name, true)
+      boxQueuePush(use.name, true, use.id)
       started = true
       need--
       hotWhy = ''
@@ -2961,7 +2993,7 @@ async function fillHot() {
           break
         }
         hotPlayed.add(track.id)
-        boxQueuePush(track.name, true)
+        boxQueuePush(track.name, true, track.id)
         started = true
         need--
         hotWhy = '只有试听片段（音源没登录/没会员）'
@@ -4556,13 +4588,18 @@ async function dyRoute(p, u, req) {
     if (b.giftMap && typeof b.giftMap === 'object') {
       const m = {}
       for (const [k, v] of Object.entries(b.giftMap)) {
+        /* 0 档也算合法目标（2026-10-28 主人：「发礼物也可以放 0 档」）——
+         * 原来这里是 n >= 1，礼物映射到 0 档会被**静默吞掉**，
+         * 界面上选了 0 档、保存也不报错，但实际一点变化都没有。 */
         const n = Number(v)
-        if (String(k).trim() && n >= 1 && n <= 4) m[String(k).trim().slice(0, 20)] = n
+        if (String(k).trim() && n >= 0 && n <= 4) m[String(k).trim().slice(0, 20)] = n
       }
       mediaCfg.giftMap = m
     }
     if (b.tiers && typeof b.tiers === 'object') {
-      for (const t of [1, 2, 3, 4]) {
+      /* 0 档也要能改（2026-10-28）：原来是 [1,2,3,4]，0 档的 mode 根本改不了，
+       * 主人想「0 档点播也随机」只能手改 media.json 再重启桥。 */
+      for (const t of [0, 1, 2, 3, 4]) {
         const s = b.tiers[t] || b.tiers[String(t)]
         if (!s) continue
         const d = mediaCfg.tiers[t]
@@ -5391,7 +5428,19 @@ const server = http.createServer(async (req, res) => {
       songs: nextUp(3),
       // total 也改成只数点歌 —— 卡片右上角那个「歌单 N 首」写 4 首，
       // 结果画面里只列得出 1 首，观众会以为显示坏了。
-      queue: { total: boxQueue.filter((x) => !x.hot).length, why: queue.why || '', hot: hotWhy || '' },
+      /* list 是**全量**（2026-10-28 加）：设置页「音源」页要看完整歌单队列，
+       * 画面那边仍然只用上面那 3 首（songs），别让两块共用一个字段。
+       * hot=true 的是热榜垫的，设置页会灰着标出来，方便分辨「谁点的」。 */
+      queue: {
+        total: boxQueue.filter((x) => !x.hot).length,
+        why: queue.why || '',
+        hot: hotWhy || '',
+        list: boxQueue.map((x) => ({
+          name: x.name,
+          hot: Boolean(x.hot),
+          sec: Math.max(0, Math.round((Date.now() - x.at) / 1000)),
+        })),
+      },
       danmaku: recent,
       subtitle: speaking ? say.text : null,
       // 正在播的歌。`hot=true` 表示这是热榜垫的 —— 画面**不显示**（只后台放）。

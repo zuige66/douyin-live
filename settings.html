@@ -328,19 +328,24 @@
 
     <div class="card">
       <h2>礼物名 → 档位</h2>
-      <div class="sub">决定这个礼物播哪一档素材。1 档最轻、4 档最重（档位本身在「电脑」页配）</div>
+      <div class="sub">
+        决定这个礼物播哪一档素材。1 档最轻、4 档最重（档位本身在「电脑」页配）。
+        0 档是闲时/点播那几条，选它就让这个礼物去放那些。
+      </div>
       <div id="giftMapBox"><div class="hint">正在读…</div></div>
       <div class="row" style="margin-top:14px">
         <input type="text" id="gmName" placeholder="礼物名，例如 小心心">
         <select id="gmTier" style="width:112px;flex:none">
-          <option value="1">1 档</option><option value="2">2 档</option>
+          <option value="0">0 档</option>
+          <option value="1" selected>1 档</option><option value="2">2 档</option>
           <option value="3">3 档</option><option value="4">4 档</option>
         </select>
         <button class="btn" id="btnGmAdd">加上</button>
       </div>
       <div class="hint">
-        认不出的礼物走「电脑」页的默认档位。想让 1–4 档混着随机抽，
-        就在「电脑」页打开「礼物不分档」—— 那样子就不看礼物名了。
+        认不出的礼物走「电脑」页的默认档位。想让所有档位混着随机抽，
+        就在「电脑」页打开「礼物不分档」—— 那样子就不看礼物名了，
+        0 档也在池子里。
       </div>
     </div>
   </section>
@@ -529,6 +534,22 @@
   <!-- ══════════════ 卡片 III：音源（点歌放不放得出整首就看这里）══════════════ -->
   <section id="tab-music" class="hide">
     <div class="card">
+      <h2>歌单队列</h2>
+      <div class="sub">
+        观众点歌的排队情况。<b>灰着的是热榜垫的</b> —— 那些不是观众点的，放完就没了。
+        队列跟播放器里的真实顺序一致：点歌按点单先后排，热榜永远排在所有点歌后面。
+      </div>
+      <div id="qNow" style="margin:14px 0 10px;padding:12px 14px;border-radius:10px;background:rgba(127,119,221,.10);border:1px solid rgba(127,119,221,.25)">
+        <div class="hint">正在读…</div>
+      </div>
+      <div id="qList"><div class="hint">正在读…</div></div>
+      <div class="row wrap" style="margin-top:12px">
+        <button class="btn ghost" id="btnQRefresh">刷新队列</button>
+        <span class="hint" id="qMeta"></span>
+      </div>
+    </div>
+
+    <div class="card">
       <h2>音源登录</h2>
       <div class="sub">点歌和热榜都是从这三家里找歌。没登录的那家，VIP 曲只给 30 秒试听、或者干脆取不到音源。</div>
       <div class="srcs" id="srcList">
@@ -657,7 +678,7 @@ function runLoader(key) {
     else if (key === 'gift') loadGift()
     else if (key === 'computer') { loadMedia(); loadMediaList() }
     else if (key === 'sound') loadMedia()
-    else if (key === 'music') loadSrc()
+    else if (key === 'music') { loadQueue(); loadSrc() }
     else if (key === 'users') loadUsers()
     else if (key === 'persona') loadPersona()
     else if (key === 'diag') loadDiag()
@@ -797,6 +818,62 @@ async function loadSrc() {
 }
 
 $('btnSrcRefresh').onclick = loadSrc
+
+/* ── 歌单队列（2026-10-28）──
+ * 主人原话：「我在设置里面能不能看到歌单队列，在音乐台那里」。
+ * 数据来自桥的 /state.json：`queue.list` 是全量队列，`music` 是正在播的那首。
+ * ⚠️ 旧版桥没有 queue.list（要重启才有）—— 拿不到就**明说**，
+ * 别显示成「队列空着」让人以为点歌没排上。 */
+async function loadQueue() {
+  const now = $('qNow'), box = $('qList'), meta = $('qMeta')
+  let d = null
+  try {
+    d = await api('/state.json')
+  } catch (e) {
+    box.innerHTML = '<div class="hint">读不到：' + esc(e.message) + '（弹幕桥在跑吗？）</div>'
+    return
+  }
+  const m = d && d.music
+  now.innerHTML = m && m.title
+    ? '<div style="font-size:12px;opacity:.65">正在播放' + (m.hot ? ' · 热榜垫的' : '') + '</div>'
+      + '<div style="font-size:16px;font-weight:500;margin-top:4px">' + esc(m.title) + '</div>'
+      + '<div style="font-size:12px;opacity:.65;margin-top:2px">'
+      + esc(m.artist || '') + (m.playing ? '' : ' · 暂停中') + '</div>'
+    : '<div class="hint">现在没在放歌</div>'
+
+  const q = (d && d.queue) || {}
+  /* 优先用全量 queue.list（新桥才有）；旧桥退回 state.songs（只有前 3 首）。
+   * 这样没重启桥的时候也能看见队列，而不是一片「要重启」。 */
+  const full = Array.isArray(q.list)
+  const list = full
+    ? q.list
+    : (Array.isArray(d && d.songs) ? d.songs.map((n) => ({ name: n })) : null)
+  if (!list) {
+    box.innerHTML = '<div class="hint">这个版本的桥还不带完整队列（要重启桥才生效）。</div>'
+    meta.textContent = ''
+    return
+  }
+  if (!list.length) {
+    box.innerHTML = '<div class="hint">队列空着 —— 下一个人点歌会直接接上。</div>'
+    meta.textContent = q.hot ? '热榜：' + q.hot : ''
+    return
+  }
+  box.innerHTML = list.map((x, i) => {
+    const ago = x.sec >= 60 ? Math.floor(x.sec / 60) + ' 分前' : '刚刚'
+    return '<div style="display:flex;gap:10px;align-items:baseline;padding:7px 2px;'
+      + 'border-bottom:1px solid rgba(128,128,128,.16);' + (x.hot ? 'opacity:.45' : '') + '">'
+      + '<span style="min-width:20px;font-size:12px;opacity:.6">' + (i + 1) + '</span>'
+      + '<span style="flex:1;font-size:13px">' + esc(x.name) + '</span>'
+      + '<span style="font-size:11px;opacity:.55">' + (x.hot ? '热榜' : '点歌') + '</span>'
+      + '<span style="font-size:11px;opacity:.4">' + ago + '</span>'
+      + '</div>'
+  }).join('')
+  meta.textContent = '点歌 ' + (q.total || 0) + ' 首 · 队列共 ' + list.length + ' 首'
+    + (q.hot ? ' · 热榜：' + q.hot : '')
+    + (full ? '' : ' · 只显示前 3 首（重启桥后能看到全部）')
+}
+
+$('btnQRefresh').onclick = loadQueue
 
 /* ── QQ：粘贴 Cookie ── */
 $('btnQqSave').onclick = async () => {
@@ -1374,8 +1451,17 @@ function renderTiers(tiers) {
   $('tierBox').innerHTML = [0, 1, 2, 3, 4].map((t) => {
     const d = tiers[t] || tiers[String(t)] || {}
     const vol = d.volume == null ? 1 : d.volume
+    /* 播放方式改成可选（2026-10-28）：原来只有个 badge 写着「随机抽/顺序放」，
+     * 想换只能手改 cache/media.json 再重启桥。0 档尤其需要 —— 闲时/点播那几条
+     * 主人要的是随机。 */
+    const mode = d.mode === 'sequence' ? 'sequence' : 'random'
     return `<div class="tier" data-tier="${t}">
-      <div class="th">${esc(TIER_LABEL[t])}<span class="badge">${esc(TIER_MODE[d.mode] || d.mode || '随机抽')}</span></div>
+      <div class="th">${esc(TIER_LABEL[t])}
+        <select data-k="mode" style="width:auto;flex:none;font-size:12px;padding:2px 6px">
+          <option value="random"${mode === 'random' ? ' selected' : ''}>随机抽</option>
+          <option value="sequence"${mode === 'sequence' ? ' selected' : ''}>顺序放</option>
+        </select>
+      </div>
       <div class="tr"><span>音量</span>
         <input type="range" data-k="volume" min="0" max="100" value="${Math.round(vol * 100)}">
         <b data-v style="width:44px;text-align:right">${Math.round(vol * 100)}%</b></div>
@@ -1396,6 +1482,7 @@ $('btnTier').onclick = async () => {
   $('tierBox').querySelectorAll('.tier').forEach((box) => {
     const t = Number(box.dataset.tier)
     tiers[t] = {
+      mode: box.querySelector('select[data-k="mode"]').value,
       volume: Number(box.querySelector('input[data-k="volume"]').value) / 100,
       maxSec: Number(box.querySelector('input[data-k="maxSec"]').value) || 30,
     }
