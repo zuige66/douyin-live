@@ -124,15 +124,20 @@ aside{flex:0 0 auto;background:#fff;display:flex;flex-direction:column;min-heigh
 .t-character{display:flex;align-items:flex-end;justify-content:center}
 .t-character img{width:100%;height:100%;object-fit:contain;display:block;
   filter:drop-shadow(0 18px 26px rgba(0,0,0,.35))}
-.t-monitor .shell{position:absolute;left:0;right:0;top:0;height:87.5%;background:var(--card);
-  border:1px solid var(--hair);border-radius:1.6em;padding:2.9%}
+/* 显示器：外壳是**写死的深色**，不跟主题变 —— 因为 native/render.py 里
+   rr_patch(MON_W, MON_H, ..., (48,43,60)) 就是硬编码的，浅色主题下它也是深灰。
+   编辑器之前用 var(--card) 画成白色，两边一对比就觉得"组件没变"，所以照抄真值。 */
+.t-monitor .shell{position:absolute;left:0;right:0;top:0;height:87.5%;
+  background:#302B3C;border:1px solid rgba(255,255,255,.25);border-radius:1.6em;padding:2.9%}
 .t-monitor .scr{position:absolute;inset:0;border-radius:1em;overflow:hidden;
   background:linear-gradient(135deg,#14121b,#241d33);display:flex;align-items:center;
   justify-content:center;color:rgba(202,196,208,.55);font-family:var(--font);font-size:2.6em}
 .t-monitor .neck{position:absolute;left:50%;transform:translateX(-50%);bottom:12.5%;width:9%;height:6.7%;
-  background:var(--card);border-left:1px solid var(--hair);border-right:1px solid var(--hair)}
+  background:#464056}
 .t-monitor .foot{position:absolute;left:50%;transform:translateX(-50%);bottom:0;width:42%;height:3.6%;
-  background:var(--card);border:1px solid var(--hair);border-radius:.6em}
+  background:#585268;border:1px solid rgba(255,255,255,.22);border-radius:.6em}
+.t-monitor .foot::after{content:'';position:absolute;left:16%;right:16%;top:15%;bottom:45%;
+  background:#746E88;border-radius:.3em}
 .t-danmaku{display:flex;flex-direction:column;justify-content:flex-end;gap:1.1em;font-family:var(--font);font-size:2.4em}
 .t-danmaku .dm{align-self:flex-end;max-width:100%;background:rgba(30,25,42,.72);
   border:1px solid rgba(208,188,255,.22);border-radius:1em;padding:.55em .9em;color:#E6E1E5}
@@ -176,6 +181,15 @@ body.preview #previewHint{display:block}
   background:#2b2f3c;color:#fff;padding:8px 16px;border-radius:20px;font-size:12.5px;
   pointer-events:none;transition:.22s;z-index:99;box-shadow:0 6px 20px rgba(0,0,0,.28);max-width:70vw}
 #toast.on{opacity:1;transform:translate(-50%,0)}
+
+/* 同步状态：一次保存失败之后，主人必须能一眼看出来。
+   原来只弹 1.8 秒的 toast，直播中低头看屏幕就错过了 —— 表现就是
+   「我拖了、但画面没动」，跟没做一样。 */
+.sync{display:inline-flex;align-items:center;gap:5px;font-size:11.5px;padding:3px 9px;
+  border-radius:20px;background:#eef7ee;color:#2e7d32;border:1px solid #cfe8cf;white-space:nowrap}
+.sync::before{content:'';width:6px;height:6px;border-radius:50%;background:currentColor}
+.sync.dirty{background:#fff8e6;color:#8a6100;border-color:#f0d9a0}
+.sync.err{background:#fdecec;color:#b3261e;border-color:#f5c6c2}
 </style>
 </head>
 <body>
@@ -198,6 +212,7 @@ body.preview #previewHint{display:block}
   <div class="sep"></div>
   <button class="btn" id="reloadBtn" title="丢掉本地改动，重新从画面读">重新载入</button>
   <button class="btn primary" id="saveBtn" title="Ctrl+S">保存到画面</button>
+  <span class="sync" id="sync">读取中…</span>
   <button class="btn" id="previewBtn">预览</button>
 </header>
 
@@ -797,10 +812,18 @@ function fitScale() {
  * 存 / 读
  * ══════════════════════════════════════════════════════════════════════ */
 let saveTimer = null;
+/* 同步状态：'ok' 已落盘 / 'dirty' 还没存 / 'err' 存不进去 */
+function setSync(state, text) {
+  const el = $('#sync');
+  el.className = 'sync' + (state === 'ok' ? '' : ' ' + state);
+  el.textContent = text;
+}
+
 /* autoSave：拖完、改完自动存一次（400ms 防抖）。改坏了还有撤销和「重新载入」兜底，
    所以不弹确认 —— 直播中多一次弹窗就多一次手忙脚乱。 */
 function autoSave() {
   try { localStorage.setItem(LS_KEY, snap()); } catch (e) { /* 隐私模式可能写不了 */ }
+  setSync('dirty', '未保存…');
   clearTimeout(saveTimer);
   saveTimer = setTimeout(function () { save(true); }, 400);
 }
@@ -812,15 +835,19 @@ async function save(quiet) {
     }, 6000);
     const j = await r.json();
     if (j.ok) {
+      const t = new Date().toLocaleTimeString('zh-CN', { hour12: false });
+      setSync('ok', '已同步 ' + t);
       if (!quiet) toast('已保存 · 画面 1 秒内跟着变');
       return true;
     }
+    setSync('err', '保存失败');
     toast('保存失败：' + j.error, 4000);
     if (/不认识的接口/.test(j.error || '')) {
-      toast('桥还是旧代码 —— 先导出 JSON，等桥重启后再存', 5000);
+      toast('桥还是旧代码 —— 先重启桥，再点保存', 5000);
     }
     return false;
   } catch (e) {
+    setSync('err', '连不上桥');
     if (!quiet) toast('连不上桥（' + (e.name === 'AbortError' ? '超时' : e.message) + '）', 4000);
     return false;
   }
@@ -833,11 +860,14 @@ async function loadFromBridge(showToast) {
     if (j.ok && j.layout) {
       scene = normalize(j.layout);
       pushHistory(); renderAll();
+      setSync('ok', '已同步');
       if (showToast) toast('已从画面重新载入');
       return true;
     }
+    setSync('err', '还没有版式文件');
     if (showToast) toast(j.error || '还没有版式文件', 3000);
   } catch (e) {
+    setSync('err', '读不到桥');
     if (showToast) toast('读不到桥，先用本地草稿', 3000);
   }
   return false;
