@@ -125,14 +125,26 @@ class Smtc:
 
     async def _session(self):
         mgr = await self._manager()
-        s = mgr.get_current_session()
-        if s is not None:
-            return s
-        # 没有「当前会话」时，挑一个我们认识的播放器（多个播放器同时开着时会有用）
+        cur = mgr.get_current_session()
+        # 🔴 只认音乐播放器，不认「系统当前会话」（2026-10-28 修）。
+        #
+        # 原来是 `if s is not None: return s` —— 直接返回系统当前会话，
+        # 于是浏览器里放个 B 站视频/教程，桥就把视频标题当成"正在播放的音乐"：
+        # 实测抓到过「下载dsh抖音刷视频插件 — DeepSeek Harness」，写进点歌台
+        # 和画面，还跟着做 TTS 闪避。主人看到的是"怎么会有这种歌，串台了？"
+        #
+        # 现在按 APP_HINT 过一遍：当前会话是音乐播放器才用，否则在所有会话里
+        # 找认识的；都不认识 = 没有播放器在跑（宁可说没有，也不报别人的视频）。
+        cands = []
+        if cur is not None:
+            cands.append(cur)
         for x in mgr.get_sessions():
-            aid = (x.source_app_user_model_id or "").lower()
+            if x is not None and x not in cands:
+                cands.append(x)
+        for s in cands:
+            aid = (s.source_app_user_model_id or "").lower()
             if any(h in aid for h in APP_HINT):
-                return x
+                return s
         return None
 
     async def get(self, fresh=False):
@@ -509,9 +521,44 @@ class Vol:
 
 
 # ---------------------------------------------------------------- 分发
+def sys_volume():
+    """默认输出设备的系统音量 + 静音状态（2026-10-28）。
+
+    为什么需要：绝大多数「没声音」不在代码里 —— 是系统默认输出切到了蓝牙耳机、
+    耳机被静音、或者音量被拉到 2%。以前这些只能主人自己看右下角，
+    桥这边一片绿，谁也说不清。现在每 30 秒读一次，进快照、上面板。
+    """
+    out = {"ok": False}
+    try:
+        from pycaw.pycaw import AudioUtilities
+
+        dev = AudioUtilities.GetSpeakers()
+        ev = getattr(dev, "EndpointVolume", None)
+        if ev is None:
+            # 老版 pycaw：GetSpeakers() 返回 IMMDevice，得自己 Activate
+            from ctypes import cast, POINTER
+            from comtypes import CLSCTX_ALL
+            from pycaw.pycaw import IAudioEndpointVolume
+
+            iface = dev.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+            ev = cast(iface, POINTER(IAudioEndpointVolume))
+        out = {
+            "ok": True,
+            "dev": getattr(dev, "FriendlyName", "") or "",
+            "vol": round(float(ev.GetMasterVolumeLevelScalar()), 3),
+            "mute": bool(ev.GetMute()),
+        }
+    except Exception as e:
+        out["why"] = f"{type(e).__name__}: {e}"
+    return out
+
+
 async def handle(req, smtc, vol):
     cmd = (req.get("cmd") or "get").lower()
     hint = req.get("app") or ""
+
+    if cmd == "sysvol":
+        return sys_volume()
 
     if cmd == "get":
         cur = await smtc.get(fresh=bool(req.get("fresh")))
