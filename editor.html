@@ -316,13 +316,19 @@ const BYKEY = Object.fromEntries(COMPS.map(c => [c.key, c]));
 
 /* 高度公式 —— 🔴 必须跟 native/render.py 的 comp_h() 一字不差，
    否则编辑器里看到的框和真画面差一截，拖出来的坐标就是错的。 */
+/* 皮套那两项要先声明：H_ 里要用，而 defaultScene() 在下面就会跑起来，
+   放到后面会踩 let 的暂时性死区（TDZ），表现是整页白屏。 */
+let PET_R = 693 / 676;                       // 皮套高宽比，loadPet() 会覆盖
+let PET_STILL = 'assets/pet2-still.png';     // 皮套静态预览图
 const DM_FLOOR = H - 206;
 function H_(key, y, w) {
   if (key === 'stats') return 216;
   if (key === 'songs') return 478;
   if (key === 'banner') return 64;
-  /* 皮套 = 角色包围盒 676×693（R2 素材）。改这里必须同步 render.py 的 CHAR_RATIO。 */
-  if (key === 'character') return Math.round(w * 693 / 676);
+  /* 皮套 = 角色包围盒的高宽比。**这个数字跟着素材走**：pet2 是 693/676、
+     pet 是 267/213，所以不能写死 —— 由 loadPet() 从桥的 /pet 拿当前那套的
+     ratio 填进来。兜底值用 R2 的，拿不到也不至于把框画飞。 */
+  if (key === 'character') return Math.round(w * PET_R);
   if (key === 'monitor') return Math.round(w * 389 / 594);
   if (key === 'danmaku') return Math.max(80, DM_FLOOR - y);
   if (key === 'subtitle') return 86;
@@ -367,7 +373,7 @@ function normalize(src) {
     }
     /* 皮套用哪套素材 —— 原样带回去。丢了它画面会以为还是旧版式，
        下次重启又按新基准换算一遍，人越存越大。 */
-    if (c.key === 'character' && (v.pet === 'pet2' || v.pet === 'pet')) o.pet = v.pet;
+    if (c.key === 'character' && typeof v.pet === 'string' && /^pet\d*$/.test(v.pet)) o.pet = v.pet;
     out.items[c.key] = o;
   }
   return out;
@@ -489,7 +495,7 @@ function htmlOf(key, it) {
       return s + '</div>';
     }
     case 'character':
-      return '<div class="t-character"><img src="' + assetUrl('assets/pet2-still.png') + '" alt=""></div>';
+      return '<div class="t-character"><img src="' + assetUrl(PET_STILL) + '" alt=""></div>';
     case 'monitor':
       return '<div class="t-monitor" style="position:absolute;inset:0">' +
         '<div class="shell"><div class="scr">素材播放区</div></div>' +
@@ -896,12 +902,28 @@ async function save(quiet) {
   }
 }
 
+/* 皮套用的是哪套素材 —— 决定「皮套框」的高宽比和预览图。
+   比例必须跟 native/render.py 的 CHAR_RATIO 一致，那边是按素材包围盒现量的，
+   所以这里只能问桥（/pet 读的是 render.py 落下的 pet-geom.json）。 */
+async function loadPet() {
+  try {
+    const r = await fetchT(API + '/pet', {}, 5000);
+    const j = await r.json();
+    if (!j.ok || !Array.isArray(j.list)) return;
+    const cur = j.list.find((x) => x.name === (j.cur || (scene.items.character || {}).pet));
+    if (!cur) return;
+    if (Number.isFinite(+cur.ratio) && +cur.ratio > 0) PET_R = +cur.ratio;
+    if (cur.still) PET_STILL = 'assets/' + cur.still;
+  } catch (e) { /* 拿不到就用兜底值，别让编辑器因此打不开 */ }
+}
+
 async function loadFromBridge(showToast) {
   try {
     const r = await fetchT(API + '/layout', {}, 6000);
     const j = await r.json();
     if (j.ok && j.layout) {
       scene = normalize(j.layout);
+      await loadPet();          // 先问清楚是哪套素材，再画框 —— 反了框会按旧比例算
       pushHistory(); renderAll();
       setSync('ok', '已同步');
       if (showToast) toast('已从画面重新载入');

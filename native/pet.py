@@ -36,37 +36,151 @@ from collections import OrderedDict
 from PIL import Image, ImageFilter
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+# 素材根目录。底下每个子目录是一套完整的形象（pet / pet2 …）。
+PET_ROOT = os.path.join(os.path.dirname(HERE), "assets")
 # ZY_PET_DIR 只认目录名，不给绝对路径 —— 免得配置写歪了读到大盘去。
-PET_DIR = os.path.join(
-    os.path.dirname(HERE), "assets", (os.environ.get("ZY_PET_DIR") or "pet2").strip()
-)
+PET_DIR = os.path.join(PET_ROOT, (os.environ.get("ZY_PET_DIR") or "pet2").strip())
 
 FRAME_MS = 42  # 源 24fps（作者在 animation-behavior.md 里写的运行时 42ms/帧）
-FPS = float(os.environ.get("ZY_PET_FPS") or 10)
-CACHE_MAX = int(os.environ.get("ZY_PET_CACHE") or 24)  # 一帧约 2.5MB，24 帧 ≈ 60MB
-# 为什么要缓存：12fps 播 24fps 的源，每拍前进约 2 帧，正常播放其实不怎么命中。
-# 它救的是「同一帧被重画」的情况（WM_PAINT、--capture 抓图），以及偶尔的节拍抖动。
-# 别调太大：241 帧全缓存要 600MB，直播时机器还要跑直播伴侣。
+FPS = float(os.environ.get("ZY_PET_FPS") or 24)
+# R2 素材 713×714，单帧解码 12.7ms + 缩放到 CHAR_W 约 10ms。24fps 的预算是 41.7ms，
+# 现场解码要吃掉一半 —— 缓存必须能装下一整段（124 帧）才有意义：
+# 第一轮 124×23ms≈2.8 秒填满，之后播放只是查字典，0 成本。
+# 单帧 538×539×4B≈1.16MB × 124 ≈ 144MB，直播时还要跑直播伴侣，这是能接受的上限。
+# 太小（原来的 24）等于没有缓存：124 帧循环，命中率不到 20%。
+CACHE_MAX = int(os.environ.get("ZY_PET_CACHE") or 160)
 MARGIN = 0.06  # 裁切框留边，给尾巴摆动之类的留余量
 SHARPEN = os.environ.get("ZY_PET_SHARP") != "0"  # 放大后做一次 3×3 锐化，糊得没那么明显
 
 # 桥那边说"什么心情"，这里换成"播哪一段"
-CLIP_OF_MOOD = {
+# R2 素材只有 idle / happy / sad / thinking 四段，没有的段一律兜底回 idle（见 clip_for）
+CLIP_OF_MOOD_R2 = {
     "idle": "idle",
-    "talk": "idle",       # 还没有"说话"素材，先用待机顶着
+    "talk": "thinking",       # 说话时用思考段：睁着眼，比闭眼待机更像"在回应"
     "busy": "idle",
-    "happy": "success",   # 送礼 / 被夸 → 雀跃
+    "happy": "happy",         # 送礼 / 被夸 → 雀跃
+    "gift": "happy",
+    "sad": "sad",             # 被骂 / 冷场 → 委屈
+    "error": "sad",
+    "thinking": "thinking",   # 平常待机，与 idle 交替
+    "waiting": "thinking",    # 没做张望素材，用歪头代替
+    "yawn": "idle",
+    "stretch": "idle",
+    "tail": "idle",
+    "poke": "happy",
+    "pat": "happy",
+}
+
+# 旧素材（ZY_PET_DIR=pet）的映射，原样保留，切回去还能跑
+CLIP_OF_MOOD_LEGACY = {
+    "idle": "idle",
+    "talk": "idle",
+    "busy": "idle",
+    "happy": "success",
     "gift": "success",
-    "sad": "error",       # 被骂 → 委屈
+    "sad": "error",
     "error": "error",
-    "thinking": "thinking",   # 正在想怎么回（有冒泡）
-    "waiting": "waiting",     # 有人进直播间 → 抬头张望
-    "yawn": "idle_yawn",      # 冷场 → 打哈欠
-    "stretch": "idle_stretch",  # 冷场 → 伸懒腰
+    "thinking": "thinking",
+    "waiting": "waiting",
+    "yawn": "idle_yawn",
+    "stretch": "idle_stretch",
     "tail": "tail",
     "poke": "poke",
     "pat": "head_pat",
 }
+
+CLIP_OF_MOOD = (
+    CLIP_OF_MOOD_R2 if os.path.basename(PET_DIR) == "pet2" else CLIP_OF_MOOD_LEGACY
+)
+
+# 每套素材的静态兜底图（动画帧读不到时贴这张）。放在 assets/ 下，不是素材目录里。
+# 兜底也得是同一只人 —— 不然直播里会突然从红发换成蓝发。
+STILL_OF_DIR = {"pet": "dafeiyu.png", "pet2": "pet2-still.png"}
+# 界面上怎么称呼这两套（设置页的「形象」页直接用）
+LABEL_OF_DIR = {"pet": "蓝发女仆（旧素材）", "pet2": "红发广工（R2）"}
+
+
+def name():
+    """当前用的是哪套（目录名）"""
+    return os.path.basename(PET_DIR)
+
+
+def _frames_in(dirpath, clip):
+    d = os.path.join(dirpath, clip)
+    if not os.path.isdir(d):
+        return []
+    return sorted(
+        os.path.join(d, f) for f in os.listdir(d) if f.lower().endswith(".webp")
+    )
+
+
+def measure(dirname):
+    """量某套素材的角色包围盒，**不动当前状态**。
+
+    切形象时要拿它算「换了素材以后同一个身高该给多宽」，所以必须在切换前后
+    各量一次 —— 不能靠当前 geom，切完就变了。
+    """
+    fr = _frames_in(os.path.join(PET_ROOT, dirname), "idle")
+    if not fr:
+        return None
+    b = _alpha_box(_raw(fr[0]))
+    if not b:
+        return None
+    w, h = b[2] - b[0], b[3] - b[1]
+    if w <= 0 or h <= 0:
+        return None
+    return {"charW": w, "charH": h, "ratio": h / float(w)}
+
+
+def list_dirs():
+    """assets/ 下所有能用的形象（有 idle 帧才算），给设置页列表用"""
+    out = []
+    try:
+        names = sorted(os.listdir(PET_ROOT))
+    except OSError:
+        return out
+    for n in names:
+        p = os.path.join(PET_ROOT, n)
+        if not os.path.isdir(p) or not os.path.isdir(os.path.join(p, "idle")):
+            continue
+        m = measure(n)
+        if not m:
+            continue
+        clips = sorted(c for c in os.listdir(p) if os.path.isdir(os.path.join(p, c)))
+        frames = sum(len(_frames_in(p, c)) for c in clips)
+        out.append({
+            "name": n,
+            "charW": m["charW"],
+            "charH": m["charH"],
+            "ratio": m["ratio"],
+            "clips": clips,
+            "frames": frames,
+            "label": LABEL_OF_DIR.get(n, n),
+            "still": STILL_OF_DIR.get(n, ""),
+        })
+    return out
+
+
+def set_dir(dirname):
+    """热切换素材目录。切完缓存全清，下一帧就按新素材解。
+
+    返回 False = 这个名字底下没有能用的素材，**保持原样**（绝不能切成空的，
+    直播里表现成「大肥鱼突然没了」）。
+    """
+    global PET_DIR, CLIP_OF_MOOD, _frames, _geom, _manifest
+    n = str(dirname or "").strip()
+    p = os.path.join(PET_ROOT, n)
+    if not n or os.path.basename(p) != n or not os.path.isdir(os.path.join(p, "idle")):
+        return False
+    if os.path.normcase(p) == os.path.normcase(PET_DIR):
+        return True
+    PET_DIR = p
+    CLIP_OF_MOOD = CLIP_OF_MOOD_R2 if n == "pet2" else CLIP_OF_MOOD_LEGACY
+    _frames.clear()
+    _scaled.clear()
+    _geom = None
+    _manifest = None
+    return True
 
 _frames = {}   # clip -> [绝对路径]
 _scaled = OrderedDict()  # (path, scale) -> RGBA
@@ -270,8 +384,16 @@ def duration(clip):
     return len(fr) * FRAME_MS / 1000.0 if fr else 0.0
 
 
-def warm(clips=("idle",)):
-    """预热：把这几段的前若干帧解出来，开播头几秒不会卡一下"""
+def warm(clips=("idle",), char_w=None):
+    """预热：把这几段的**全部帧**解出来常驻内存。
+
+    只预热 8 帧没有意义 —— 循环播放 124 帧，第二轮照样全部落空。
+    R2 素材单帧 12.7ms 解码 + 10ms 缩放，全量预热（124×23ms≈2.8s）
+    换来播放期 9.7ms/帧，24fps 才跑得动。
+    """
+    if char_w is None:
+        g = geom()
+        char_w = g["char_w"] if g else 676.0
     for c in clips:
-        for i in range(8):
-            frame(c, i / FPS, 570)
+        for i in range(len(_clip_frames(c))):
+            frame(c, i * FRAME_MS / 1000.0, char_w)

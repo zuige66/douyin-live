@@ -172,6 +172,21 @@
   .tier .tr input[type=range]{flex:1;accent-color:var(--primary);min-width:0}
 
   .avatar{width:56px;height:56px;border-radius:50%;object-fit:cover;background:var(--surface-3);flex:none}
+
+  /* 形象选择卡（2026-10-28）：整张卡可点，选中用 primary 描边 + 主色底 */
+  .pets{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:14px}
+  @media (max-width:600px){.pets{grid-template-columns:1fr}}
+  .petcard{background:var(--surface-2);border:2px solid transparent;border-radius:22px;
+           padding:14px;cursor:pointer;text-align:center;transition:background .15s,border-color .15s}
+  .petcard:hover{background:var(--surface-3)}
+  .petcard.on{border-color:var(--primary);background:var(--primary-c)}
+  .petcard img{width:100%;max-width:168px;height:168px;object-fit:contain;
+               display:block;margin:0 auto 10px}
+  .petcard .nm{font-size:14px;font-weight:600}
+  .petcard .mt{font-size:12px;color:var(--muted);margin-top:5px;line-height:1.5}
+  .petcard.on .nm{color:var(--on-primary-c)}
+  .petcard.on .mt{color:var(--on-primary-c);opacity:.8}
+  .petbig{width:150px;flex:none;border-radius:18px;background:var(--surface-2);object-fit:contain}
   .kv2{display:grid;grid-template-columns:92px 1fr;gap:8px 14px;font-size:13px;margin-top:14px}
   .kv2 .k{color:var(--muted)}
   .kv2 .v{word-break:break-all}
@@ -195,6 +210,7 @@
 
   <div class="tabs">
     <button class="tab on" data-tab="account">账号</button>
+    <button class="tab" data-tab="pet">形象</button>
     <button class="tab" data-tab="reply">回复</button>
     <button class="tab" data-tab="gift">礼物</button>
     <button class="tab" data-tab="computer">电脑</button>
@@ -234,7 +250,26 @@
     </div>
   </section>
 
-  <!-- ══════════════ ② 回复 ══════════════ -->
+  <!-- ══════════════ ② 形象 ══════════════ -->
+  <section id="tab-pet" class="hide">
+    <div class="card">
+      <h2>当前形象</h2>
+      <div class="sub" id="petSub">正在读…</div>
+      <div id="petCur"></div>
+    </div>
+
+    <div class="card">
+      <h2>换一套</h2>
+      <div class="sub">点一下就换，画面 1 秒内换人。<b>身高、脚底、中线都不动</b>，只换人。</div>
+      <div class="pets" id="petList"></div>
+      <div class="hint">
+        素材放在 <code>assets/pet*/</code>，每套至少要有 <code>idle/</code> 帧。
+        新素材丢进去后刷新这页就能看到 —— 角色包围盒由画面进程现量，别手填。
+      </div>
+    </div>
+  </section>
+
+  <!-- ══════════════ ③ 回复 ══════════════ -->
   <section id="tab-reply" class="hide">
     <div class="card">
       <h2>回复档位</h2>
@@ -617,6 +652,7 @@ document.querySelectorAll('.tab').forEach((btn) => {
 function runLoader(key) {
   try {
     if (key === 'account') loadAccount()
+    else if (key === 'pet') loadPet()
     else if (key === 'reply') loadReply()
     else if (key === 'gift') loadGift()
     else if (key === 'computer') { loadMedia(); loadMediaList() }
@@ -1108,7 +1144,75 @@ $('btnRoomHard').onclick = async () => {
   catch (e) { toast('重连失败：' + e.message) }
 }
 
-/* ══════════════════ ② 回复 ══════════════════ */
+/* ══════════════════ ② 形象 ══════════════════
+   换形象只改 layout 的 character.pet 一个字段，坐标由画面进程换算 ——
+   因为它才解得出角色包围盒，桥自己猜一份迟早跟 Python 对不上。 */
+let PET_INFO = null
+
+async function loadPet() {
+  try {
+    const r = await apiT('/pet')
+    if (!r.ok) { $('petSub').textContent = r.error || '读不到形象列表'; return }
+    PET_INFO = r
+    renderPet()
+  } catch (e) {
+    $('petSub').textContent = '桥没回话：' + (e.name === 'AbortError' ? '超时' : e.message)
+  }
+}
+
+function renderPet() {
+  const list = (PET_INFO && PET_INFO.list) || []
+  const cur = (PET_INFO && PET_INFO.cur) || ''
+  const c = list.find((x) => x.name === cur)
+  $('petSub').textContent = c
+    ? `现在用的是「${c.label}」`
+    : (PET_INFO && PET_INFO.stale
+      ? '画面进程还没起过，量不出比例 —— 先起画面再看这页'
+      : '还不知道现在用哪套')
+  $('petCur').innerHTML = c
+    ? `<div class="row" style="gap:16px;align-items:flex-start;margin-top:4px">
+         <img class="petbig" src="assets/${esc(c.still || '')}" alt="">
+         <div style="flex:1;min-width:0">
+           <div style="font-size:16px;font-weight:600">${esc(c.label)}</div>
+           <div class="hint" style="margin-top:6px">
+             角色 ${c.charW}×${c.charH} · ${c.clips.length} 段动作 · 共 ${c.frames} 帧<br>
+             动作：${esc((c.clips || []).join(' / ')) || '—'}
+           </div>
+         </div>
+       </div>`
+    : '<div class="hint">—</div>'
+
+  $('petList').innerHTML = list.map((x) => `
+    <div class="petcard${x.name === cur ? ' on' : ''}" data-pet="${esc(x.name)}">
+      <img src="assets/${esc(x.still || '')}" alt="">
+      <div class="nm">${esc(x.label)}${x.name === cur ? ' · 在用' : ''}</div>
+      <div class="mt">${x.clips.length} 段动作 · ${x.frames} 帧<br>角色 ${x.charW}×${x.charH}</div>
+    </div>`).join('')
+
+  $('petList').querySelectorAll('[data-pet]').forEach((el) => {
+    el.onclick = () => switchPet(el.dataset.pet)
+  })
+}
+
+async function switchPet(name) {
+  if (!PET_INFO || name === PET_INFO.cur) return
+  const x = (PET_INFO.list || []).find((v) => v.name === name)
+  if (!confirm(`换成「${(x && x.label) || name}」？画面会立刻换人，身高和站位都不动。`)) return
+  try {
+    const o = await postT('/pet', { name }, 12000)
+    if (!o.ok) { toast(o.error || '换不了'); return }
+    /* 先按本地结果刷一下，别让人对着旧状态干等 ——
+       真正换人由画面进程做，1 秒内它会把这套的 cur 写回 pet-geom.json。 */
+    PET_INFO.cur = name
+    renderPet()
+    toast('换了，画面 1 秒内换人')
+    setTimeout(loadPet, 2200)
+  } catch (e) {
+    toast(e.name === 'AbortError' ? '换不了：超时' : '换不了：' + e.message)
+  }
+}
+
+/* ══════════════════ ③ 回复 ══════════════════ */
 async function loadReply() {
   try {
     const m = await apiT('/reply/mode')

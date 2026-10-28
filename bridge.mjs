@@ -3616,11 +3616,37 @@ function showDanmaku(user, text, kind) {
  * 时长是照素材来的：success 10.12 秒一整段（起势→跳→回站姿），
  * 但直播里让她笑 10 秒太久，只取前面 4 秒就切回待机，看着更像"被逗了一下"。
  */
-const MOOD_MS = { happy: 4200, sad: 5200, yawn: 9200, stretch: 9200, waiting: 3400, thinking: 4200 }
+/* R2 素材一轮 pingpong 的时长：124 帧 × 2 − 2 = 246 拍 × 42ms ≈ 10.33 秒。
+ * 临时情绪（送礼/被骂）按整轮播完，中途切走会看到动作戛然而止。 */
+const LOOP_MS = 10330
+const MOOD_MS = { happy: LOOP_MS, sad: LOOP_MS, waiting: 3400, thinking: 4200 }
+
+// 平常待机的两段交替：thinking 占 1/3 的时间片，idle 占 2/3
+const MOOD_ALT_MS = Number(process.env.ZY_MOOD_ALT_MS || 20000)
+// 有人在线但多久没人说话算「没人说话」——超过就切委屈
+const QUIET_FOR_SAD = Number(process.env.ZY_QUIET_SAD || 60000)
+
 const RE_BAD = /笨|丑|滚|垃圾|傻|闭嘴|难听|恶心|人机|假的吧/
 const RE_GOOD = /好听|好看|可爱|漂亮|厉害|牛|棒|爱了|喜欢|绝了|唱得好/
 
 let mood = { name: 'idle', at: Date.now(), until: 0 }
+
+/* 基线情绪 —— 没有临时情绪时该播什么（2026-10-28 主人定的策略）：
+ *   · TTS 正在出声      → thinking（睁着眼，比闭眼待机更像在回应）
+ *   · 房间没人          → sad
+ *   · 有人但安静超时    → sad
+ *   · 其余              → idle / thinking 按时间片交替
+ *
+ * 为什么要有「基线」这一层：原来的 currentMood() 只有「临时情绪 + 超时回 idle」，
+ * 安静时永远是 idle，而 R2 素材的 idle 是闭眼的，看着像睡着了。
+ */
+function baselineMood() {
+  const now = Date.now()
+  if (now < speakUntil) return 'thinking'
+  if (stat.online <= 0) return 'sad'
+  if (now - quietSince > QUIET_FOR_SAD) return 'sad'
+  return Math.floor(now / MOOD_ALT_MS) % 3 === 0 ? 'thinking' : 'idle'
+}
 
 function setMood(name, ms) {
   const m = MOOD_MS[name] || 0
@@ -3628,8 +3654,14 @@ function setMood(name, ms) {
 }
 
 function currentMood() {
-  if (mood.until && Date.now() > mood.until) {
-    mood = { name: 'idle', at: Date.now(), until: 0 }
+  const now = Date.now()
+  if (mood.until && now > mood.until) {
+    // 临时情绪到期 → 交回基线
+    mood = { name: baselineMood(), at: now, until: 0 }
+  } else if (!mood.until) {
+    // 没有临时情绪时，基线变了就跟着变（交替 / 掉线 / 静音都会走到这里）
+    const b = baselineMood()
+    if (b !== mood.name) mood = { name: b, at: now, until: 0 }
   }
   return mood
 }
@@ -3668,13 +3700,8 @@ setInterval(() => {
     return
   }
 
-  // 刚说过话、又还安静着：让身体动一下，别让画面死着
-  if (currentMood().name === 'idle') {
-    const pickName = Math.random() < 0.5 ? 'yawn' : 'stretch'
-    setMood(pickName)
-    quietSince = Date.now() + 20000
-    log(`  [mood] 打个${pickName === 'yawn' ? '哈欠' : '伸懒腰'}`)
-  }
+  // 安静太久时基线已经切到 sad（见 baselineMood），画面不会死着。
+  // 原来这里会额外打个哈欠/伸懒腰 —— R2 素材没这两段，设了也是白设（会兜底回 idle）。
 }, 5000).unref?.()
 
 /** 一条弹幕进来 → 更新「安静了多久」和表情。真实事件和 demo 都走这里，别各写一套 */
@@ -4316,6 +4343,16 @@ function readRaw(req, limit = 12 * 1024 * 1024) {
  * 把 render.py 里的 int() 弄炸 —— 那会直接黑屏。
  */
 const LAYOUT_PATH = path.join(DIR, 'cache', 'layout.json')
+/* 形象清单：render.py 启动 / 换形象时落的（有哪些素材、各自角色包围盒比例）。
+ * 桥只读不写 —— 包围盒得解图才量得准，Python 那边才是权威。 */
+const PET_GEOM_PATH = path.join(DIR, 'cache', 'pet-geom.json')
+function readPetGeom() {
+  try {
+    return JSON.parse(fs.readFileSync(PET_GEOM_PATH, 'utf8'))
+  } catch {
+    return null
+  }
+}
 const LAYOUT_KEYS = ['stats', 'songs', 'banner', 'character', 'monitor', 'danmaku', 'subtitle']
 
 function sanitizeLayout(b) {
@@ -4344,7 +4381,7 @@ function sanitizeLayout(b) {
     /* 皮套用哪套素材（2026-10-28）。**必须原样留着** —— render.py 靠它判断
      * 这份版式是不是已经按新素材换算过了；编辑器保存时丢掉这个字段，
      * 画面就会以为还是旧版式，又按新基准换算一次，人越存越大。 */
-    if (k === 'character' && (v.pet === 'pet2' || v.pet === 'pet')) o.pet = v.pet
+    if (k === 'character' && typeof v.pet === 'string' && /^pet\d*$/.test(v.pet)) o.pet = v.pet
     items[k] = o
   }
   if (!Object.keys(items).length) return { ok: false, error: 'items 里没有一个认识的组件' }
@@ -5128,6 +5165,64 @@ async function dyRoute(p, u, req) {
     }
   }
 
+  /* ── 皮套形象（2026-10-28）─────────────────────────────────────────
+   *   GET  /pet          assets/ 下有哪些形象、各自比例、现在用哪套
+   *   POST /pet {name}   换形象
+   *
+   * 🔴 换形象**只改 layout 的 character.pet 一个字段，坐标一个字不动**。
+   *    因为换算要用「角色包围盒」，那玩意儿只有画面进程量得出来（它解图）。
+   *    桥自己按像素猜一份，迟早跟 Python 算的对不上 —— 那种偏差在直播里
+   *    表现成「人忽大忽小」，还特别难查。画面进程读到 pet 变了会自己换算并写回。
+   *
+   *    pet-geom.json 是 render.py 启动/切换时落的，桥只读不写。
+   */
+  if (p === '/pet' && req.method === 'GET') {
+    const g = readPetGeom()
+    if (g && Array.isArray(g.list) && g.list.length) {
+      return { ok: true, cur: g.cur || '', list: g.list, at: g.at || 0 }
+    }
+    /* 没有 geom 文件（画面进程没起过）也要能列出来，否则设置页一片空 */
+    try {
+      const dir = path.join(DIR, 'assets')
+      const list = fs.readdirSync(dir)
+        .filter((f) => /^pet\d*$/.test(f) && fs.statSync(path.join(dir, f)).isDirectory())
+        .map((f) => ({ name: f, label: f, ratio: null, clips: [], frames: 0, still: '' }))
+      return { ok: true, cur: '', list, at: 0, stale: true }
+    } catch (e) {
+      return { ok: false, error: '读不到素材目录：' + String((e && e.message) || e).slice(0, 160) }
+    }
+  }
+
+  if (p === '/pet' && req.method === 'POST') {
+    const b = await readJson(req)
+    const name = String((b && b.name) || '').trim()
+    if (!/^pet\d*$/.test(name)) return { ok: false, error: '形象名不对：' + name.slice(0, 40) }
+    if (!fs.existsSync(path.join(DIR, 'assets', name, 'idle'))) {
+      return { ok: false, error: `assets/${name}/idle 不存在，这套素材没接进来` }
+    }
+    let L
+    try {
+      L = JSON.parse(fs.readFileSync(LAYOUT_PATH, 'utf8'))
+    } catch (e) {
+      /* 没有版式文件 = 画面在用内置默认版式，那就只写 pet 这一项，
+       * 其余交给 render.py 跟默认值合并。 */
+      L = { version: 1, items: {} }
+    }
+    if (!L.items || typeof L.items !== 'object') L.items = {}
+    if (!L.items.character || typeof L.items.character !== 'object') L.items.character = {}
+    L.items.character.pet = name
+    try {
+      fs.mkdirSync(path.dirname(LAYOUT_PATH), { recursive: true })
+      const tmp = LAYOUT_PATH + '.tmp'
+      fs.writeFileSync(tmp, JSON.stringify(L, null, 2), 'utf8')
+      fs.renameSync(tmp, LAYOUT_PATH)
+      log(`  🎭 形象切到 ${name}（坐标由画面进程换算）`)
+      return { ok: true, cur: name, note: '画面进程会在 1 秒内换算坐标并换人' }
+    } catch (e) {
+      return { ok: false, error: '写不进去：' + String((e && e.message) || e).slice(0, 200) }
+    }
+  }
+
   return { ok: false, error: '不认识的接口：' + p }
 }
 
@@ -5220,7 +5315,7 @@ const server = http.createServer(async (req, res) => {
    *    （/music/auth、/music/login/qq…）当时写进了 dyRoute，但**前缀没挂到
    *    这里**，于是它们一直是 404 —— 面板那张卡点「扫码登录」当然没反应。
    *    实测：curl /music/auth → `404 D:\Workplace\zhibo\music\auth`。 */
-  if (p.startsWith('/dy/') || p.startsWith('/gift/') || p.startsWith('/user/') || p.startsWith('/persona') || p.startsWith('/music/') || (p.startsWith('/media') && p !== '/media') || p === '/room' || p.startsWith('/room/') || p.startsWith('/reply/') || p.startsWith('/layout')) {
+  if (p.startsWith('/dy/') || p.startsWith('/gift/') || p.startsWith('/user/') || p.startsWith('/persona') || p.startsWith('/music/') || (p.startsWith('/media') && p !== '/media') || p === '/room' || p.startsWith('/room/') || p.startsWith('/reply/') || p.startsWith('/layout') || p === '/pet') {
     res.setHeader('access-control-allow-origin', '*')
     /* CORS 预检（2026-10-28 加）。
      * editor.html 如果是从别的源打开的（双击本地文件 = Origin: null），

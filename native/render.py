@@ -108,17 +108,18 @@ DANMAKU_ON = os.environ.get("ZY_DANMAKU", "0") == "1"
 # 🔴 文件读不到 / 内容坏了 → 用默认版式，绝不黑屏。
 #    直播中没人盯着控制台，所以这里一律 print 到 stderr 后继续跑。
 # ══════════════════════════════════════════════════════════════════════════
-LAYOUT_FILE = os.path.join(os.path.dirname(HERE), "cache", "layout.json")
+LAYOUT_FILE = os.environ.get("ZY_LAYOUT") or os.path.join(
+    os.path.dirname(HERE), "cache", "layout.json"
+)
 
 # 弹幕列的底边（原来 DM_BOTTOM 的位置）。弹幕自底向上排，所以它的 y 是顶边，
 # 高度 = 底边 - 顶边 —— 拖 y 就是「能显示几条」。
 DM_FLOOR = H - 206
 
 # 皮套比例：宽度定了高度就定了。
-# 2026-10-28 换成 R2 素材（assets/pet2）—— 角色包围盒 676×693（714 画布里的实心部分）。
-# 老素材是 assets/dafeiyu.png 的 1005×1078，但那是**静态立绘**的比例，
-# 跟动画帧的包围盒本来就差一截（老的一套框比实际贴图小）。换成 R2 后
-# 直接按角色包围盒来，编辑器里那个框终于是贴着人的。
+# 2026-10-28 起这套数字**跟着素材走**：assets/pet2 角色 676×693 → 1.0251，
+# assets/pet 角色 213×267 → 1.2535。下面这个只是兜底值，
+# 真正的值在 _init_pet_ratio() 里按当前素材现量，换形象时 _sync_pet() 再改。
 CHAR_RATIO = 693.0 / 676.0
 # 显示器整体比例：屏幕 560×315 + 边框 + 脖子 + 底座 = 594×389
 MON_RATIO = 389.0 / 594.0
@@ -204,28 +205,98 @@ _LAYOUT_NEXT_CHECK = 0.0
 VIS = {}
 
 
-# 皮套换 R2 素材（2026-10-28）的一次性版式迁移用。
-# 旧素材（assets/pet）角色包围盒 213×267，w=570 时她高 714；
-# 新素材（assets/pet2）是 676×693，同一个 570 只能画出 584 —— 人会凭空小一圈。
-# 换算系数 = 「让 570 变成 696」：696×693/676 = 714，身高正好对上。
-_PET_MIGRATE = 696.0 / 570.0
+# ── 皮套形象切换（2026-10-28）───────────────────────────────────────────
+# assets/ 底下每套素材比例不一样，所以 character 的 w 换素材后不能照用：
+# 旧素材角色 213×267，w=570 时她高 714；R2 素材 676×693，同一个 570 只能画 584。
+# 换算永远按「**脚底不动、中线不挪、身高不变**」来。
+#
+# 两套的「身高 / 宽」比：
+#   pet  = 267/213 = 1.2535
+#   pet2 = 693/676 = 1.0251
+# 所以同一个身高下，R2 的 w 比旧素材大 22% 左右。
+PET_GEOM_FILE = os.path.join(os.path.dirname(HERE), "cache", "pet-geom.json")
 
 
-def _migrate_pet(data, base):
-    """把旧版式按 R2 素材换算一次，返回 True 表示 base 已被改写、该写回磁盘。
+def _write_pet_geom():
+    """把「assets 下有哪些形象、各自什么比例」写一份给桥和编辑器看。
 
-    三件事一起保住：**脚底不动、中线不挪、身高不变**。
-    ⚠️ 判断依据必须是**文件里**有没有 pet，不能看合并后的 base ——
-       默认版式自己就带 pet:"pet2"，合并后永远「有标记」，迁移永远不跑。
-       第一次就是这么写错的：跑完 w 还是 570，标记倒是打上了，从此再不迁移。
-    写回失败不影响这一帧的显示（内存里已经换好了），下次重启会再算一遍，
-    结果同一个数（换算只依赖 w，不累积），不会越存越大。
+    桥和编辑器都不解图，量不出包围盒 —— 只能由这边算好落盘。
+    失败就算了，读的一方有兜底值。
     """
-    raw = (data.get("items") or {}).get("character")
-    if not isinstance(raw, dict) or raw.get("pet"):
-        return False
+    try:
+        data = {"cur": pet.name(), "list": pet.list_dirs(), "at": time.time()}
+        tmp = PET_GEOM_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fp:
+            json.dump(data, fp, ensure_ascii=False, indent=2)
+        os.replace(tmp, PET_GEOM_FILE)
+    except Exception as e:
+        print(f"[pet] 形象清单写不出去（{type(e).__name__}: {e}），桥会用兜底值",
+              file=sys.stderr)
+
+
+# 本进程有没有跟版式对齐过一次。**这个标志很关键**：
+# 启动时进程手上是 ZY_PET_DIR（默认 pet2），而版式里可能写着 pet ——
+# 那不叫「切换」，叫「按版式来」。要是当成切换去换算，坐标会被连着缩两次。
+_PET_SYNCED = False
+
+
+def _sync_pet(data, base):
+    """让版式跟皮套素材对齐：该切的切、该换算的换算。返回 True = base 改过、要写回。
+
+    character.pet 一个字段干两件事：说明这份版式是按哪套素材写的，也就是「现在用哪套」。
+
+      · 没有 pet 字段    → **只打标记，不动坐标**（见下面那条血的教训）
+      · 启动后第一次对齐 → **版式说了算**：直接采纳它写的那套，坐标不换算
+        （文件里的 w/x/y 本来就是按那套素材写的）
+      · 运行中 pet 变了  → 主人在设置页换了形象，切过去并按新素材换算坐标
+
+    🔴 为什么「没有 pet 字段」不能当成旧版式去换算：
+       production 那份 layout.json 上一轮已经迁移到 pet2 过，之后主人又在编辑器里
+       把组件整个重排了一遍 —— 编辑器画框用的就是**当前素材**的比例。
+       再按「旧素材 → 新素材」换算一次，她会被从 w=470 撑到 575、脚底从 992
+       掉到 1014，直播里就是人突然变大变低。**换算是有代价的动作，不能靠猜。**
+       没有标记就当「这份文件是按现在这套写的」，打上标记收工 —— 猜错了顶多是
+       一次性的细微比例差，猜对了（也就是现在）画面零变化。
+
+    ⚠️ 判断依据必须是**文件里**有没有 pet，不能看合并后的 base ——
+       默认版式自己就带 pet，合并后永远「有标记」，标记永远打不上。
+    """
+    global CHAR_RATIO, _PET_SYNCED
     ch = (base.get("items") or {}).get("character")
     if not isinstance(ch, dict):
+        return False
+    raw = (data.get("items") or {}).get("character")
+    raw = raw if isinstance(raw, dict) else {}
+    cur = pet.name()
+    want = str(raw.get("pet") or "")
+    if want == cur:
+        _PET_SYNCED = True
+        return False                       # 已经对齐
+    if not want:
+        # 没写形象 = 就是按现在这套素材画的。打标记，一个像素都不动。
+        ch["pet"] = cur
+        _PET_SYNCED = True
+        print(f"[pet] 版式没标形象，按当前的 {cur} 记账（坐标不动）", file=sys.stderr)
+        _write_pet_geom()
+        return True
+    old = pet.measure(cur)
+    new = pet.measure(want)
+    if not old or not new:
+        print(f"[pet] 量不出 {cur} 或 {want} 的包围盒，这次不换", file=sys.stderr)
+        return False
+    if not _PET_SYNCED:
+        # 启动后第一次：照版式来，**不换算**。换的只是素材目录。
+        if not pet.set_dir(want):
+            print(f"[pet] 切不到 {want}（目录不存在或没有 idle 帧）", file=sys.stderr)
+            return False
+        CHAR_RATIO = new["ratio"]
+        _PET_SYNCED = True
+        print(f"[pet] 按版式用 {want}（角色 {new['charW']}×{new['charH']}）", file=sys.stderr)
+        _write_pet_geom()
+        return False
+    # 运行中换形象：主人在设置页点的。这时才换算坐标。
+    if not pet.set_dir(want):
+        print(f"[pet] 切不到 {want}（目录不存在或没有 idle 帧）", file=sys.stderr)
         return False
     try:
         w0 = float(raw.get("w") or 0)
@@ -233,19 +304,21 @@ def _migrate_pet(data, base):
         x0 = float(raw.get("x") or 0)
     except (TypeError, ValueError):
         return False
+    CHAR_RATIO = new["ratio"]
     if w0 <= 0:
-        return False
-    w1 = int(round(w0 * _PET_MIGRATE))
-    # 旧框高用旧比例算，新框高用 comp_h —— 差出来的那截从 y 上扣掉，脚底就钉住了
-    h0 = int(round(w0 * 1078.0 / 1005.0))
-    h1 = comp_h("character", 0, 0, w1)
+        ch["pet"] = want
+        return True
+    h0 = int(round(w0 * old["ratio"]))
+    w1 = int(round(w0 * old["ratio"] / new["ratio"]))   # 身高不变 → 宽度按比例换算
+    h1 = int(round(w1 * new["ratio"]))
     ch["w"] = w1
-    ch["y"] = int(round(y0 + h0 - h1))
-    ch["x"] = int(round(x0 + (w0 - w1) / 2.0))
-    ch["pet"] = "pet2"
-    print(f"[layout] 皮套换 R2：w {int(w0)}→{w1}，y {int(y0)}→{ch['y']}，"
+    ch["y"] = int(round(y0 + h0 - h1))                  # 脚底钉住
+    ch["x"] = int(round(x0 + (w0 - w1) / 2.0))          # 中线不挪
+    ch["pet"] = want
+    print(f"[pet] 形象切到 {want}：w {int(w0)}→{w1}，y {int(y0)}→{ch['y']}，"
           f"x {int(x0)}→{ch['x']}（脚底 {ch['y'] + h1}、中线 {ch['x'] + w1 / 2:.0f}）",
           file=sys.stderr)
+    _write_pet_geom()
     return True
 
 
@@ -300,9 +373,9 @@ def layout():
             if isinstance(v, dict):
                 items[k] = dict(items.get(k) or {}, **v)
         base["items"] = items
-        # 皮套换素材的一次性迁移（2026-10-28）。放在合并之后、生效之前 ——
-        # 迁移改的是 base，这一帧就用新坐标，不用等下一次 mtime。
-        if _migrate_pet(data, base):
+        # 皮套素材对齐（2026-10-28）。放在合并之后、生效之前 ——
+        # 改的是 base，这一帧就用新坐标，不用等下一次 mtime。
+        if _sync_pet(data, base):
             _write_layout(base)
         _LAYOUT = base
         _LAYOUT_MT = mt
@@ -542,6 +615,7 @@ def background():
 
 # ------------------------------------------------------------ 资源缓存
 _CHAR = None
+_CHAR_DIR = None      # 当前这张静态图是哪套素材的 —— 换形象要重新加载
 _CHAR_SCALED = {}
 _FACE = None
 
@@ -549,13 +623,20 @@ _FACE = None
 def character(width):
     """皮套图按目标宽度缩放一次就缓存住——之前每帧 LANCZOS 是最大的开销
 
-    2026-10-28：换成 R2 素材的静态帧（assets/pet2-still.png，676×693，
-    从 idle 首帧按角色包围盒裁出来的）。只在**动画帧读不到**时兜底用，
-    但兜底也得是同一只人 —— 不然直播里会突然从红发换成蓝发。
+    只在**动画帧读不到**时兜底用，但兜底也得是同一只人 ——
+    不然直播里会突然从红发换成蓝发。所以按当前素材目录选图，
+    换形象时把缓存整个丢掉重来。
     """
-    global _CHAR
-    if _CHAR is None:
-        _CHAR = Image.open(os.path.join(ASSETS, "pet2-still.png")).convert("RGBA")
+    global _CHAR, _CHAR_DIR
+    d = pet.name()
+    if _CHAR is None or _CHAR_DIR != d:
+        f = pet.STILL_OF_DIR.get(d) or "dafeiyu.png"
+        p = os.path.join(ASSETS, f)
+        if not os.path.exists(p):
+            p = os.path.join(ASSETS, "dafeiyu.png")
+        _CHAR = Image.open(p).convert("RGBA")
+        _CHAR_DIR = d
+        _CHAR_SCALED.clear()
     if width not in _CHAR_SCALED:
         h = int(_CHAR.height * width / _CHAR.width)
         _CHAR_SCALED[width] = _CHAR.resize((width * SS, h * SS), Image.LANCZOS)
@@ -1354,6 +1435,12 @@ def main():
 # overlay.py 会直接读 render.SCR_W / render.SCR_H 去初始化解码器，
 # 等到第一帧 compose() 里才 apply_layout 就晚了一步，解码尺寸会对不上。
 try:
+    # 先把比例按**当前素材**量准，再装版式 —— 顺序反了的话第一帧的
+    # CHAR_H 会用兜底值算，人一开始的高度是错的。
+    _m0 = pet.measure(pet.name())
+    if _m0:
+        CHAR_RATIO = _m0["ratio"]
+    _write_pet_geom()
     apply_layout()
 except Exception as _e:                      # 版式坏了也不能连画面都起不来
     print(f"[layout] 初始化失败（{type(_e).__name__}: {_e}），用默认版式", file=sys.stderr)

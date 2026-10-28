@@ -39,10 +39,11 @@ import media  # noqa: E402
 W, H = render.W, render.H
 TITLE = "zuige大肥鱼直播画面"
 
-# 有动作素材就按它的帧率重画（默认 12fps）；没有就退回「只在变化时重画」。
-# 这是唯一一处 CPU 会明显上升的地方：静止图时 CPU≈0，动起来约单核 10~20%。
+# 有动作素材就按它的帧率重画（pet.FPS 默认 24）；没有就退回「只在变化时重画」。
+# 下限原来卡在 50ms，等于把 24fps 强行砍成 20fps —— 改成 33ms 才允许跑到 30fps。
+# 实际节奏由 SetTimer 的精度决定（约 15.6ms 一档，42ms 会落在 31/47 之间）。
 ANIM = pet.available()
-TICK_MS = max(50, int(round(1000.0 / pet.FPS))) if ANIM else 100
+TICK_MS = max(33, int(round(1000.0 / pet.FPS))) if ANIM else 100
 
 # 礼物媒体（视频/GIF）要 15fps 才不卡。只在真有素材在播时把节拍调到这么快，
 # 播完立刻退回 TICK_MS —— 空闲时还是「秒数跳了才画」，CPU 照样是 0。
