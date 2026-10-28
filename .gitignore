@@ -61,3 +61,26 @@ events.jsonl
 .DS_Store
 Thumbs.db
 *.bak
+
+# ── 不上传：人设卡 ─────────────────────────────────────────────
+# 话术 / 梗密度 / 收敛边界都在里面，是这个项目的核心资产，不进公开仓库。
+# 缺了它 reply.mjs 会自动回退到内置的 FALLBACK_SYSTEM（能跑，但很薄），
+# 想要完整人格就自己写一份放回去 —— 格式见 prompts/README.md。
+prompts/dafeiyu-live.md
+
+# ── 不上传：一次性 / 调试脚本 ───────────────────────────────────
+# 本地留着还能用，但它们不是产品的一部分：
+#   probe*                  问 douyin-mcp 要 inputSchema 的探针
+#   login-qr.png            扫码登录的临时截图
+#   dmp.mjs                 崩溃 minidump 解析
+#   fetch-pet / matte       一次性拉素材、抠图
+#   replay-dedupe-check     自己写着"跑完就删"的校验
+#   cache-probe             依赖人设卡算 token 的调优工具
+probe.mjs
+probe-listen.mjs
+login-qr.png
+tools/dmp.mjs
+tools/fetch-pet.mjs
+tools/matte.py
+tools/replay-dedupe-check.mjs
+tools/cache-probe.mjs
