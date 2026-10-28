@@ -2172,6 +2172,9 @@ function boxToMusic() {
     log(`  ♫ ${music.title}${music.artist ? ' - ' + music.artist : ''}${music.playing ? '' : '（暂停）'}`)
     broadcast('music', music)
   }
+  /* 顺手把封面抓下来（异步，不 await —— 别让网络拖慢 1.5 秒的轮询）。
+   * coverKick 自己会去重：同一个 trackId 只抓一次，抓不到就记空串不再试。 */
+  coverKick(music.trackId, music.title, music.artist)
   /* 点歌队列对账。**每次轮询都要跑**，不能只在换歌时跑 ——
    * 一首歌能放四五分钟，而「等太久就算被跳过」这条是跟时间赛跑的：
    * 只在换歌时跑的话，卡住的那几分钟里 hotNeed() 一直以为还有歌，
@@ -2179,6 +2182,153 @@ function boxToMusic() {
   if (music.title) boxQueueSettle(music.title, music.trackId)
   boxLastPlaying = music.playing
   checkStuck()
+}
+
+/* ── 专辑封面（2026-10-28）─────────────────────────────────────────────
+ * 画面右边那台「电脑」放歌时要显示封面。但播放器的 /state 里 nowPlaying
+ * **没有封面字段**（只有 trackId / name / artists / album / position / duration），
+ * 所以必须自己补，两条路：
+ *
+ *   ① 网易云：按 songId 问公开详情接口，拿 album.picUrl —— 精确，不靠猜。
+ *   ② 其它源：拿「歌名 + 歌手」去插件的 /search 搜一遍，**按 id 精确匹配**再取 cover。
+ *      不能直接拿第一条：搜「我爱你 王菲」第二条起就是翻唱，贴错封面比没封面还怪。
+ *   ③ 都拿不到 → 返回空串，画面画一个唱片占位块（不塌版、观众也看不出是失败）。
+ *
+ * 为什么由桥来抓、不交给画面：画面每帧都要出图，在里面发网络请求必然掉帧；
+ * 而且断网 / VIP 曲 / 换源这些情况全都要有兜底。桥抓一次落盘，画面只读本地文件。
+ *
+ * 缓存：cache/covers/<provider>_<songId>.jpg，同一个 trackId 只抓一次 ——
+ * **抓失败的也记成空串**，不然每轮轮询都会重试一遍，白烧流量还拖慢主循环。
+ */
+const COVER_DIR = path.join(DIR, 'cache', 'covers')
+const coverDone = new Map() // trackId -> 本地绝对路径（'' = 抓不到，别再试）
+const coverBusy = new Set() // 正在抓的，防重复发请求
+
+function coverPathOf(trackId) {
+  return coverDone.get(String(trackId || '')) || ''
+}
+
+function coverKick(trackId, name, artist) {
+  const id = String(trackId || '')
+  if (!id || coverDone.has(id) || coverBusy.has(id)) return
+  coverBusy.add(id)
+  grabCover(id, name, artist)
+    .then((f) => coverDone.set(id, f || ''))
+    .catch(() => coverDone.set(id, ''))
+    .finally(() => coverBusy.delete(id))
+}
+
+async function grabCover(trackId, name, artist) {
+  const cut = trackId.indexOf(':')
+  const provider = cut > 0 ? trackId.slice(0, cut) : 'netease'
+  const songId = cut > 0 ? trackId.slice(cut + 1) : trackId
+  if (!/^[\w-]{1,40}$/.test(songId)) return ''
+  const file = path.join(COVER_DIR, `${provider}_${songId}.jpg`)
+  try {
+    if (fs.statSync(file).size > 2048) return file // 上次抓过，直接用
+  } catch {
+    /* 还没有，往下抓 */
+  }
+  let url = ''
+  if (provider === 'netease') url = await neteaseCover(songId)
+  if (!url) url = await boxSearchCover(trackId, name, artist)
+  if (!url) return ''
+  return (await saveCover(url, file)) ? file : ''
+}
+
+/** 网易云公开详情接口。不用登录态 —— 它给的是元数据，不是音源。 */
+async function neteaseCover(songId) {
+  const ctl = new AbortController()
+  const t = setTimeout(() => ctl.abort(), 8000)
+  try {
+    const u = `https://music.163.com/api/song/detail?ids=%5B${encodeURIComponent(songId)}%5D`
+    const r = await fetch(u, {
+      signal: ctl.signal,
+      headers: { 'user-agent': 'Mozilla/5.0', referer: 'https://music.163.com/' },
+    })
+    if (!r.ok) return ''
+    const j = await r.json()
+    const s = j && Array.isArray(j.songs) ? j.songs[0] : null
+    const pic = s && s.album && s.album.picUrl
+    return pic ? String(pic) : ''
+  } catch {
+    return ''
+  } finally {
+    clearTimeout(t)
+  }
+}
+
+/** 兜底：走插件的搜索，按 id 精确匹配回同一首。 */
+async function boxSearchCover(trackId, name, artist) {
+  if (!name) return ''
+  const kw = [name, artist].filter(Boolean).join(' ')
+  const r = await boxJson('/search?keyword=' + encodeURIComponent(kw), { timeout: 8000 })
+  const list = (r && r.tracks) || []
+  const hit = list.find((x) => String(x.id || '') === trackId) || null
+  return hit && hit.cover ? String(hit.cover) : ''
+}
+
+async function saveCover(url, file) {
+  const ctl = new AbortController()
+  const t = setTimeout(() => ctl.abort(), 10000)
+  try {
+    /* 网易云的图床支持 ?param=300y300 直接要一张小图 —— 原图动辄 1MB，
+     * 画面只用到 200px，没必要拖那么大下来。别的图床不认这个参数，别乱加。 */
+    let full = url
+    if (full.includes('music.126.net')) {
+      full += (full.includes('?') ? '&' : '?') + 'param=300y300'
+    }
+    const r = await fetch(full, {
+      signal: ctl.signal,
+      headers: { 'user-agent': 'Mozilla/5.0', referer: 'https://music.163.com/' },
+    })
+    if (!r.ok) return false
+    if (!/^image\//.test(String(r.headers.get('content-type') || ''))) return false
+    const buf = Buffer.from(await r.arrayBuffer())
+    if (buf.length < 2048) return false
+    fs.mkdirSync(COVER_DIR, { recursive: true })
+    const tmp = file + '.tmp'
+    fs.writeFileSync(tmp, buf)
+    fs.renameSync(tmp, file)
+    pruneCovers()
+    return true
+  } catch {
+    return false
+  } finally {
+    clearTimeout(t)
+  }
+}
+
+/* 封面只增不减迟早把盘吃满（一首一个 66KB，播一晚上几十首）。
+ * 超过 400 张就按最旧的删到 400 —— 十分钟最多跑一次，别每张都去 listdir。 */
+let coverPrunedAt = 0
+function pruneCovers() {
+  if (Date.now() - coverPrunedAt < 600000) return
+  coverPrunedAt = Date.now()
+  try {
+    const all = fs.readdirSync(COVER_DIR).filter((f) => f.endsWith('.jpg'))
+    if (all.length <= 400) return
+    const items = all
+      .map((f) => {
+        const p = path.join(COVER_DIR, f)
+        try {
+          return { p, t: fs.statSync(p).mtimeMs }
+        } catch {
+          return null
+        }
+      })
+      .filter(Boolean)
+      .sort((a, b) => a.t - b.t)
+    for (const x of items.slice(0, items.length - 400)) {
+      try {
+        fs.unlinkSync(x.p)
+      } catch {
+        /* 删不掉就算了，下一轮再说 */
+      }
+    }
+  } catch {
+    /* 目录还没建，正常 */
+  }
 }
 
 /* ── 卡带检测（2026-10-28）───────────────────────────────────────────
@@ -5443,9 +5593,19 @@ const server = http.createServer(async (req, res) => {
       },
       danmaku: recent,
       subtitle: speaking ? say.text : null,
-      // 正在播的歌。`hot=true` 表示这是热榜垫的 —— 画面**不显示**（只后台放）。
+      // 正在播的歌。`hot=true` 表示这是热榜垫的 —— 点歌台**不显示歌名**（只后台放），
+      // 但电脑屏上的封面照放（2026-10-28 主人定：热榜的歌也显示）。
       music: music.found
-        ? { title: music.title, artist: music.artist, playing: music.playing, hot: Boolean(music.hot) }
+        ? {
+            title: music.title,
+            artist: music.artist,
+            playing: music.playing,
+            hot: Boolean(music.hot),
+            /* 封面本地绝对路径（同机读盘）。空串 = 还没抓到 / 抓不到
+             * → 画面画一个唱片占位块，不会开天窗。
+             * 为什么不给 URL：画面每帧要出图，在里面发网络请求必然掉帧。 */
+            coverFile: coverPathOf(music.trackId),
+          }
         : null,
       // 礼物档位媒体：画面右侧那台「电脑」放什么全靠这一段。
       // seq 变了 = 换了一份素材，画面要重新打开文件。

@@ -1116,6 +1116,115 @@ def _screen_audio(d, f, st, cur, tsec):
            font=f(20), fill=(255, 255, 255, 90), anchor="mm")
 
 
+# ── 放歌时的屏幕：左边时钟 + 右边专辑封面（2026-10-28）────────────────────
+# 主人原话：「播放歌曲的时候显示一个时间＋专辑封面，时间在电脑左边，
+# 专辑封面正方形有 r 角，放在右边」。定了三条：
+#   · 时间 = **当前时钟**（不是歌曲进度），跟待机时那个时钟是同一个东西
+#   · 不写歌名歌手 —— 右边点歌台卡片里已经有了，再写一遍是重复
+#   · 热榜垫的歌也显示封面（点歌台不显示歌名那条规则不管这里）
+#
+# 封面图是桥抓下来落在 cache/covers/ 的本地文件。**画面只读盘，不发网络请求**：
+# 每帧都要出图，在网络请求上等 200ms 就是肉眼可见的掉帧。
+_COVER = {}          # (路径, mtime, 边长, 圆角) -> 已经切好的 RGBA 方块
+_COVER_KEY = None    # 现在贴的是哪一张。换了才重算，没换直接复用。
+
+
+def _cover_patch(path, px, radius):
+    """把封面裁成正方形、缩到 px、切圆角。同一个文件只做一次。
+
+    非正方形的图**居中裁**，不拉伸 —— 拉伸会把专辑封面拉变形，
+    观众一眼就看出来「这图被搞坏了」。
+    """
+    global _COVER_KEY
+    try:
+        mt = os.path.getmtime(path)
+    except OSError:
+        return None
+    key = (path, mt, px, radius)
+    if _COVER_KEY == key:
+        p = _COVER.get(key)
+        if p is not None:
+            return p
+    try:
+        im = Image.open(path)
+        im.load()
+        im = im.convert("RGB")
+    except Exception as e:
+        print(f"[cover] 打不开 {os.path.basename(path)}（{type(e).__name__}: {e}）",
+              file=sys.stderr)
+        return None
+    w, h = im.size
+    if w <= 0 or h <= 0:
+        return None
+    s = min(w, h)
+    im = im.crop(((w - s) // 2, (h - s) // 2, (w - s) // 2 + s, (h - s) // 2 + s))
+    if s != px:
+        im = im.resize((px, px), Image.LANCZOS)
+    out = Image.new("RGBA", (px, px), (0, 0, 0, 0))
+    out.paste(im, (0, 0), _round_mask(px, px, radius))
+    # 只留一张：封面切换不频繁，留多了纯占内存（一张 200×200 就 160KB）
+    _COVER.clear()
+    _COVER[key] = out
+    _COVER_KEY = key
+    return out
+
+
+def _cover_placeholder(px, radius):
+    """取不到封面时的「唱片」方块。画出来比留白好 —— 版面不塌，也看不出是失败。"""
+    ph = Image.new("RGBA", (px, px), (0, 0, 0, 0))
+    pd = ImageDraw.Draw(ph)
+    pd.rounded_rectangle((0, 0, px - 1, px - 1), radius=radius,
+                         fill=(255, 255, 255, 16), outline=(255, 255, 255, 44), width=1)
+    c = px / 2.0
+    lw = max(2, px // 64)
+    r1 = px * 0.30
+    pd.ellipse((c - r1, c - r1, c + r1, c + r1), outline=(255, 255, 255, 76), width=lw)
+    r2 = px * 0.16
+    pd.ellipse((c - r2, c - r2, c + r2, c + r2), fill=(255, 255, 255, 30))
+    r3 = px * 0.05
+    pd.ellipse((c - r3, c - r3, c + r3, c + r3), fill=(255, 255, 255, 96))
+    return ph
+
+
+def _screen_music(lay, d, f, st, mus):
+    """放歌时的屏幕：左边当前时钟，右边方形圆角专辑封面。
+
+    lay 是那张全尺寸 RGBA 层 —— 封面要贴进这一层才能跟其它半透明元件
+    一起合成；直接贴 img（RGB）会被后面的整块合成盖掉。
+    """
+    d.rectangle((SCR_X, SCR_Y, SCR_X + SCR_W, SCR_Y + SCR_H), fill=(33, 29, 44, 255))
+    # 跟待机同一套网格：一眼就知道「还是那块屏」，只是内容换了
+    for gx in range(SCR_X + 18, SCR_X + SCR_W, 26):
+        d.line((gx, SCR_Y, gx, SCR_Y + SCR_H), fill=(255, 255, 255, 26))
+    for gy in range(SCR_Y + 18, SCR_Y + SCR_H, 26):
+        d.line((SCR_X, gy, SCR_X + SCR_W, gy), fill=(255, 255, 255, 26))
+
+    # 封面：正方形。边长跟着屏幕走（显示器能拖宽），上限 200 —— 再大就压住时钟了。
+    side = int(min(SCR_H * 0.63, SCR_W * 0.36))
+    side = max(48, side)
+    rad = max(6, int(round(side * 0.10)))
+    cvx = SCR_X + SCR_W - 26 - side
+    cvy = SCR_Y + (SCR_H - side) // 2
+
+    patch = None
+    path = str(mus.get("coverFile") or "")
+    if path:
+        patch = _cover_patch(path, side, rad)
+    if patch is None:
+        patch = _cover_placeholder(side, rad)
+    lay.paste(patch, (cvx, cvy), patch)
+
+    # 左边：大号时钟。字号跟着屏幕高走，放不下就缩 —— 拖窄了不会溢出到封面上去。
+    hhmm = time.strftime("%H:%M")
+    lx = SCR_X + 30
+    fs = max(30, int(round(SCR_H * 0.23)))
+    room = cvx - lx - 14
+    while fs > 22 and d.textlength(hhmm, font=f(fs, True)) > room:
+        fs -= 2
+    d.text((lx, SCR_Y + SCR_H // 2), hhmm, font=f(fs, True),
+           fill=(255, 255, 255, 215), anchor="lm")
+
+
 # 逐帧图层（半透明元件专用）。全尺寸 RGBA 每帧新建要 8MB 的分配，15fps 下太浪费；
 # 复用一块、每帧只清右栏那一小块。
 #
@@ -1217,7 +1326,13 @@ def draw_computer(img, st, d, f):
                fit_text(err, SCR_W - 50, 19), font=f(19),
                fill=(255, 255, 255, 120), anchor="mm")
     elif not cur:
-        _screen_idle(d, f, st, med)
+        # 没在放素材。要是有歌在放，屏幕就显示「时钟 + 专辑封面」，
+        # 否则还是老样子待机。礼物视频优先 —— 视频占着屏幕时不抢。
+        mus = st.get("music") or {}
+        if mus.get("title"):
+            _screen_music(lay, d, f, st, mus)
+        else:
+            _screen_idle(d, f, st, med)
     elif (cur.get("kind") or "") == "audio" and not frame:
         _screen_audio(d, f, st, cur, tsec)
     elif frame is not None:
