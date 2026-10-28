@@ -1,0 +1,959 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>直播画面编辑器 · zuige大肥鱼</title>
+<style>
+/* ══════════════════════════════════════════════════════════════════════
+   直播画面编辑器（2026-10-28）
+   画布固定 1920×1080（抖音直播伴侣只能 16:9），所有坐标都是画面坐标，
+   不是屏幕坐标 —— 换电脑、换缩放，存出去的 layout.json 一个像素都不变。
+
+   🔴 只改「位置 + 宽度」，高度由内容算（见 H_()）。
+      卡片高度是倒推出来的（点歌台 = 正在播放 + 3 首 + 提示两行），
+      放开高度就会出现"拖矮了文字叠成一团"。所以没有上下拉伸手柄。
+   ══════════════════════════════════════════════════════════════════════ */
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{
+  font:13px/1.5 "Microsoft YaHei","Segoe UI",system-ui,sans-serif;
+  background:#eef0f4;color:#20242e;overflow:hidden;display:flex;flex-direction:column;
+}
+button{font:inherit;cursor:pointer}
+input,select{font:inherit}
+
+/* ── 顶栏 ── */
+#top{
+  flex:0 0 auto;display:flex;align-items:center;gap:8px;padding:8px 12px;
+  background:#fff;border-bottom:1px solid #d9dde6;box-shadow:0 1px 3px rgba(20,25,40,.06);z-index:20;
+}
+#top .brand{font-weight:700;font-size:14px;letter-spacing:.5px;margin-right:4px}
+#top .brand small{font-weight:400;color:#7b8398;margin-left:6px}
+#top .sep{width:1px;height:22px;background:#e2e6ee;margin:0 4px}
+.btn{padding:5px 11px;border:1px solid #d2d7e2;background:#fff;border-radius:7px;color:#333a49;transition:.12s}
+.btn:hover{background:#f4f6fa;border-color:#bcc4d4}
+.btn:active{transform:translateY(1px)}
+.btn.primary{background:#6750a4;border-color:#6750a4;color:#fff}
+.btn.primary:hover{background:#574292}
+.btn.on{background:#ece7f8;border-color:#b9a9e0;color:#42307a}
+.btn.ghost{border-color:transparent;background:transparent}
+.btn.ghost:hover{background:#f0f2f7}
+.btn[disabled]{opacity:.38;pointer-events:none}
+.spacer{flex:1}
+#zoomWrap{display:flex;align-items:center;gap:6px;color:#5b6377}
+
+/* ── 三栏 ── */
+main{flex:1;display:flex;min-height:0}
+aside{flex:0 0 auto;background:#fff;display:flex;flex-direction:column;min-height:0}
+#left{width:196px;border-right:1px solid #d9dde6;overflow:auto}
+#right{width:252px;border-left:1px solid #d9dde6;overflow:auto}
+.pane{padding:10px 12px;border-bottom:1px solid #e8ebf2}
+.pane:last-child{border-bottom:0}
+.pane h3{margin:0 0 8px;font-size:11px;font-weight:700;letter-spacing:1.2px;color:#8b93a6}
+.hint{color:#9aa1b3;font-size:11px;line-height:1.6;margin:6px 0 0}
+
+/* 组件列表 */
+#comps{display:flex;flex-direction:column;gap:2px}
+.comp{display:flex;align-items:center;gap:7px;padding:6px 8px;border-radius:7px;cursor:pointer;color:#39404f}
+.comp:hover{background:#f3f5fa}
+.comp.on{background:#ece7f8;color:#42307a;font-weight:700}
+.comp .ico{width:16px;text-align:center;color:#9aa1b3;font-size:12px}
+.comp .nm{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.comp .eye{cursor:pointer;opacity:.6;font-size:12px}
+.comp .eye.off{opacity:.2}
+.comp.hid .nm{color:#b3b9c7}
+
+/* 画布区 */
+#stageWrap{
+  flex:1;min-width:0;position:relative;overflow:auto;display:flex;
+  align-items:center;justify-content:center;padding:26px;
+  background:radial-gradient(circle at 1px 1px,#cfd5e2 1px,transparent 0) 0 0/16px 16px,#e7eaf1;
+}
+#stageBox{position:relative;flex:0 0 auto;box-shadow:0 10px 34px rgba(22,28,45,.22);background:#17131F}
+#stage{
+  position:absolute;left:0;top:0;width:1920px;height:1080px;transform-origin:0 0;overflow:hidden;
+  --ink:#E6E1E5;--dim:#CAC4D0;--faint:rgba(202,196,208,.5);
+  --pri:#D0BCFF;--ter:#EFB8C8;--card:#2E263F;--hair:#5C4F78;
+  --font:"Microsoft YaHei","Segoe UI",sans-serif;
+}
+/* 浅色主题：跟 native/render.py 的 _PALETTE['light'] 一一对应 */
+#stage[data-theme="light"]{
+  --ink:#1B1B1F;--dim:#44464F;--faint:rgba(68,70,79,.75);
+  --pri:#4F378B;--ter:#7D5260;--card:#FFFFFF;--hair:#CAC4D0;
+}
+#bgLayer{position:absolute;inset:0;background-size:cover;background-position:center;background-repeat:no-repeat}
+#scrim{position:absolute;inset:0;pointer-events:none;background:#000;opacity:0}
+#grid{position:absolute;inset:0;pointer-events:none;display:none;
+  background-image:linear-gradient(rgba(120,140,190,.18) 1px,transparent 1px),
+                   linear-gradient(90deg,rgba(120,140,190,.18) 1px,transparent 1px);
+  background-size:60px 60px}
+#stage.show-grid #grid{display:block}
+#items{position:absolute;inset:0}
+
+.it{position:absolute;box-sizing:border-box;cursor:move}
+.it.hidden{display:none}
+.it:hover{outline:1px dashed rgba(90,160,255,.6)}
+
+#sel{position:absolute;pointer-events:none;display:none;z-index:9999;outline:1.5px solid #4c8dff}
+#sel .h{position:absolute;background:#fff;border:1.5px solid #4c8dff;border-radius:2px;pointer-events:auto;box-sizing:border-box}
+#sel .h[data-d=w],#sel .h[data-d=e]{cursor:ew-resize}
+#sel .tag{position:absolute;left:0;top:0;transform:translateY(-100%);background:#4c8dff;color:#fff;
+  border-radius:4px 4px 0 0;white-space:nowrap;font-family:"Microsoft YaHei",sans-serif}
+#guides{position:absolute;inset:0;pointer-events:none;z-index:9998}
+#guides i{position:absolute;background:#ff3d9a;display:block}
+#guides i.v{width:1px;top:0;bottom:0}
+#guides i.h{height:1px;left:0;right:0}
+
+/* ── 组件外观 ──
+   🔴 卡片里的东西全部**绝对定位**，坐标抄的是 native/render.py 的像素值
+      （基准宽 452 下的 30/90/136/182…），再乘 k = 实际宽/452。
+      一开始用 CSS 流式排版（flex + margin），结果预览里「收到礼物」直接被卡片
+      底边切掉 —— 而真画面是好的。流式排版永远对不准，所以改成照抄坐标。 */
+.card{position:absolute;inset:0;background:var(--card);border:1px solid var(--hair);
+  border-radius:2.4em;color:var(--ink);font-family:var(--font);overflow:hidden}
+.c-t{position:absolute;white-space:nowrap;line-height:1}
+.c-t.r{transform:translateX(0)}
+.c-bars{position:absolute;display:flex;gap:4px;align-items:flex-end}
+.c-bars s{width:5px;flex:0 0 auto;background:var(--pri);border-radius:2px;display:block;text-decoration:none}
+.c-dot{position:absolute;border-radius:50%;background:var(--pri)}
+.c-hr{position:absolute;height:1px;background:var(--hair);opacity:.45}
+
+.t-banner{display:flex;align-items:center;justify-content:center;font-family:var(--font);
+  font-weight:700;white-space:nowrap;color:var(--pri)}
+.t-character{display:flex;align-items:flex-end;justify-content:center}
+.t-character img{width:100%;height:100%;object-fit:contain;display:block;
+  filter:drop-shadow(0 18px 26px rgba(0,0,0,.35))}
+.t-monitor .shell{position:absolute;left:0;right:0;top:0;height:87.5%;background:var(--card);
+  border:1px solid var(--hair);border-radius:1.6em;padding:2.9%}
+.t-monitor .scr{position:absolute;inset:0;border-radius:1em;overflow:hidden;
+  background:linear-gradient(135deg,#14121b,#241d33);display:flex;align-items:center;
+  justify-content:center;color:rgba(202,196,208,.55);font-family:var(--font);font-size:2.6em}
+.t-monitor .neck{position:absolute;left:50%;transform:translateX(-50%);bottom:12.5%;width:9%;height:6.7%;
+  background:var(--card);border-left:1px solid var(--hair);border-right:1px solid var(--hair)}
+.t-monitor .foot{position:absolute;left:50%;transform:translateX(-50%);bottom:0;width:42%;height:3.6%;
+  background:var(--card);border:1px solid var(--hair);border-radius:.6em}
+.t-danmaku{display:flex;flex-direction:column;justify-content:flex-end;gap:1.1em;font-family:var(--font);font-size:2.4em}
+.t-danmaku .dm{align-self:flex-end;max-width:100%;background:rgba(30,25,42,.72);
+  border:1px solid rgba(208,188,255,.22);border-radius:1em;padding:.55em .9em;color:#E6E1E5}
+.t-danmaku .dm b{color:#EFB8C8;font-weight:400;font-size:.86em;display:block;margin-bottom:.1em}
+.t-danmaku .dm.sys{border-color:rgba(208,188,255,.5);color:#D0BCFF}
+.t-subtitle .bar{position:absolute;inset:0;background:var(--card);border:1px solid var(--hair);
+  border-radius:1.6em;display:flex;align-items:center;justify-content:center;padding:0 1.6em;
+  color:var(--ink);font-family:var(--font);font-size:3em;text-align:center;overflow:hidden}
+
+/* ── 右侧属性 ── */
+.fld{display:flex;align-items:center;gap:8px;margin-bottom:7px}
+.fld label{flex:0 0 44px;color:#78809a;font-size:12px}
+.fld input[type=number],.fld input[type=text],.fld select{
+  flex:1;min-width:0;padding:4px 7px;border:1px solid #dbe0ea;border-radius:6px;background:#fbfcfe}
+.fld input[readonly]{background:#f1f3f8;color:#8b93a6}
+.fld input[type=color]{flex:0 0 34px;height:26px;padding:1px;border:1px solid #dbe0ea;border-radius:6px;background:#fff}
+.fld input[type=range]{flex:1;min-width:0}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:7px}
+.grid2 .fld{margin-bottom:0}
+.grid2 .fld label{flex:0 0 16px;text-align:center;color:#9aa1b3}
+.mini{display:grid;grid-template-columns:1fr 1fr;gap:5px;margin-top:9px}
+.mini button{padding:5px 0;border:1px solid #dbe0ea;background:#fbfcfe;border-radius:6px;color:#4a5265;font-size:12px}
+.mini button:hover{background:#f0edfa;border-color:#c3b8e8;color:#4a3b7a}
+.chk{display:flex;align-items:center;gap:7px;color:#4a5265;font-size:12px;margin:9px 0 2px;cursor:pointer}
+.hr{height:1px;background:#edf0f5;margin:12px 0}
+.empty{color:#98a0b3;padding:14px 2px;text-align:center;line-height:1.9}
+.warnbox{background:#fff8e6;border:1px solid #f0d9a0;border-radius:8px;padding:8px 10px;
+  color:#7a5b12;font-size:11.5px;line-height:1.65;margin-top:8px}
+
+/* 预览模式 */
+body.preview #top,body.preview #left,body.preview #right{display:none}
+body.preview #stageWrap{padding:0;background:#000;display:block;overflow:hidden}
+body.preview #stageBox{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);box-shadow:none}
+body.preview .it:hover{outline:0}
+body.preview #sel,body.preview #guides{display:none!important}
+body.preview #previewHint{display:block}
+#previewHint{display:none;position:fixed;right:16px;bottom:14px;color:rgba(255,255,255,.45);
+  font-size:12px;pointer-events:none}
+
+#toast{position:fixed;left:50%;bottom:26px;transform:translate(-50%,20px);opacity:0;
+  background:#2b2f3c;color:#fff;padding:8px 16px;border-radius:20px;font-size:12.5px;
+  pointer-events:none;transition:.22s;z-index:99;box-shadow:0 6px 20px rgba(0,0,0,.28);max-width:70vw}
+#toast.on{opacity:1;transform:translate(-50%,0)}
+</style>
+</head>
+<body>
+
+<header id="top">
+  <div class="brand">直播画面编辑器<small>1920×1080</small></div>
+  <div class="sep"></div>
+  <button class="btn" id="undoBtn" title="Ctrl+Z">撤销</button>
+  <button class="btn" id="redoBtn" title="Ctrl+Shift+Z">重做</button>
+  <div class="sep"></div>
+  <button class="btn" id="gridBtn">网格</button>
+  <button class="btn" id="snapBtn">吸附</button>
+  <div class="spacer"></div>
+  <div id="zoomWrap">
+    <span>缩放</span>
+    <input id="zoom" type="range" min="10" max="100" step="5" value="50" style="width:86px">
+    <span id="zoomTxt" style="width:36px;text-align:right">50%</span>
+    <button class="btn ghost" id="fitBtn">适配</button>
+  </div>
+  <div class="sep"></div>
+  <button class="btn" id="reloadBtn" title="丢掉本地改动，重新从画面读">重新载入</button>
+  <button class="btn primary" id="saveBtn" title="Ctrl+S">保存到画面</button>
+  <button class="btn" id="previewBtn">预览</button>
+</header>
+
+<main>
+  <aside id="left">
+    <section class="pane">
+      <h3>组件 · 点一行选中</h3>
+      <div id="comps"></div>
+      <div class="hint">想加新组件（倒计时、关注引导…）<br>找 agent 写绘制函数再登记到这里。</div>
+    </section>
+  </aside>
+
+  <div id="stageWrap">
+    <div id="stageBox">
+      <div id="stage" class="show-grid" data-theme="dark">
+        <div id="bgLayer"></div>
+        <div id="scrim"></div>
+        <div id="grid"></div>
+        <div id="items"></div>
+        <div id="guides"></div>
+        <div id="sel">
+          <div class="tag"></div>
+          <div class="h" data-d="w"></div><div class="h" data-d="e"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <aside id="right">
+    <section class="pane">
+      <h3>选中的组件</h3>
+      <div id="props"></div>
+    </section>
+    <section class="pane">
+      <h3>背景</h3>
+      <div id="bgPane"></div>
+    </section>
+    <section class="pane">
+      <h3>配色</h3>
+      <div id="themePane"></div>
+    </section>
+  </aside>
+</main>
+
+<div id="previewHint">Esc 退出预览</div>
+<div id="toast"></div>
+
+<script>
+/* ══════════════════════════════════════════════════════════════════════════
+ * 这份编辑器跟 native/render.py 是一对：
+ *   编辑器 → POST /layout → 桥写 cache/layout.json → render.py 发现 mtime 变了
+ *   → 重建静态层（1 秒内）。全程不重启、不重开窗口。
+ * ══════════════════════════════════════════════════════════════════════════ */
+const W = 1920, H = 1080;
+const LS_KEY = 'zhibo.layout.v2';
+
+/* 七个组件：名字、图标、基准宽、默认位置。顺序 = 画面里的绘制顺序。 */
+const COMPS = [
+  { key:'stats',     name:'本场数据卡', icon:'▤', w:452, x:64,   y:54   },
+  { key:'songs',     name:'点歌台',     icon:'♫', w:452, x:64,   y:294  },
+  { key:'banner',    name:'顶部标语',   icon:'T', w:520, x:700,  y:26   },
+  { key:'character', name:'皮套',       icon:'人', w:570, x:675,  y:343  },
+  { key:'monitor',   name:'素材显示器', icon:'▭', w:594, x:1262, y:485  },
+  { key:'danmaku',   name:'弹幕列',     icon:'💬', w:470, x:1386, y:180, visible:false },
+  { key:'subtitle',  name:'字幕条',     icon:'≡', w:900, x:510,  y:960  },
+];
+const BYKEY = Object.fromEntries(COMPS.map(c => [c.key, c]));
+
+/* 高度公式 —— 🔴 必须跟 native/render.py 的 comp_h() 一字不差，
+   否则编辑器里看到的框和真画面差一截，拖出来的坐标就是错的。 */
+const DM_FLOOR = H - 206;
+function H_(key, y, w) {
+  if (key === 'stats') return 216;
+  if (key === 'songs') return 478;
+  if (key === 'banner') return 64;
+  if (key === 'character') return Math.round(w * 1078 / 1005);
+  if (key === 'monitor') return Math.round(w * 389 / 594);
+  if (key === 'danmaku') return Math.max(80, DM_FLOOR - y);
+  if (key === 'subtitle') return 86;
+  return 100;
+}
+
+/* ── 场景 ── */
+let scene = defaultScene();
+let selKey = null;
+let scale = 0.5, snapOn = true, gridOn = true;
+let history = [], hIdx = -1;
+
+function defaultScene() {
+  const items = {};
+  for (const c of COMPS) {
+    items[c.key] = { x: c.x, y: c.y, w: c.w, visible: c.visible !== false };
+  }
+  items.banner.size = 50;
+  items.banner.align = 'center';
+  return { version:1, theme:'dark',
+    bg:{ type:'image', image:'assets/bg-gdut.png', color:'#1E182A', dim:0 },
+    items };
+}
+
+/* 补全：桥给的、localStorage 存的、手改的 json，都可能缺字段 */
+function normalize(src) {
+  const d = defaultScene();
+  if (!src || typeof src !== 'object') return d;
+  const out = { version:1, theme: src.theme === 'light' ? 'light' : 'dark',
+    bg: Object.assign({}, d.bg, src.bg || {}), items:{} };
+  for (const c of COMPS) {
+    const v = (src.items || {})[c.key] || {};
+    const o = {
+      x: Number.isFinite(+v.x) ? Math.round(+v.x) : c.x,
+      y: Number.isFinite(+v.y) ? Math.round(+v.y) : c.y,
+      w: Number.isFinite(+v.w) ? Math.max(120, Math.round(+v.w)) : c.w,
+      visible: v.visible !== false,
+    };
+    if (c.key === 'banner') {
+      o.size = Number.isFinite(+v.size) ? +v.size : 50;
+      o.align = ['left','center','right'].indexOf(v.align) >= 0 ? v.align : 'center';
+    }
+    out.items[c.key] = o;
+  }
+  return out;
+}
+
+/* ── 工具 ── */
+const $ = s => document.querySelector(s);
+const clamp = (v,a,b) => Math.max(a, Math.min(b, v));
+const esc = s => String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;')
+  .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+function toast(msg, ms) {
+  const t = $('#toast');
+  t.textContent = msg; t.classList.add('on');
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => t.classList.remove('on'), ms || 1800);
+}
+/* 所有请求都带超时 —— 没有超时的 fetch 会让按钮永远"转圈"，
+   表现是整页卡住还不报错（这个坑踩过一次）。 */
+function fetchT(url, opt, ms) {
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), ms || 6000);
+  return fetch(url, Object.assign({}, opt, { signal: ac.signal }))
+    .finally(() => clearTimeout(timer));
+}
+
+/* ── 撤销/重做 ── */
+const snap = () => JSON.stringify(scene);
+function pushHistory() {
+  const s = snap();
+  if (history[hIdx] === s) return;
+  history = history.slice(0, hIdx + 1);
+  history.push(s);
+  if (history.length > 80) history.shift();
+  hIdx = history.length - 1;
+  syncBtns();
+}
+function undo() {
+  if (hIdx <= 0) return;
+  hIdx--; scene = normalize(JSON.parse(history[hIdx]));
+  renderAll(); syncBtns();
+}
+function redo() {
+  if (hIdx >= history.length - 1) return;
+  hIdx++; scene = normalize(JSON.parse(history[hIdx]));
+  renderAll(); syncBtns();
+}
+function syncBtns() {
+  $('#undoBtn').disabled = hIdx <= 0;
+  $('#redoBtn').disabled = hIdx >= history.length - 1;
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+ * 渲染
+ * ══════════════════════════════════════════════════════════════════════ */
+function renderBg() {
+  const b = scene.bg;
+  const bg = $('#bgLayer');
+  bg.style.backgroundImage = '';
+  bg.style.backgroundColor = b.color || '#1E182A';
+  if (b.type === 'image' && b.image) bg.style.backgroundImage = 'url("' + b.image + '")';
+  $('#scrim').style.opacity = String(clamp(Number(b.dim) || 0, 0, 0.9));
+  $('#stage').dataset.theme = scene.theme === 'light' ? 'light' : 'dark';
+}
+
+/* 卡片里的绝对定位小工具：x/y/字号都按 k 缩放，颜色用主题变量 */
+function tx(k, x, y, text, size, color, extra) {
+  return '<span class="c-t" style="left:' + (x * k) + 'px;top:' + (y * k) + 'px;' +
+    'font-size:' + (size * k) + 'px;color:' + color + ';' + (extra || '') + '">' + text + '</span>';
+}
+function tr(k, x, y, text, size, color, extra) {
+  return '<span class="c-t" style="right:' + (x * k) + 'px;top:' + (y * k) + 'px;' +
+    'font-size:' + (size * k) + 'px;color:' + color + ';' + (extra || '') + '">' + text + '</span>';
+}
+
+/* 各组件的外观（预览用）。坐标抄 native/render.py，基准宽 452。 */
+function htmlOf(key, it) {
+  switch (key) {
+    case 'banner':
+      return '<div class="t-banner" style="width:100%;height:100%;font-size:' + (it.size || 50) + 'px;' +
+        'justify-content:' + (it.align === 'left' ? 'flex-start' : it.align === 'right' ? 'flex-end' : 'center') + '">' +
+        '刷礼物有惊喜</div>';
+    case 'stats': {
+      const k = it.w / 452;
+      const rows = [['收到弹幕', '1,284'], ['收到礼物', '37'], ['已回复', '1,190']];
+      let s = '<div class="card">';
+      s += tx(k, 30, 30, '本场数据', 25, 'var(--dim)');
+      s += tr(k, 30, 30, '实时', 22, 'var(--faint)');
+      rows.forEach(function (r, i) {
+        const y = 90 + i * 46;
+        s += tx(k, 30, y, r[0], 27, 'var(--dim)');
+        s += tr(k, 30, y, r[1], 27, 'var(--ink)', 'font-weight:700');
+      });
+      return s + '</div>';
+    }
+    case 'songs': {
+      const k = it.w / 452;
+      let s = '<div class="card">';
+      s += tx(k, 30, 30, '点歌台', 25, 'var(--dim)');
+      s += tr(k, 30, 30, '歌单 3 首', 22, 'var(--faint)');
+      s += '<i class="c-dot" style="left:' + (33 * k) + 'px;top:' + (97 * k) + 'px;' +
+           'width:' + (10 * k) + 'px;height:' + (10 * k) + 'px"></i>';
+      s += tx(k, 54, 90, '正在播放', 21, 'var(--faint)');
+      s += '<span class="c-bars" style="right:' + (30 * k) + 'px;top:' + (92 * k) + 'px">' +
+        [10, 18, 13, 20].map(function (h) {
+          return '<s style="height:' + (h * k) + 'px"></s>';
+        }).join('') + '</span>';
+      s += tx(k, 30, 118, '起风了', 28, 'var(--ink)', 'font-weight:700');
+      s += tx(k, 30, 156, '买辣椒也用券', 21, 'var(--dim)');
+      s += '<div class="c-hr" style="left:' + (30 * k) + 'px;right:' + (60 * k) + 'px;top:' + (186 * k) + 'px"></div>';
+      ['晴天', '孤勇者', '夜空中最亮的星'].forEach(function (t, i) {
+        const y = 202 + i * 58, first = i === 0;
+        s += tx(k, 30, y + 4, String(i + 1), 24, first ? 'var(--pri)' : 'var(--faint)');
+        s += tx(k, 70, y, t, 29, first ? 'var(--pri)' : 'var(--ink)', first ? 'font-weight:700' : '');
+      });
+      s += tx(k, 30, 384, '点歌格式', 22, 'var(--dim)');
+      s += tx(k, 30, 414, '点歌，歌名，歌手（可不填）', 28, 'var(--ink)');
+      return s + '</div>';
+    }
+    case 'character':
+      return '<div class="t-character"><img src="/assets/dafeiyu.png" alt=""></div>';
+    case 'monitor':
+      return '<div class="t-monitor" style="position:absolute;inset:0">' +
+        '<div class="shell"><div class="scr">素材播放区</div></div>' +
+        '<div class="neck"></div><div class="foot"></div></div>';
+    case 'danmaku':
+      return '<div class="t-danmaku">' +
+        '<div class="dm"><b>夜色</b>这歌真好听</div>' +
+        '<div class="dm sys"><b>阿伟</b>已点：晴天</div>' +
+        '<div class="dm"><b>枫</b>主播声音好听</div></div>';
+    case 'subtitle':
+      return '<div class="t-subtitle" style="position:absolute;inset:0">' +
+        '<div class="bar">谢谢老板的礼物，爱你哟～</div></div>';
+    default: return '';
+  }
+}
+
+const els = new Map();
+function renderItems() {
+  const host = $('#items');
+  host.innerHTML = ''; els.clear();
+  for (const c of COMPS) {
+    const it = scene.items[c.key];
+    const el = document.createElement('div');
+    el.className = 'it' + (it.visible ? '' : ' hidden');
+    el.dataset.key = c.key;
+    el.style.cssText = 'left:' + it.x + 'px;top:' + it.y + 'px;width:' + it.w + 'px;' +
+      'height:' + H_(c.key, it.y, it.w) + 'px;font-size:' + (10 * it.w / c.w) + 'px';
+    el.innerHTML = htmlOf(c.key, it);
+    host.appendChild(el);
+    els.set(c.key, el);
+  }
+  updateSel();
+}
+
+function renderComps() {
+  const host = $('#comps');
+  host.innerHTML = '';
+  for (const c of COMPS) {
+    const it = scene.items[c.key];
+    const row = document.createElement('div');
+    row.className = 'comp' + (c.key === selKey ? ' on' : '') + (it.visible ? '' : ' hid');
+    row.innerHTML = '<span class="ico">' + c.icon + '</span><span class="nm">' + c.name + '</span>' +
+      '<span class="eye' + (it.visible ? '' : ' off') + '" data-eye="1" title="显隐">👁</span>';
+    row.onclick = function (e) {
+      if (e.target.dataset.eye) {
+        it.visible = !it.visible;
+        pushHistory(); renderItems(); renderComps(); renderProps(); autoSave();
+        return;
+      }
+      select(c.key);
+    };
+    host.appendChild(row);
+  }
+}
+
+function renderProps() {
+  const host = $('#props');
+  if (!selKey) {
+    host.innerHTML = '<div class="empty">点画面上任意组件<br>或左边那七行里的任意一行</div>';
+    return;
+  }
+  const c = BYKEY[selKey], it = scene.items[selKey];
+  const hh = H_(selKey, it.y, it.w);
+  let extra = '';
+  if (selKey === 'danmaku') {
+    extra = '<div class="warnbox">弹幕列和显示器抢同一个位置 —— 点亮这个，显示器就不画了。</div>';
+  }
+  if (selKey === 'monitor') {
+    extra = '<div class="warnbox">改显示器宽度会让画面重起解码器（约半秒），直播中尽量别动。</div>';
+  }
+  host.innerHTML =
+    '<div class="fld"><label>组件</label><input type="text" readonly value="' + esc(c.name) + '"></div>' +
+    '<div class="grid2">' +
+      '<div class="fld"><label>X</label><input type="number" data-k="x" value="' + it.x + '" step="1"></div>' +
+      '<div class="fld"><label>Y</label><input type="number" data-k="y" value="' + it.y + '" step="1"></div>' +
+      '<div class="fld"><label>宽</label><input type="number" data-k="w" value="' + it.w + '" step="1" min="120"></div>' +
+      '<div class="fld"><label>高</label><input type="number" readonly value="' + hh + '"></div>' +
+    '</div>' +
+    '<div class="mini">' +
+      '<button data-align="cx">水平居中</button>' +
+      '<button data-align="cy">垂直居中</button>' +
+      '<button data-align="reset">回到默认位</button>' +
+      '<button data-align="under">贴到卡片下面</button>' +
+    '</div>' +
+    '<label class="chk"><input type="checkbox" data-k="visible"' + (it.visible ? ' checked' : '') + '>显示这个组件</label>' +
+    extra +
+    '<div class="hint">高度不用调：由内容算出来（点歌台 = 正在播放 + 3 首 + 提示两行），拖矮了会叠字。</div>';
+  bindProps();
+}
+
+function bindProps() {
+  const it = scene.items[selKey];
+  $('#props').querySelectorAll('[data-k]').forEach(function (inp) {
+    const key = inp.dataset.k;
+    inp.addEventListener('input', function () {
+      if (key === 'visible') {
+        it.visible = inp.checked;
+        renderItems(); renderComps(); autoSave(); return;
+      }
+      let v = Number(inp.value);
+      if (!Number.isFinite(v)) return;
+      if (key === 'w') v = clamp(v, 120, 1920);
+      if (key === 'x') v = clamp(v, -600, 2400);
+      if (key === 'y') v = clamp(v, -400, 1400);
+      it[key] = Math.round(v);
+      const el = els.get(selKey);
+      if (el) {
+        el.style.left = it.x + 'px'; el.style.top = it.y + 'px';
+        el.style.width = it.w + 'px';
+        el.style.height = H_(selKey, it.y, it.w) + 'px';
+        el.style.fontSize = (10 * it.w / BYKEY[selKey].w) + 'px';
+      }
+      updateSel(); autoSave();
+    });
+    inp.addEventListener('change', function () { pushHistory(); });
+  });
+  $('#props').querySelectorAll('[data-align]').forEach(function (b) {
+    b.onclick = function () {
+      const a = b.dataset.align;
+      if (a === 'cx') it.x = Math.round((W - it.w) / 2);
+      if (a === 'cy') it.y = Math.round((H - H_(selKey, it.y, it.w)) / 2);
+      if (a === 'reset') { const d = BYKEY[selKey]; it.x = d.x; it.y = d.y; it.w = d.w; }
+      if (a === 'under') {
+        // 「贴到上一个卡片下面」：点歌台跟本场数据卡要保持 24px 间距，
+        // 手算很容易差几像素，给个一键。
+        if (selKey === 'songs') {
+          const a1 = scene.items.stats;
+          it.y = a1.y + H_('stats', a1.y, a1.w) + 24;
+        } else {
+          toast('只有点歌台有「上一个卡片」');
+        }
+      }
+      pushHistory(); renderItems(); renderProps(); autoSave();
+    };
+  });
+}
+
+function renderBgPane() {
+  const b = scene.bg;
+  const files = renderBgPane._files || [];
+  const opts = files.map(function (f) {
+    return '<option value="' + esc(f.path) + '"' + (f.path === b.image ? ' selected' : '') + '>' +
+      esc(f.name) + ' · ' + f.kb + 'KB</option>';
+  }).join('');
+  $('#bgPane').innerHTML =
+    '<div class="fld"><label>类型</label><select id="bgType">' +
+      '<option value="image"' + (b.type === 'image' ? ' selected' : '') + '>图片</option>' +
+      '<option value="color"' + (b.type === 'color' ? ' selected' : '') + '>纯色</option>' +
+    '</select></div>' +
+    '<div class="fld"><label>图片</label><select id="bgPick">' +
+      (opts || '<option value="">（没读到 assets/ 目录）</option>') + '</select></div>' +
+    '<div class="fld"><label>压暗</label><input id="bgDim" type="range" min="0" max="0.7" step="0.02" value="' + (b.dim || 0) + '">' +
+      '<span id="bgDimTxt" style="width:34px;text-align:right;color:#78809a">' + Math.round((b.dim || 0) * 100) + '%</span></div>' +
+    '<div class="fld"><label>纯色</label><input id="bgColor" type="color" value="' + (b.color || '#1E182A') + '"></div>' +
+    '<div class="mini"><button id="bgUpload">上传一张新图…</button><button id="bgRefresh">刷新列表</button></div>' +
+    '<input id="bgFile" type="file" accept="image/png,image/jpeg,image/webp" hidden>' +
+    '<div class="hint">图片按「铺满裁切」放到 1920×1080。<br>新图直接存进 assets/，下次还在。</div>';
+
+  $('#bgType').onchange = function (e) { b.type = e.target.value; pushHistory(); renderBg(); autoSave(); };
+  $('#bgPick').onchange = function (e) {
+    b.image = e.target.value; b.type = 'image';
+    pushHistory(); renderBg(); renderBgPane(); autoSave();
+  };
+  $('#bgDim').oninput = function (e) {
+    b.dim = Number(e.target.value);
+    $('#bgDimTxt').textContent = Math.round(b.dim * 100) + '%';
+    renderBg();
+  };
+  $('#bgDim').onchange = function () { pushHistory(); autoSave(); };
+  $('#bgColor').oninput = function (e) { b.color = e.target.value; renderBg(); };
+  $('#bgColor').onchange = function () { pushHistory(); autoSave(); };
+  $('#bgRefresh').onclick = function () { loadBgList(true); };
+  $('#bgUpload').onclick = function () { $('#bgFile').click(); };
+  $('#bgFile').onchange = function (e) {
+    const f = e.target.files[0];
+    if (f) uploadBg(f);
+    e.target.value = '';
+  };
+}
+
+function renderThemePane() {
+  const light = scene.theme === 'light';
+  $('#themePane').innerHTML =
+    '<div class="fld"><label>卡片</label><select id="themeSel">' +
+      '<option value="dark"' + (light ? '' : ' selected') + '>深色（紫，原版）</option>' +
+      '<option value="light"' + (light ? ' selected' : '') + '>浅色（白，配浅底图）</option>' +
+    '</select></div>' +
+    '<div class="hint">换浅色底图时，深紫卡片会像贴纸、浅紫标语几乎看不见 —— 切到浅色就正常了。</div>';
+  $('#themeSel').onchange = function (e) {
+    scene.theme = e.target.value;
+    pushHistory(); renderBg(); renderItems(); autoSave();
+  };
+}
+
+function renderAll() {
+  renderBg(); renderItems(); renderComps(); renderProps();
+  renderBgPane(); renderThemePane(); syncBtns();
+}
+
+/* ── 选中框 ── */
+function select(key) { selKey = key; renderComps(); renderProps(); updateSel(); }
+
+function updateSel() {
+  const box = $('#sel');
+  if (!selKey) { box.style.display = 'none'; return; }
+  const it = scene.items[selKey];
+  if (!it.visible) { box.style.display = 'none'; return; }
+  const hh = H_(selKey, it.y, it.w);
+  box.style.display = 'block';
+  box.style.left = it.x + 'px'; box.style.top = it.y + 'px';
+  box.style.width = it.w + 'px'; box.style.height = hh + 'px';
+  const hs = Math.round(10 / scale);
+  box.querySelectorAll('.h').forEach(function (h) {
+    h.style.width = hs + 'px'; h.style.height = hs + 'px';
+    h.style.top = (hh / 2 - hs / 2) + 'px';
+    h.style.left = (h.dataset.d === 'w' ? -hs / 2 : it.w - hs / 2) + 'px';
+  });
+  const tag = box.querySelector('.tag');
+  tag.textContent = BYKEY[selKey].name + '  ' + it.w + '×' + hh;
+  tag.style.fontSize = Math.round(11 / scale) + 'px';
+  tag.style.padding = Math.round(1 / scale) + 'px ' + Math.round(6 / scale) + 'px';
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+ * 拖拽（只能移动 + 左右拉宽）
+ * ══════════════════════════════════════════════════════════════════════ */
+let drag = null;
+function stagePoint(e) {
+  const r = $('#stage').getBoundingClientRect();
+  return { x: (e.clientX - r.left) / scale, y: (e.clientY - r.top) / scale };
+}
+function snapTargets(exceptKey) {
+  const vx = [0, W / 2, W], hy = [0, H / 2, H];
+  for (const c of COMPS) {
+    if (c.key === exceptKey) continue;
+    const it = scene.items[c.key];
+    if (!it.visible) continue;
+    const hh = H_(c.key, it.y, it.w);
+    vx.push(it.x, it.x + it.w / 2, it.x + it.w);
+    hy.push(it.y, it.y + hh / 2, it.y + hh);
+  }
+  return { vx: vx, hy: hy };
+}
+function bestSnap(cands, targets, thr) {
+  let best = null;
+  for (const c of cands) for (const t of targets) {
+    const d = t - c;
+    if (Math.abs(d) <= thr && (!best || Math.abs(d) < Math.abs(best.d))) best = { d: d, at: t };
+  }
+  return best;
+}
+function showGuides(vs, hs) {
+  const g = $('#guides');
+  g.innerHTML = '';
+  const t = Math.max(1, 1 / scale);
+  vs.forEach(function (x) {
+    const i = document.createElement('i'); i.className = 'v';
+    i.style.left = x + 'px'; i.style.width = t + 'px'; g.appendChild(i);
+  });
+  hs.forEach(function (y) {
+    const i = document.createElement('i'); i.className = 'h';
+    i.style.top = y + 'px'; i.style.height = t + 'px'; g.appendChild(i);
+  });
+}
+
+document.addEventListener('pointerdown', function (e) {
+  const handle = e.target.closest('#sel .h');
+  if (handle && selKey) {
+    const it = scene.items[selKey];
+    pushHistory();
+    drag = { key: selKey, dir: handle.dataset.d, start: stagePoint(e),
+             box: { x: it.x, y: it.y, w: it.w } };
+    e.preventDefault(); e.stopPropagation();
+    return;
+  }
+  const itemEl = e.target.closest('.it');
+  if (itemEl) {
+    const key = itemEl.dataset.key;
+    select(key);
+    const it = scene.items[key];
+    pushHistory();
+    drag = { key: key, dir: 'move', start: stagePoint(e), box: { x: it.x, y: it.y, w: it.w } };
+    e.preventDefault(); e.stopPropagation();
+    return;
+  }
+  if (e.target.closest('#stage')) { selKey = null; renderComps(); renderProps(); updateSel(); }
+});
+
+document.addEventListener('pointermove', function (e) {
+  if (!drag) return;
+  const p = stagePoint(e);
+  const dx = p.x - drag.start.x, dy = p.y - drag.start.y;
+  const it = scene.items[drag.key];
+  const b = drag.box, thr = 8 / scale;
+  const t = snapTargets(drag.key);
+  let gv = [], gh = [];
+
+  if (drag.dir === 'move') {
+    let nx = b.x + dx, ny = b.y + dy;
+    if (e.shiftKey) { if (Math.abs(dx) > Math.abs(dy)) ny = b.y; else nx = b.x; }
+    if (snapOn) {
+      const hh = H_(drag.key, ny, b.w);
+      const sx = bestSnap([nx, nx + b.w / 2, nx + b.w], t.vx, thr);
+      const sy = bestSnap([ny, ny + hh / 2, ny + hh], t.hy, thr);
+      if (sx) { nx += sx.d; gv = [sx.at]; }
+      if (sy) { ny += sy.d; gh = [sy.at]; }
+    }
+    it.x = Math.round(nx); it.y = Math.round(ny);
+  } else {
+    let w = b.w + (drag.dir === 'e' ? dx : -dx);
+    let x = b.x + (drag.dir === 'e' ? 0 : dx);
+    if (w < 120) { w = 120; if (drag.dir === 'w') x = b.x + b.w - 120; }
+    if (snapOn) {
+      const edge = drag.dir === 'e' ? x + w : x;
+      const s = bestSnap([edge], t.vx, thr);
+      if (s) {
+        if (drag.dir === 'e') w += s.d; else { x += s.d; w -= s.d; }
+        gv = [s.at];
+      }
+    }
+    it.x = Math.round(x); it.w = Math.round(w);
+  }
+
+  const el = els.get(drag.key);
+  if (el) {
+    el.style.left = it.x + 'px'; el.style.top = it.y + 'px';
+    el.style.width = it.w + 'px';
+    el.style.height = H_(drag.key, it.y, it.w) + 'px';
+    el.style.fontSize = (10 * it.w / BYKEY[drag.key].w) + 'px';
+  }
+  updateSel();
+  showGuides(gv, gh);
+});
+
+document.addEventListener('pointerup', function () {
+  if (!drag) return;
+  showGuides([], []);
+  drag = null;
+  renderProps();     // 位置/宽度那两个数字要跟着更新
+  autoSave();
+});
+
+/* ── 缩放 ── */
+function setScale(v) {
+  scale = clamp(v, 0.1, 1);
+  $('#stage').style.transform = 'scale(' + scale + ')';
+  $('#stageBox').style.width = W * scale + 'px';
+  $('#stageBox').style.height = H * scale + 'px';
+  $('#zoom').value = Math.round(scale * 100);
+  $('#zoomTxt').textContent = Math.round(scale * 100) + '%';
+  updateSel();
+}
+function fitScale() {
+  const wrap = $('#stageWrap');
+  setScale(Math.min((wrap.clientWidth - 52) / W, (wrap.clientHeight - 52) / H));
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+ * 存 / 读
+ * ══════════════════════════════════════════════════════════════════════ */
+let saveTimer = null;
+/* autoSave：拖完、改完自动存一次（400ms 防抖）。改坏了还有撤销和「重新载入」兜底，
+   所以不弹确认 —— 直播中多一次弹窗就多一次手忙脚乱。 */
+function autoSave() {
+  try { localStorage.setItem(LS_KEY, snap()); } catch (e) { /* 隐私模式可能写不了 */ }
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(function () { save(true); }, 400);
+}
+
+async function save(quiet) {
+  try {
+    const r = await fetchT('/layout', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: snap(),
+    }, 6000);
+    const j = await r.json();
+    if (j.ok) {
+      if (!quiet) toast('已保存 · 画面 1 秒内跟着变');
+      return true;
+    }
+    toast('保存失败：' + j.error, 4000);
+    if (/不认识的接口/.test(j.error || '')) {
+      toast('桥还是旧代码 —— 先导出 JSON，等桥重启后再存', 5000);
+    }
+    return false;
+  } catch (e) {
+    if (!quiet) toast('连不上桥（' + (e.name === 'AbortError' ? '超时' : e.message) + '）', 4000);
+    return false;
+  }
+}
+
+async function loadFromBridge(showToast) {
+  try {
+    const r = await fetchT('/layout', {}, 6000);
+    const j = await r.json();
+    if (j.ok && j.layout) {
+      scene = normalize(j.layout);
+      pushHistory(); renderAll();
+      if (showToast) toast('已从画面重新载入');
+      return true;
+    }
+    if (showToast) toast(j.error || '还没有版式文件', 3000);
+  } catch (e) {
+    if (showToast) toast('读不到桥，先用本地草稿', 3000);
+  }
+  return false;
+}
+
+async function loadBgList(showToast) {
+  try {
+    const r = await fetchT('/layout/bg', {}, 5000);
+    const j = await r.json();
+    if (j.ok && Array.isArray(j.files)) {
+      renderBgPane._files = j.files;
+      renderBgPane();
+      if (showToast) toast('读到 ' + j.files.length + ' 张图');
+      return;
+    }
+    if (showToast) toast(j.error || '读不到图片列表', 3000);
+  } catch (e) {
+    if (showToast) toast('桥没有 /layout/bg（还没重启）', 3000);
+  }
+}
+
+async function uploadBg(file) {
+  if (file.size > 12 * 1024 * 1024) { toast('图太大了，控制在 12MB 以内', 3000); return; }
+  toast('正在上传…', 4000);
+  try {
+    const r = await fetchT('/layout/bg?name=' + encodeURIComponent(file.name), {
+      method: 'POST', headers: { 'content-type': file.type || 'application/octet-stream' },
+      body: file,
+    }, 30000);
+    const j = await r.json();
+    if (!j.ok) { toast('上传失败：' + j.error, 4000); return; }
+    scene.bg.type = 'image';
+    scene.bg.image = j.path;
+    pushHistory(); renderBg(); await loadBgList(false); autoSave();
+    toast('换上了 ' + file.name + '（' + j.kb + 'KB）', 2600);
+  } catch (e) {
+    toast('上传失败：' + (e.name === 'AbortError' ? '超时' : e.message), 4000);
+  }
+}
+
+/* ── 顶栏 ── */
+$('#zoom').oninput = function (e) { setScale(Number(e.target.value) / 100); };
+$('#fitBtn').onclick = fitScale;
+$('#undoBtn').onclick = undo;
+$('#redoBtn').onclick = redo;
+$('#saveBtn').onclick = function () { pushHistory(); save(false); };
+$('#reloadBtn').onclick = function () {
+  if (!confirm('丢掉本地改动，重新读画面现在用的版式？')) return;
+  loadFromBridge(true);
+};
+$('#previewBtn').onclick = function () {
+  document.body.classList.toggle('preview');
+  fitScale();
+};
+$('#gridBtn').onclick = function () {
+  gridOn = !gridOn;
+  $('#stage').classList.toggle('show-grid', gridOn);
+  $('#gridBtn').classList.toggle('on', gridOn);
+};
+$('#snapBtn').onclick = function () {
+  snapOn = !snapOn;
+  $('#snapBtn').classList.toggle('on', snapOn);
+  toast(snapOn ? '吸附开：自动对齐中轴和别的组件' : '吸附关：随便放');
+};
+
+/* ── 键盘 ── */
+document.addEventListener('keydown', function (e) {
+  const inField = /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName);
+  const meta = e.ctrlKey || e.metaKey;
+  if (meta && e.key.toLowerCase() === 'z') { e.preventDefault(); e.shiftKey ? redo() : undo(); return; }
+  if (meta && e.key.toLowerCase() === 'y') { e.preventDefault(); redo(); return; }
+  if (meta && e.key.toLowerCase() === 's') { e.preventDefault(); pushHistory(); save(false); return; }
+  if (e.key === 'Escape') {
+    if (document.body.classList.contains('preview')) { document.body.classList.remove('preview'); fitScale(); }
+    else { selKey = null; renderComps(); renderProps(); updateSel(); }
+    return;
+  }
+  if (inField) return;
+  const it = selKey ? scene.items[selKey] : null;
+  if (it && e.key.indexOf('Arrow') === 0) {
+    e.preventDefault();
+    const step = e.shiftKey ? 10 : 1;
+    if (e.key === 'ArrowLeft') it.x -= step;
+    if (e.key === 'ArrowRight') it.x += step;
+    if (e.key === 'ArrowUp') it.y -= step;
+    if (e.key === 'ArrowDown') it.y += step;
+    renderItems(); renderProps(); autoSave();
+  }
+});
+
+let rt = null;
+window.addEventListener('resize', function () {
+  clearTimeout(rt);
+  rt = setTimeout(function () {
+    if (document.body.classList.contains('preview')) fitScale();
+  }, 120);
+});
+
+/* ── 启动 ── */
+(async function boot() {
+  // 先用本地草稿把界面点亮（桥万一没起也不能白屏）
+  try {
+    const raw = localStorage.getItem(LS_KEY);
+    if (raw) scene = normalize(JSON.parse(raw));
+  } catch (e) { /* 忽略 */ }
+  pushHistory();
+  renderAll();
+  fitScale();
+  $('#snapBtn').classList.add('on');
+  $('#gridBtn').classList.add('on');
+  // 再跟画面同步一次：本地草稿可能比画面新，也可能比画面旧
+  const ok = await loadFromBridge(false);
+  if (!ok) toast('读不到画面版式，现在用的是本地草稿', 3000);
+  loadBgList(false);
+  console.log('[编辑器] 组件 ' + COMPS.length + ' 个，桥 ' + (ok ? 'OK' : '不可用'));
+})();
+</script>
+</body>
+</html>

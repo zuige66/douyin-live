@@ -20,6 +20,7 @@
 import sys
 import time
 import os
+import json
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 import pet  # 动作帧播放器（native/pet.py）；没有素材时它自己会说不可用
@@ -50,6 +51,7 @@ BG = (30, 24, 42, 255)        # surface，往紫里偏了一点：#17131F
 CARD = (46, 38, 63, 255)      # surfaceContainer：卡片实色，全不透明
 FAINT = (202, 196, 208, 128)  # 次要信息：onSurfaceVariant 半透明
 HAIR = (92, 79, 120, 255)     # outlineVariant 偏紫：卡片 1px 描边（实色）
+ON_PRI = (56, 30, 114, 255)   # 画在 primary 底色上的字（浅色主题下会变白，见 _PALETTE）
 
 # 2026-10-27 晚提亮：主人说「整个画面都是挺暗的」。
 # 原来 BG(7,9,12) 几乎是纯黑、正文 233、次要文字 142 —— 在抖音直播伴侣里
@@ -92,6 +94,232 @@ CAP_Y = MON_Y - 84                           # 401  「正在播放」那两行�
 
 # 想看回弹幕列就设 ZY_DANMAKU=1（代码留着，只是默认不画）
 DANMAKU_ON = os.environ.get("ZY_DANMAKU", "0") == "1"
+
+# ══════════════════════════════════════════════════════════════════════════
+# 版式：cache/layout.json（2026-10-28 加）
+#
+# 为什么要这个文件：画面是 Pillow 画的，editor.html 里拖出来的坐标传不进
+# Python 的常量。两边约一份 JSON 当合同 —— 编辑器写它，这里读它。
+#
+# 🔴 只外置「位置 + 宽度」。高度一律由内容算（见 comp_h）：
+#    卡片高度是倒推出来的（点歌台 = 正在播放 + 3 首 + 提示两行），
+#    放开高度就会出现"拖矮了文字叠成一团"。
+#
+# 🔴 文件读不到 / 内容坏了 → 用默认版式，绝不黑屏。
+#    直播中没人盯着控制台，所以这里一律 print 到 stderr 后继续跑。
+# ══════════════════════════════════════════════════════════════════════════
+LAYOUT_FILE = os.path.join(os.path.dirname(HERE), "cache", "layout.json")
+
+# 弹幕列的底边（原来 DM_BOTTOM 的位置）。弹幕自底向上排，所以它的 y 是顶边，
+# 高度 = 底边 - 顶边 —— 拖 y 就是「能显示几条」。
+DM_FLOOR = H - 206
+
+# 皮套原图比例（assets/dafeiyu.png = 1005×1078）。宽度定了高度就定了。
+CHAR_RATIO = 1078.0 / 1005.0
+# 显示器整体比例：屏幕 560×315 + 边框 + 脖子 + 底座 = 594×389
+MON_RATIO = 389.0 / 594.0
+
+
+# 两套配色（2026-10-28 加）：layout.json 里 "theme": "dark" | "light"。
+# 为什么要有 light：主人换的这张广工蓝底是浅色的，深紫卡片压上去像贴纸，
+# 浅紫标语（#D0BCFF）在浅蓝上几乎看不见。深色主题是原来的默认，一个字没动。
+_PALETTE = {
+    "dark": {
+        "INK": (230, 225, 229, 255),    # onSurface
+        "DIM": (202, 196, 208, 255),    # onSurfaceVariant
+        "FAINT": (202, 196, 208, 128),
+        "PRI": (208, 188, 255, 255),    # primary
+        "TER": (239, 184, 200, 255),    # tertiary
+        "CARD": (46, 38, 63, 255),      # surfaceContainer
+        "HAIR": (92, 79, 120, 255),     # outlineVariant
+        "ON_PRI": (56, 30, 114, 255),   # 画在 primary 底色上的字
+    },
+    "light": {
+        "INK": (27, 27, 31, 255),
+        "DIM": (68, 70, 79, 255),
+        "FAINT": (68, 70, 79, 190),     # 浅底上 140 太淡，右下角那两行看不清
+        "PRI": (79, 55, 139, 255),
+        "TER": (125, 82, 96, 255),
+        "CARD": (255, 255, 255, 255),
+        "HAIR": (202, 196, 208, 255),
+        "ON_PRI": (255, 255, 255, 255),
+    },
+}
+
+
+def _layout_default():
+    """默认版式 = 2026-10-27 那一套硬编码坐标，一格不差。
+    这样 layout.json 丢了，画面也还是主人熟悉的样子。"""
+    return {
+        "version": 1,
+        "theme": "dark",
+        "bg": {"type": "image", "image": "assets/bg-gdut.png",
+               "color": "#17131F", "dim": 0.0},
+        "items": {
+            "stats":     {"x": 64,   "y": 54,   "w": 452, "visible": True},
+            "songs":     {"x": 64,   "y": 294,  "w": 452, "visible": True},
+            "banner":    {"x": 700,  "y": 26,   "w": 520, "visible": True,
+                          "size": 50, "align": "center"},
+            "character": {"x": 675,  "y": 343,  "w": 570, "visible": True},
+            "monitor":   {"x": 1262, "y": 485,  "w": 594, "visible": True},
+            "danmaku":   {"x": 1386, "y": 180,  "w": 470, "visible": False},
+            "subtitle":  {"x": 510,  "y": 960,  "w": 900, "visible": True},
+        },
+    }
+
+
+def comp_h(name, x, y, w):
+    """组件的「自适应高度」。编辑器里也按这套公式画框（改这里要同步 editor.html）。
+    ⚠️ 只有 danmaku 跟 y 有关（自底向上排），其余只跟宽度有关或干脆固定。"""
+    if name == "stats":
+        return 216                      # 32 + 36 + 3×46 + 10
+    if name == "songs":
+        return 478                      # 32+36+114+3×58+78+44（有歌手时）
+    if name == "banner":
+        return 64
+    if name == "character":
+        return int(round(w * CHAR_RATIO))
+    if name == "monitor":
+        return int(round(w * MON_RATIO))
+    if name == "danmaku":
+        return max(80, DM_FLOOR - y)
+    if name == "subtitle":
+        return 86
+    return 100
+
+
+_LAYOUT = None
+_LAYOUT_MT = None
+_LAYOUT_STAMP = None
+_LAYOUT_NEXT_CHECK = 0.0
+
+# 各组件显隐（编辑器里的「眼睛」）
+VIS = {}
+
+
+def layout():
+    """读 layout.json。0.5 秒最多 stat 一次 —— 逐帧调用它也不能拖慢 compose。"""
+    global _LAYOUT, _LAYOUT_MT, _LAYOUT_STAMP, _LAYOUT_NEXT_CHECK
+    now = time.time()
+    if _LAYOUT is not None and now < _LAYOUT_NEXT_CHECK:
+        return _LAYOUT
+    _LAYOUT_NEXT_CHECK = now + 0.5
+    try:
+        mt = os.path.getmtime(LAYOUT_FILE)
+    except OSError:
+        if _LAYOUT is None:
+            _LAYOUT = _layout_default()
+            _LAYOUT_STAMP = ("default",)
+            print(f"[layout] 没有 {LAYOUT_FILE}，用默认版式", file=sys.stderr)
+        return _LAYOUT
+    if _LAYOUT is not None and mt == _LAYOUT_MT:
+        return _LAYOUT
+    try:
+        with open(LAYOUT_FILE, "r", encoding="utf-8") as fp:
+            data = json.load(fp)
+        if not isinstance(data, dict):
+            raise ValueError("顶层必须是对象")
+        base = _layout_default()
+        # ⚠️ 顶层字段要逐个搬。2026-10-28 第一次就漏了 theme：
+        #    编辑器里切了浅色、画面纹丝不动，而且完全不报错 —— 最难查的那种。
+        if data.get("theme") in _PALETTE:
+            base["theme"] = data["theme"]
+        base["bg"] = dict(base["bg"], **(data.get("bg") or {}))
+        items = dict(base["items"])
+        for k, v in (data.get("items") or {}).items():
+            if isinstance(v, dict):
+                items[k] = dict(items.get(k) or {}, **v)
+        base["items"] = items
+        _LAYOUT = base
+        _LAYOUT_MT = mt
+        bg = base["bg"]
+        _LAYOUT_STAMP = (mt, base.get("theme"), bg.get("type"), bg.get("image"),
+                         bg.get("color"), bg.get("dim"))
+    except Exception as e:
+        # 🔴 半截写入（编辑器正在存）也会走到这儿。绝不能因此换版式：
+        #    留在上一份能用的，等下一次 mtime 变了再试。
+        print(f"[layout] 读不了（{type(e).__name__}: {e}），继续用上一份",
+              file=sys.stderr)
+        if _LAYOUT is None:
+            _LAYOUT = _layout_default()
+            _LAYOUT_STAMP = ("broken",)
+        _LAYOUT_MT = mt
+    return _LAYOUT
+
+
+def apply_layout():
+    """把 layout.json 的 x/y/w 写回模块级常量。
+
+    为什么改全局而不是把常量一路传参：这些数字在 build_base / draw_computer /
+    compose 里被引用了几十处，改签名等于把 900 行全动一遍，风险远大于收益。
+    这里一次性覆盖，原代码一个字不用改。
+    """
+    global CARD_X, CARD_Y, CARD_W, SONG_X, SONG_Y, SONG_W
+    global BANNER_X, BANNER_Y, BANNER_W, BANNER_SIZE, BANNER_ALIGN
+    global CHAR_X, CHAR_Y, CHAR_W, CHAR_H, CHAR_BOTTOM
+    global MON_X, MON_Y, MON_W, MON_H, MON_K, BEZ
+    global SCR_X, SCR_Y, SCR_W, SCR_H, NECK_Y, FOOT_Y, CAP_Y
+    global DM_RIGHT, DM_MAXW, DM_BOTTOM
+    global SUB_X, SUB_Y, SUB_W, SUB_H, SUB_BOTTOM
+    global INK, DIM, FAINT, PRI, TER, CARD, HAIR, ON_PRI
+    global VIS, _LAY_BOX
+
+    L = layout()
+    it = L.get("items") or {}
+
+    # 配色：主题变了就整套换（卡片/文字/强调色都是全局，一处改完所有绘制跟着变）
+    pal = _PALETTE.get(str(L.get("theme") or "dark"), _PALETTE["dark"])
+    INK = pal["INK"]; DIM = pal["DIM"]; FAINT = pal["FAINT"]
+    PRI = pal["PRI"]; TER = pal["TER"]; CARD = pal["CARD"]
+    HAIR = pal["HAIR"]; ON_PRI = pal["ON_PRI"]
+
+    def g(name, dx, dy, dw):
+        c = it.get(name) or {}
+        try:
+            x = int(c.get("x", dx)); y = int(c.get("y", dy))
+            w = int(c.get("w", dw))
+        except (TypeError, ValueError):
+            x, y, w = dx, dy, dw
+        return x, y, max(120, w)
+
+    VIS = {k: bool((v or {}).get("visible", True)) for k, v in it.items()}
+
+    CARD_X, CARD_Y, CARD_W = g("stats", 64, 54, 452)
+    SONG_X, SONG_Y, SONG_W = g("songs", 64, 294, 452)
+
+    BANNER_X, BANNER_Y, BANNER_W = g("banner", 700, 26, 520)
+    b = it.get("banner") or {}
+    try:
+        BANNER_SIZE = max(12, int(b.get("size", 50)))
+    except (TypeError, ValueError):
+        BANNER_SIZE = 50
+    BANNER_ALIGN = str(b.get("align") or "center")
+
+    CHAR_X, CHAR_Y, CHAR_W = g("character", 675, 343, 570)
+    CHAR_H = comp_h("character", CHAR_X, CHAR_Y, CHAR_W)
+    CHAR_BOTTOM = H - (CHAR_Y + CHAR_H)   # 老代码还按「距底多少」算，保留
+
+    MON_X, MON_Y, MON_W = g("monitor", 1262, 485, 594)
+    MON_K = MON_W / 594.0                 # 显示器整体等比缩放系数
+    MON_H = int(round(349 * MON_K))
+    BEZ = max(8, int(round(17 * MON_K)))
+    SCR_W, SCR_H = MON_W - 2 * BEZ, MON_H - 2 * BEZ
+    SCR_X, SCR_Y = MON_X + BEZ, MON_Y + BEZ
+    NECK_Y = MON_Y + MON_H
+    FOOT_Y = NECK_Y + int(round(26 * MON_K))
+    CAP_Y = MON_Y - 84                    # 显示器上方「正在播放」两行
+
+    d_x, d_y, d_w = g("danmaku", 1386, 180, 470)
+    DM_MAXW = d_w
+    DM_RIGHT = d_x + d_w
+    DM_BOTTOM = DM_FLOOR
+
+    SUB_X, SUB_Y, SUB_W = g("subtitle", 510, 960, 900)
+    SUB_H = 86
+    SUB_BOTTOM = H - (SUB_Y + SUB_H)      # 老代码按「距底」算，保留兼容
+
+    # 半透明图层的裁剪范围跟着显示器走（见 _lay()）
+    _LAY_BOX = (MON_X - 24, CAP_Y - 16, min(W, MON_X + MON_W + 24), FOOT_Y + 44)
 
 TIER_COL = {
     # 0 档是「闲时素材」，不是礼物 —— 用中性青灰，别和礼物档抢颜色。
@@ -170,18 +398,71 @@ def _glow(size, color, radius_ratio=0.62):
 
 
 _BG = None
+_BG_KEY = None
+
+
+def _hex(s, default=(23, 19, 31)):
+    """'#17131F' → (23,19,31,255)。写错就退回 default，绝不抛。"""
+    t = str(s or "").strip().lstrip("#")
+    if len(t) == 3:
+        t = "".join(ch * 2 for ch in t)
+    if len(t) != 6:
+        return tuple(default[:3]) + (255,)
+    try:
+        return (int(t[0:2], 16), int(t[2:4], 16), int(t[4:6], 16), 255)
+    except ValueError:
+        return tuple(default[:3]) + (255,)
+
+
+def _bg_image(rel):
+    """背景图按 cover 裁到 1920×1080。找不到/打不开就返回 None（调用方退回纯色）。"""
+    if not rel:
+        return None
+    p = rel if os.path.isabs(rel) else os.path.join(os.path.dirname(HERE), rel)
+    if not os.path.exists(p):
+        p2 = os.path.join(HERE, rel)      # 也有人写成相对 native/ 的
+        if not os.path.exists(p2):
+            print(f"[layout] 背景图找不到：{rel}", file=sys.stderr)
+            return None
+        p = p2
+    try:
+        im = Image.open(p).convert("RGB")
+    except Exception as e:
+        print(f"[layout] 背景图打不开（{type(e).__name__}: {e}）", file=sys.stderr)
+        return None
+    tw, th = W * SS, H * SS
+    s = max(tw / im.width, th / im.height)      # cover：铺满，多出来的裁掉
+    im = im.resize((max(1, int(im.width * s + 0.5)),
+                    max(1, int(im.height * s + 0.5))), Image.LANCZOS)
+    l = (im.width - tw) // 2
+    t = (im.height - th) // 2
+    return im.crop((l, t, l + tw, t + th)).convert("RGBA")
 
 
 def background():
-    global _BG
-    if _BG is None:
-        # 🔴 纯色背景（2026-10-27 晚主人明确要求：「背景纯色，不要有灯光熏晕」）。
-        # 以前这里叠了三层 radial 柔光（左上紫、右下藕粉、顶部托标语）——
-        # 那是"舞台打光"的思路，和 M3E 的平面色块完全相反：
-        # M3E 的背景就是一块 surface，层次靠**卡片的明度差**做，不靠渐变。
-        # 柔光还会在抖音二次压缩后变成一圈圈色带（banding），更脏。
-        img = Image.new("RGBA", (W * SS, H * SS), BG)
-        _BG = img
+    global _BG, _BG_KEY
+    # 背景现在由 layout.json 决定（2026-10-28）：可以是一张图，也可以是纯色。
+    # 2026-10-27 晚主人要求过「纯色，不要灯光熏晕」，但 10-28 给了张 1920×1080
+    # 的底图要换上 —— 所以两种都留着，默认走图片，改一个字段就回纯色。
+    b = (layout().get("bg") or {})
+    key = (b.get("type"), b.get("image"), b.get("color"), b.get("dim"))
+    if _BG is not None and _BG_KEY == key:
+        return _BG
+    img = None
+    if str(b.get("type") or "color") == "image":
+        img = _bg_image(b.get("image"))
+    if img is None:
+        img = Image.new("RGBA", (W * SS, H * SS), _hex(b.get("color"), BG[:3]))
+    else:
+        try:
+            dim = max(0.0, min(0.9, float(b.get("dim") or 0)))
+        except (TypeError, ValueError):
+            dim = 0.0
+        if dim > 0:
+            # 压暗：浅色底图上压深色卡片会"浮"起来，加一层黑纱把层次落下去
+            img = Image.blend(img, Image.new("RGBA", img.size, (0, 0, 0, 255)), dim)
+    _BG = img
+    _BG_KEY = key
     return _BG
 
 
@@ -319,12 +600,18 @@ def base_key(st):
     songs_key = tuple(
         str(x if isinstance(x, str) else (x[0] if x else "")) for x in songs
     )
+    # 热榜不上面（2026-10-28）：它的歌名既不显示，就别让它参与静态层 key ——
+    # 否则热榜每换一首都要重建整张静态层，白烧 CPU，画面还会闪一下。
+    shown_title = "" if mus.get("hot") else (mus.get("title") or "")
     return (
+        # 版式变了（编辑器里拖过 / 换了背景）必须重建静态层 —— 坐标是画死在图上的。
+        # _LAYOUT_STAMP 在 layout() 里更新，base() 会先调 apply_layout()。
+        _LAYOUT_STAMP,
         # name 不再参与静态层：主播牌已经删了（2026-10-27 晚），
         # 还留着这一项只会让「改昵称」白重建一次静态层。
         songs_key,
         int(((st.get("queue") or {}).get("total")) or 0),
-        mus.get("title") or "",
+        shown_title,
         bool(mus.get("playing")),
     )
 
@@ -339,115 +626,141 @@ def build_base(st):
     def T(x, y, s, size, color, bold=False, anchor="la"):
         ld.text((x * SS, y * SS), s, font=font(size, bold), fill=color, anchor=anchor)
 
-    # ---- 左上：本场数据（原来上面还有一张主播牌，2026-10-27 晚按主人要求删掉）----
-    rows = [("收到弹幕", TER), ("收到礼物", None), ("已回复", TER)]
-    c1h = 32 + 36 + len(rows) * 46 + 10
-    ld.rounded_rectangle(
-        (CARD_X * SS, CARD_Y * SS, (CARD_X + CARD_W) * SS, (CARD_Y + c1h) * SS),
-        radius=24 * SS, fill=CARD, outline=HAIR, width=SS,
-    )
-    px, py = CARD_X + 30, CARD_Y + 30
-    T(px, py, "本场数据", 25, DIM)
-    T(CARD_X + CARD_W - 30, py, "实时", 22, FAINT, anchor="ra")
-    ry = py + 60
-    for label, _ in rows:
-        T(px, ry, label, 27, DIM)
-        ry += 46
-
-    songs = st.get("songs") or []
-    # 正在播的歌（本机 QQ 音乐，桥通过 SMTC 读出来的）。没有就不占位置。
-    mus = st.get("music") or None
-    np_title = fit_text((mus or {}).get("title"), CARD_W - 76, 28, bold=True)
-    np_by = fit_text((mus or {}).get("artist"), CARD_W - 76, 21)
-    np_playing = bool((mus or {}).get("playing"))
-    np_h = (114 if np_by else 88) if np_title else 0
-
-    c2y = CARD_Y + c1h + 24
-    # +78 是底部那两行「点歌格式 / 点歌，歌名，歌手（可不填）」，见下面 draw 部分。
-    #   （2026-10-27 晚：主人说这两行「太小太暗看不清」，字号 20/23 → 22/28，
-    #    颜色 FAINT/DIM → DIM/INK，所以这里的高度预算从 62 抬到 78。）
-    # 最后那个 +32 是底部留白 —— 原来 +18 时提示行的字几乎贴着卡片下边缘（实测只剩 5px）。
-    c2h = 32 + 36 + np_h + max(len(songs), 1) * 58 + 78 + 44
-    ld.rounded_rectangle(
-        (CARD_X * SS, c2y * SS, (CARD_X + CARD_W) * SS, (c2y + c2h) * SS),
-        radius=24 * SS, fill=CARD, outline=HAIR, width=SS,
-    )
-    T(px, c2y + 30, "点歌台", 25, DIM)
-    q_total = int(((st.get("queue") or {}).get("total")) or 0)
-    if q_total > 1:
-        T(CARD_X + CARD_W - 30, c2y + 30, f"歌单 {q_total} 首", 22, FAINT, anchor="ra")
-    sy = c2y + 88
-
-    if np_title:
-        # 「正在播放」一条。音柱只在真在放的时候亮，暂停时压成一条灰线，
-        # 不然观众会以为卡住了。
-        # ⚠️ 别用 ♪ / ♫ 这类符号：思源黑体里没有，会渲染成豆腐块（实测过）。
-        #    小圆点自己画，一定不会缺字。
-        ld.ellipse(((px + 3) * SS, (sy + 9) * SS, (px + 13) * SS, (sy + 19) * SS), fill=PRI)
-        T(px + 24, sy + 2, "正在播放", 21, FAINT)
-        for j, hh in enumerate((10, 18, 13, 20) if np_playing else (5, 5, 5, 5)):
-            bx = CARD_X + CARD_W - 30 - (4 - j) * 9
-            ld.rounded_rectangle(
-                (bx * SS, (sy + 24 - hh) * SS, (bx + 5) * SS, (sy + 24) * SS),
-                radius=3 * SS, fill=PRI if np_playing else FAINT,
-            )
-        T(px, sy + 30, np_title, 28, INK, bold=True)
-        if np_by:
-            T(px, sy + 68, np_by, 21, DIM)
-        # 和下面的排队列表隔一条线，不然「艺人名」和「第 1 首」会粘在一起
-        ld.rectangle(
-            (px * SS, (sy + np_h - 16) * SS, (px + CARD_W - 60) * SS, (sy + np_h - 15) * SS),
-            fill=(255, 255, 255, 20),
+    if VIS.get("stats", True):
+        # ---- 左上：本场数据（原来上面还有一张主播牌，2026-10-27 晚按主人要求删掉）----
+        rows = [("收到弹幕", TER), ("收到礼物", None), ("已回复", TER)]
+        c1h = 32 + 36 + len(rows) * 46 + 10
+        ld.rounded_rectangle(
+            (CARD_X * SS, CARD_Y * SS, (CARD_X + CARD_W) * SS, (CARD_Y + c1h) * SS),
+            radius=24 * SS, fill=CARD, outline=HAIR, width=SS,
         )
-        sy += np_h
+        px, py = CARD_X + 30, CARD_Y + 30
+        T(px, py, "本场数据", 25, DIM)
+        T(CARD_X + CARD_W - 30, py, "实时", 22, FAINT, anchor="ra")
+        ry = py + 60
+        for label, _ in rows:
+            T(px, ry, label, 27, DIM)
+            ry += 46
 
-    if not songs:
-        T(px, sy + 6, "歌单还没读到", 26, FAINT)
-        # 🔴 sy 必须往前挪一格（2026-10-27）：c2h 里按 max(len(songs),1)*58 算高度，
-        #    这里不挪的话，下面「点歌格式」那两行会**盖在**这句话上（实测叠字）。
-        sy += 58
-    # 只显示接下来的 3 首，而且**不带歌手** ——
-    # 观众只关心「下一首是不是我点的」，歌手名把一行撑满反而看不清歌名。
-    for i, song in enumerate(songs[:3]):
-        if isinstance(song, (list, tuple)):  # 桥传过来是 JSON 数组，本地 demo 是元组
-            title = str(song[0]) if song else ""
-        else:
-            title = str(song)
-        title = fit_text(title, CARD_W - 76 - 40 - 20, 29, bold=(i == 0))
-        hot = i == 0
-        T(px, sy + 4, str(i + 1), 24, PRI if hot else FAINT)
-        T(px + 40, sy, title, 29, PRI if hot else INK, bold=hot)
-        # 第一首用 teal 标出来是「下一首」，但不画音柱 ——
-        # 音柱是「正在放」的符号，上面「正在播放」那块已经有了，
-        # 这里再画一根，观众会以为列表第一首就是当前歌。
-        sy += 58
+    if VIS.get("songs", True):
+        # 点歌台自己一套坐标：2026-10-28 起它能被编辑器单独拖动，
+        # 不再跟「本场数据」卡绑在一起（原来 c2y 是从 CARD_Y 推的）。
+        SX, SY, SW = SONG_X, SONG_Y, SONG_W
+        px = SX + 30
+        songs = st.get("songs") or []
+        # 正在播的歌。**热榜不显示**（2026-10-28 主人要求）：
+        # 「热歌不用显示出来，后台播放就行」—— 所以 hot=true 时整块"正在播放"都不占位，
+        # 观众看到的永远只有「谁点的歌」。
+        mus = st.get("music") or None
+        if (mus or {}).get("hot"):
+            mus = None
+        np_title = fit_text((mus or {}).get("title"), SW - 76, 28, bold=True)
+        np_by = fit_text((mus or {}).get("artist"), SW - 76, 21)
+        np_playing = bool((mus or {}).get("playing"))
+        np_h = (114 if np_by else 88) if np_title else 0
 
-    # ---- 点歌规范（2026-10-27 主人要求「页面上也做一个提示」）----
-    # 卡片高度已经把这一行算进去了（c2h 里的 +TIP_H）。
-    # 文字从桥的 /state.json 拿（songTip），桥那边又从 reply.mjs 的 SONG_TIP 拿 ——
-    # 改格式只改一处，屏幕跟着变，不会出现「屏上写 A、她嘴上说 B」。
-    tip = str(st.get("songTip") or "点歌，歌名，歌手（可不填）")
-    # 2026-10-27 晚：主人截图反馈「太小太暗了，不好看清楚」。
-    # 20/FAINT(白 44% 透明) 在两米外看直播基本是糊的 —— 观众真要照着打字，
-    # 这一行就是唯一的说明书。抬到 22/28，颜色提到 DIM / INK。
-    T(px, sy + 8, "点歌格式", 22, DIM)
-    T(px, sy + 38, fit_text(tip, CARD_W - 60, 28), 28, INK)
+        c2y = SY
+        # +78 是底部那两行「点歌格式 / 点歌，歌名，歌手（可不填）」，见下面 draw 部分。
+        #   （2026-10-27 晚：主人说这两行「太小太暗看不清」，字号 20/23 → 22/28，
+        #    颜色 FAINT/DIM → DIM/INK，所以这里的高度预算从 62 抬到 78。）
+        # 最后那个 +32 是底部留白 —— 原来 +18 时提示行的字几乎贴着卡片下边缘（实测只剩 5px）。
+        c2h = 32 + 36 + np_h + max(len(songs), 1) * 58 + 78 + 44
+        ld.rounded_rectangle(
+            (SX * SS, c2y * SS, (SX + SW) * SS, (c2y + c2h) * SS),
+            radius=24 * SS, fill=CARD, outline=HAIR, width=SS,
+        )
+        T(px, c2y + 30, "点歌台", 25, DIM)
+        q_total = int(((st.get("queue") or {}).get("total")) or 0)
+        if q_total > 1:
+            T(SX + SW - 30, c2y + 30, f"歌单 {q_total} 首", 22, FAINT, anchor="ra")
+        sy = c2y + 88
+
+        if np_title:
+            # 「正在播放」一条。音柱只在真在放的时候亮，暂停时压成一条灰线，
+            # 不然观众会以为卡住了。
+            # ⚠️ 别用 ♪ / ♫ 这类符号：思源黑体里没有，会渲染成豆腐块（实测过）。
+            #    小圆点自己画，一定不会缺字。
+            ld.ellipse(((px + 3) * SS, (sy + 9) * SS, (px + 13) * SS, (sy + 19) * SS), fill=PRI)
+            T(px + 24, sy + 2, "正在播放", 21, FAINT)
+            for j, hh in enumerate((10, 18, 13, 20) if np_playing else (5, 5, 5, 5)):
+                bx = SX + SW - 30 - (4 - j) * 9
+                ld.rounded_rectangle(
+                    (bx * SS, (sy + 24 - hh) * SS, (bx + 5) * SS, (sy + 24) * SS),
+                    radius=3 * SS, fill=PRI if np_playing else FAINT,
+                )
+            T(px, sy + 30, np_title, 28, INK, bold=True)
+            if np_by:
+                T(px, sy + 68, np_by, 21, DIM)
+            # 和下面的排队列表隔一条线，不然「艺人名」和「第 1 首」会粘在一起
+            ld.rectangle(
+                (px * SS, (sy + np_h - 16) * SS, (px + SW - 60) * SS, (sy + np_h - 15) * SS),
+                fill=(255, 255, 255, 20),
+            )
+            sy += np_h
+
+        if not songs:
+            # 2026-10-28：列表现在**只放观众点的歌**，热榜不进画面。
+            # 所以空列表是正常状态（没人点歌），不是"读不到"。
+            T(px, sy + 6, "还没人点歌，随便放着呢", 24, FAINT)
+            # 🔴 sy 必须往前挪一格（2026-10-27）：c2h 里按 max(len(songs),1)*58 算高度，
+            #    这里不挪的话，下面「点歌格式」那两行会**盖在**这句话上（实测叠字）。
+            sy += 58
+        # 只显示接下来的 3 首，而且**不带歌手** ——
+        # 观众只关心「下一首是不是我点的」，歌手名把一行撑满反而看不清歌名。
+        for i, song in enumerate(songs[:3]):
+            if isinstance(song, (list, tuple)):  # 桥传过来是 JSON 数组，本地 demo 是元组
+                title = str(song[0]) if song else ""
+            else:
+                title = str(song)
+            title = fit_text(title, SW - 76 - 40 - 20, 29, bold=(i == 0))
+            hot = i == 0
+            T(px, sy + 4, str(i + 1), 24, PRI if hot else FAINT)
+            T(px + 40, sy, title, 29, PRI if hot else INK, bold=hot)
+            # 第一首用 teal 标出来是「下一首」，但不画音柱 ——
+            # 音柱是「正在放」的符号，上面「正在播放」那块已经有了，
+            # 这里再画一根，观众会以为列表第一首就是当前歌。
+            sy += 58
+
+        # ---- 点歌规范（2026-10-27 主人要求「页面上也做一个提示」）----
+        # 卡片高度已经把这一行算进去了（c2h 里的 +TIP_H）。
+        # 文字从桥的 /state.json 拿（songTip），桥那边又从 reply.mjs 的 SONG_TIP 拿 ——
+        # 改格式只改一处，屏幕跟着变，不会出现「屏上写 A、她嘴上说 B」。
+        tip = str(st.get("songTip") or "点歌，歌名，歌手（可不填）")
+        # 2026-10-27 晚：主人截图反馈「太小太暗了，不好看清楚」。
+        # 20/FAINT(白 44% 透明) 在两米外看直播基本是糊的 —— 观众真要照着打字，
+        # 这一行就是唯一的说明书。抬到 22/28，颜色提到 DIM / INK。
+        T(px, sy + 8, "点歌格式", 22, DIM)
+        T(px, sy + 38, fit_text(tip, SW - 60, 28), 28, INK)
 
     # ---- 顶部标语（2026-10-27 晚主人指定位置）----
     # 「刷礼物有惊喜」原来在右栏待机时当小字（24 号）用，藏在显示器上方，观众看不见。
     # 现在挪到画面最上方、角色头顶正上方那条空带里 —— 那里本来就什么都没有，
     # 左右两张卡（本场数据 x≤516、显示器 x≥1262）都离得远，放一行大字不打架。
-    # ★ 用 W//2 居中，不跟卡片对齐：这条带子是整幅画面的，不属于左栏。
-    T(W // 2, 26, "刷礼物有惊喜", 50, PRI, bold=True, anchor="ma")
+    # ★ 2026-10-28：位置改由 layout.json 决定（编辑器里能拖）。
+    #   框是 (BANNER_X, BANNER_Y, BANNER_W)，文字按 BANNER_ALIGN 在框内对齐。
+    #   默认值就是原来那套：700/26/520 + 居中 —— 拖之前和以前一模一样。
+    if VIS.get("banner", True):
+        if BANNER_ALIGN == "left":
+            T(BANNER_X, BANNER_Y, "刷礼物有惊喜", BANNER_SIZE, PRI, bold=True, anchor="la")
+        elif BANNER_ALIGN == "right":
+            T(BANNER_X + BANNER_W, BANNER_Y, "刷礼物有惊喜", BANNER_SIZE, PRI,
+              bold=True, anchor="ra")
+        else:
+            T(BANNER_X + BANNER_W // 2, BANNER_Y, "刷礼物有惊喜", BANNER_SIZE, PRI,
+              bold=True, anchor="ma")
 
     # ---- 皮套脚下的影子 ----
     # 人物本身每帧都要换（会呼吸），所以它挪到 compose() 里画了；
     # 影子不动，留在这层，省一次逐帧合成。
-    sh_w, sh_h = int(CHAR_W * 0.70) * SS, 54 * SS
-    img.alpha_composite(
-        ground_shadow(sh_w, sh_h),
-        (int((W - sh_w / SS) / 2) * SS, (H - CHAR_BOTTOM - 44) * SS),
-    )
+    # 影子跟着皮套走（2026-10-28）：以前是写死「水平居中、距底 44」，皮套能拖之后
+    # 就必须跟着，否则人挪走了地上还剩一坨影子。
+    if VIS.get("character", True):
+        sh_w, sh_h = int(CHAR_W * 0.70) * SS, 54 * SS
+        img.alpha_composite(
+            ground_shadow(sh_w, sh_h),
+            (int(CHAR_X + (CHAR_W - sh_w / SS) / 2) * SS,
+             (CHAR_Y + CHAR_H - 44) * SS),
+        )
 
     img.alpha_composite(lay)
     return img.convert("RGB").resize((W, H), Image.BOX)
@@ -455,6 +768,9 @@ def build_base(st):
 
 def base(st):
     global _BASE, _BASE_KEY
+    # 先让模块级常量跟上 layout.json（内部 0.5 秒限流，逐帧调用也不疼）。
+    # 🔴 必须在 base_key() 之前：base_key 里的 _LAYOUT_STAMP 是 layout() 更新的。
+    apply_layout()
     k = base_key(st)
     if _BASE is None or _BASE_KEY != k:
         t0 = time.perf_counter()
@@ -503,7 +819,7 @@ def draw_character(img, st):
         if fr is None:
             _static_character(img)
             return
-        x, y, _ = pet.place(CHAR_W, W, H - CHAR_BOTTOM)
+        x, y, _ = pet.place(CHAR_W, W, CHAR_Y + CHAR_H, cx=CHAR_X + CHAR_W / 2.0)
         blit(img, fr, x, y)
     except Exception as e:
         # 直播里最怕的就是"人突然没了"。动作帧出任何问题都退回静态立绘，
@@ -514,8 +830,9 @@ def draw_character(img, st):
 
 def _static_character(img):
     ch = character(CHAR_W)
+    # 底边对齐到 CHAR_Y+CHAR_H（= 皮套框的下沿），这样拖框时脚不会离地
     img.alpha_composite(
-        ch, (((W - CHAR_W) // 2) * SS, (H - CHAR_BOTTOM - int(ch.height / SS)) * SS)
+        ch, (CHAR_X * SS, (CHAR_Y + CHAR_H - int(ch.height / SS)) * SS)
     )
 
 
@@ -691,37 +1008,45 @@ def draw_computer(img, st, d, f):
     #    改法：支架整体抬到 50~90 区间（跟屏幕壳的 23,27,33 明确分开），
     #    两侧一明一暗、底座两层，靠明暗差把「这是一台立着的显示器」讲清楚。
     cx = MON_X + MON_W // 2
-    sh, pad = shadow_patch(250, 26, 12, blur=16, alpha=145)
-    blit(img, sh, cx - 125 - pad, FOOT_Y + 4 - pad)
+    # 2026-10-28：显示器宽度现在能拖（layout.json 的 w），支架整套跟着等比缩，
+    # 不然拉宽之后脖子还是 44px 宽，像根牙签插在屏幕底下。
+    # k=1.0 时下面每个 S() 都还原成原来的整数，出图和以前一模一样。
+    k = MON_K
+    S = lambda v: max(1, int(round(v * k)))          # noqa: E731
+    sh, pad = shadow_patch(S(250), S(26), S(12), blur=max(4, S(16)), alpha=145)
+    blit(img, sh, cx - S(125) - pad, FOOT_Y + S(4) - pad)
     # 脖子：真显示器是「挂板 + 细柱 + 底部外扩」，不是一块倒三角。
     # 第一版画成上宽下窄（88→60），放大看像冰淇淋甜筒，反而更怪 —— 改成下宽上窄。
-    d.polygon([(cx - 22, NECK_Y + 4), (cx + 22, NECK_Y + 4),
-               (cx + 28, FOOT_Y + 3), (cx - 28, FOOT_Y + 3)],
+    d.polygon([(cx - S(22), NECK_Y + S(4)), (cx + S(22), NECK_Y + S(4)),
+               (cx + S(28), FOOT_Y + S(3)), (cx - S(28), FOOT_Y + S(3))],
               fill=(70, 64, 86, 255))
     # 一道竖向高光偏右 = 圆柱被左上方来的光打亮，平面色块立刻有体积
-    d.line([(cx + 9, NECK_Y + 5), (cx + 12, FOOT_Y + 2)], fill=(255, 255, 255, 22), width=3)
-    d.line([(cx + 22, NECK_Y + 4), (cx + 28, FOOT_Y + 3)], fill=(255, 255, 255, 58), width=2)
-    d.line([(cx - 22, NECK_Y + 4), (cx - 28, FOOT_Y + 3)], fill=(0, 0, 0, 130), width=2)
+    d.line([(cx + S(9), NECK_Y + S(5)), (cx + S(12), FOOT_Y + S(2))],
+           fill=(255, 255, 255, 22), width=max(1, S(3)))
+    d.line([(cx + S(22), NECK_Y + S(4)), (cx + S(28), FOOT_Y + S(3))],
+           fill=(255, 255, 255, 58), width=max(1, S(2)))
+    d.line([(cx - S(22), NECK_Y + S(4)), (cx - S(28), FOOT_Y + S(3))],
+           fill=(0, 0, 0, 130), width=max(1, S(2)))
     # 挂板：贴在屏幕下沿的一块窄条，把「屏幕」和「脖子」接起来。
     # 不画它，柱子直接从屏幕上长出来，接缝那道黑线会像个「倒 T 字」。
-    blit(img, rr_patch(92, 8, 3, (64, 58, 78, 255), outline=(255, 255, 255, 40)),
-         cx - 46, NECK_Y - 1)
+    blit(img, rr_patch(S(92), S(8), S(3), (64, 58, 78, 255), outline=(255, 255, 255, 40)),
+         cx - S(46), NECK_Y - 1)
     # 底座：下盘（宽）+ 上盘（窄、更亮）= 有厚度的感觉
-    blit(img, rr_patch(238, 17, 8, (88, 82, 104, 255), outline=(255, 255, 255, 56)),
-         cx - 119, FOOT_Y + 1)
-    blit(img, rr_patch(196, 8, 4, (116, 110, 136, 255)),
-         cx - 98, FOOT_Y + 1)
+    blit(img, rr_patch(S(238), S(17), S(8), (88, 82, 104, 255), outline=(255, 255, 255, 56)),
+         cx - S(119), FOOT_Y + 1)
+    blit(img, rr_patch(S(196), S(8), S(4), (116, 110, 136, 255)),
+         cx - S(98), FOOT_Y + 1)
 
     # ---- 显示器外壳 ----
     # 边框比背景只亮一点点（23,27,33 vs 21,26,33），所以轮廓线得靠得住：
     # 原来 255/38 太淡，屏幕像是直接浮在背景上。抬到 62，并在顶边压一道高光。
-    blit(img, rr_patch(MON_W, MON_H, 20, (48, 43, 60, 255),
+    blit(img, rr_patch(MON_W, MON_H, S(20), (48, 43, 60, 255),
                        outline=(255, 255, 255, 62), width=1), MON_X, MON_Y)
-    d.line([(MON_X + 20, MON_Y + 1), (MON_X + MON_W - 20, MON_Y + 1)],
+    d.line([(MON_X + S(20), MON_Y + 1), (MON_X + MON_W - S(20), MON_Y + 1)],
            fill=(255, 255, 255, 26), width=1)
     # 屏幕四周的一圈内沿，让「屏」和「框」分得开
-    blit(img, rr_patch(SCR_W + 8, SCR_H + 8, 12, (10, 9, 13, 255)),
-         SCR_X - 4, SCR_Y - 4)
+    blit(img, rr_patch(SCR_W + S(8), SCR_H + S(8), S(12), (10, 9, 13, 255)),
+         SCR_X - S(4), SCR_Y - S(4))
 
     # ---- 屏幕内容 ----
     if err:
@@ -808,21 +1133,22 @@ def draw_computer(img, st, d, f):
 
 def compose(st):
     """st 见 overlay.py；返回 1920×1080 RGB"""
-    img = base(st).copy()
-    draw_character(img, st)
+    img = base(st).copy()          # base() 里已经 apply_layout()，常量是最新的
+    if VIS.get("character", True):
+        draw_character(img, st)
     d = ImageDraw.Draw(img)
     f = lambda s, b=False: font(s, b, ss=False)
 
     # ---- 本场数据（数字会变） ----
-    c1h = 32 + 36 + 3 * 46 + 10
-    ry = CARD_Y + 30 + 60
-    for val, col in (
-        (st.get("chat", 0), PRI),
-        (st.get("gift", 0), TER),
-        (st.get("replied", 0), INK),
-    ):
-        d.text((CARD_X + CARD_W - 30, ry), str(val), font=f(27), fill=col, anchor="ra")
-        ry += 46
+    if VIS.get("stats", True):
+        ry = CARD_Y + 30 + 60
+        for val, col in (
+            (st.get("chat", 0), PRI),
+            (st.get("gift", 0), TER),
+            (st.get("replied", 0), INK),
+        ):
+            d.text((CARD_X + CARD_W - 30, ry), str(val), font=f(27), fill=col, anchor="ra")
+            ry += 46
 
     # ---- 右下角实时信息 ----
     sec = int(st.get("sec", 0) or 0)
@@ -836,27 +1162,31 @@ def compose(st):
     # ---- 右侧：礼物档位「电脑」展示区（2026-10-27 换掉原来的弹幕列） ----
     # 原来这里是自底向上的弹幕气泡。主人要求「移除用户评论区，换成电脑展示区」，
     # 所以默认走电脑；想看回弹幕就设环境变量 ZY_DANMAKU=1（代码没删，只是不画）。
-    if DANMAKU_ON:
-        draw_danmaku(img, st, d, f)
-    else:
+    # 2026-10-28：右栏「显示器 / 弹幕列」现在是二选一 —— 编辑器里点亮哪个就画哪个
+    # （两个都占着右栏，同时画只会叠在一起，没有意义）。
+    show_dm = DANMAKU_ON or VIS.get("danmaku", False)
+    if VIS.get("monitor", True) and not show_dm:
         draw_computer(img, st, d, f)
+    if show_dm:
+        draw_danmaku(img, st, d, f)
 
     # ---- 底部字幕 ----
     sub = st.get("subtitle")
-    if sub:
+    if sub and VIS.get("subtitle", True):
         tag, fs_ = "说话", f(21)
         tw = d.textlength(tag, font=fs_)
         body_w = d.textlength(str(sub), font=f(34))
         # 按内容收窄：定宽 900 时短句右边会空一大片，看着像没画完。
         # 上限仍是 SUB_W（34px 字号下约 21 个汉字，超了本来就该截断），下限 520 免得短句挤成一条。
         bw2 = int(max(520, min(SUB_W, 30 + tw + 46 + body_w + 30))) // 4 * 4
-        sx = (W - bw2) // 2
-        sy2 = H - SUB_BOTTOM - SUB_H
+        # 2026-10-28：字幕条位置由 layout.json 决定，收窄后仍然在框内居中
+        sx = SUB_X + (SUB_W - bw2) // 2
+        sy2 = SUB_Y
         # 纯色版不再垫投影（2026-10-27 晚）：卡片和字幕条都是实色，
         # 底部再加一圈柔边只会让边缘发虚，M3E 的平面语言里也没有投影这一层。
         blit(img, rr_patch(bw2, SUB_H, 24, CARD), sx, sy2)
         blit(img, rr_patch(int(tw) + 28, 34, 9, PRI), sx + 30, sy2 + 26)
-        d.text((sx + 44, sy2 + 32), tag, font=fs_, fill=(56, 30, 114, 255))
+        d.text((sx + 44, sy2 + 32), tag, font=fs_, fill=ON_PRI)
         d.text((sx + 30 + tw + 46, sy2 + 22), str(sub), font=f(34), fill=INK)
 
     return img
@@ -901,6 +1231,15 @@ def main():
     # 看某一帧：--clip happy --t 2.4
     clip, at = opt("--clip"), opt("--t")
 
+    # 导出默认版式（含每个组件的自适应高度），给 editor.html 当初始档：
+    #   python render.py --dump-layout > cache/layout.json
+    if "--dump-layout" in args:
+        L = _layout_default()
+        for _k, _c in L["items"].items():
+            _c["h"] = comp_h(_k, _c["x"], _c["y"], _c["w"])
+        print(json.dumps(L, ensure_ascii=False, indent=2))
+        return
+
     if "--bench" in args:
         st = demo_state()
         compose(st)  # 预热（字体、静态层、第一帧动作）
@@ -930,6 +1269,16 @@ def main():
         img = compose(st)
         img.save(out)
         print(f"{out}  {img.size}  耗时 {(time.perf_counter()-t0)*1000:.0f}ms")
+
+
+# 导入时先把版式装上（不只是 __main__ 跑的时候）：
+# overlay.py 会直接读 render.SCR_W / render.SCR_H 去初始化解码器，
+# 等到第一帧 compose() 里才 apply_layout 就晚了一步，解码尺寸会对不上。
+try:
+    apply_layout()
+except Exception as _e:                      # 版式坏了也不能连画面都起不来
+    print(f"[layout] 初始化失败（{type(_e).__name__}: {_e}），用默认版式", file=sys.stderr)
+    VIS = {}
 
 
 if __name__ == "__main__":

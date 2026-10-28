@@ -1,20 +1,20 @@
 #!/usr/bin/env node
 /**
- * 抖音直播弹幕桥 · douyin-mcp → SSE → index.html
+ * 抖音直播弹幕桥 · douyin-mcp → HTTP 快照(/state.json) + SSE(/events)（画面走原生 Win32 窗口）
  *
  * 为什么需要这层：
  *   1) get_live_events 返回的是「监听开始以来的全量累积数组」，没有 id、不清空，
  *      所以必须自己维护游标做增量，否则每次轮询都会把历史弹幕重播一遍。
  *   2) 它的 service 层只 append 了 ev.Data，把 ev.Kind 丢了（service.go:549），
  *      所以事件类型只能靠字段形状反推。
- *   3) 叠加层是浏览器页面，跨进程没法直接 postMessage，所以用 SSE 推。
+ *   3) 画面是原生 Win32 窗口，跨进程没法直接 postMessage，所以用 SSE 推。
  *
  * 用法：
  *   node bridge.mjs --rid 123456789          # 真直播间
  *   node bridge.mjs --demo                   # 假数据，验证链路
  *   node bridge.mjs --rid 123456789 --port 18081 --member
  *
- * 然后浏览器开 http://127.0.0.1:18081/  （直播伴侣里用「窗口捕捉」抓它）
+ * 画面是原生 Win32 窗口，直播伴侣里用「窗口捕捉」抓它；面板/音乐台走 /settings.html、/music.html。
  */
 import http from 'node:http'
 import net from 'node:net'
@@ -26,6 +26,7 @@ import {
   makeReply, replyMode, probeLLM, llmConfigured, cacheStats, llmHealth,
   isSongRequest, songAsk, isSongHelp, SONG_TIP, personaInfo,
   isVideoRequest,
+  isSkipRequest,
   setReplyMode, replyModeText,
 } from './reply.mjs'
 
@@ -791,6 +792,11 @@ const MEDIA_GIFT_MAP = {
 
 const MEDIA_DEFAULTS = {
   on: true, // 总开关：关掉后礼物只发感谢，不播媒体
+  /* 音乐总开关（2026-10-28）。跟上面的 on 是两件事：on 管「电脑展示区的素材」，
+   * musicOn 管「背景音乐」。关掉 = 不轮询音源、给播放器发 pause、不垫热榜、不闪避。
+   * 存这儿是因为它必须跨重启记住 —— 原来只有 --no-music / ZY_MUSIC=0 两个启动参数，
+   * 起桥之后没有任何办法关，主人只能全停再起。 */
+  musicOn: true,
   dir: '', // 空 = 用 <项目>/media
   idle: 'standby', // 空闲画面：standby（待机）/ black（纯黑）/ wallpaper（壁纸）
   tierDefault: 1, // 认不出礼物名时归哪一档（0 = 认不出就不播）
@@ -853,6 +859,7 @@ function loadMediaCfg() {
   try {
     const j = JSON.parse(fs.readFileSync(MEDIA_FILE, 'utf8'))
     if (typeof j.on === 'boolean') out.on = j.on
+    if (typeof j.musicOn === 'boolean') out.musicOn = j.musicOn
     if (typeof j.dir === 'string') out.dir = j.dir.slice(0, 400)
     if (['standby', 'black', 'wallpaper'].includes(j.idle)) out.idle = j.idle
     if (Number.isFinite(Number(j.tierDefault))) out.tierDefault = Math.max(0, Math.min(4, Number(j.tierDefault)))
@@ -1068,12 +1075,13 @@ function clearEndTimer() {
 let musicPausedByMedia = false
 
 function pauseMusicForMedia() {
+  if (!musicOn) return
   if (musicPausedByMedia) return
   if (!music.found) return // 本来就没在放，不用暂停，也就没有恢复可言
   musicPausedByMedia = true
   if (musicSrc === 'box') {
     boxJson('/bridge/command', { method: 'POST', body: { type: 'pause' }, timeout: 4000 }).catch(() => {})
-  } else if (MUSIC_ON && !mediaDead) {
+  } else if (musicOn && !mediaDead) {
     mediaCmd('pause').catch(() => {})
   }
   log('  ♫ 闲时视频开播 → 音乐暂停')
@@ -1082,6 +1090,10 @@ function pauseMusicForMedia() {
 function resumeMusicAfterMedia() {
   if (!musicPausedByMedia) return
   musicPausedByMedia = false
+  /* 🔴 总开关关着时**不许**恢复（2026-10-28）。
+   * 这是"关了又自己响"最典型的入口：视频播完走到这儿，一句 resume 就把
+   * 主人刚关掉的音乐重新放起来，而面板上开关还是关的。 */
+  if (!musicOn) return
   /* 🔴 不能用 `music.playing` 判断「要不要恢复」。它是 1.5 秒轮询拿到的快照，
    * 刚发完暂停时它还是上一轮的值（true），于是会走进「本来就在放，不动它」，
    * 音乐就**真停在暂停上**了 —— 实测试播 1 秒就结束的情况，歌直接不响了。
@@ -1089,7 +1101,7 @@ function resumeMusicAfterMedia() {
    * `resume` 是幂等的，本来就在放的时候再发一次没有副作用。 */
   if (musicSrc === 'box') {
     boxJson('/bridge/command', { method: 'POST', body: { type: 'resume' }, timeout: 4000 }).catch(() => {})
-  } else if (MUSIC_ON && !mediaDead) {
+  } else if (musicOn && !mediaDead) {
     mediaCmd('play').catch(() => {})
   }
   log('  ♫ 闲时视频结束 → 音乐继续')
@@ -1635,7 +1647,13 @@ const PLAY_SVC = makeService('player', 'play.py', ['--serve'])
  * 为什么常驻：一次性调用要 300ms 起进程，画面每 1.5 秒要一次曲目。
  * 常驻一个进程，一条命令 20ms。崩了自动重启，不会把直播带崩。
  */
-const MUSIC_ON = !has('no-music') && String(process.env.ZY_MUSIC ?? '1') !== '0'
+/* 音乐总开关分两层（2026-10-28）：
+ *   · `--no-music` / `ZY_MUSIC=0` = **强制关**，面板也打不开（起桥参数最高优先级）
+ *   · 其余读 cache/media.json 的 `musicOn` —— 面板那个开关改的就是它，重启桥后还记得
+ * 不把面板的值写回环境变量的原因：环境变量只在起桥那一刻生效，改一次就得全停重启，
+ * 而「关个背景音乐」不该有这种代价。 */
+const MUSIC_FORCED_OFF = has('no-music') || String(process.env.ZY_MUSIC ?? '1') === '0'
+let musicOn = !MUSIC_FORCED_OFF && mediaCfg.musicOn !== false
 const MUSIC_POLL = Number(process.env.ZY_MUSIC_POLL || 1500)
 
 let mediaProc = null
@@ -1652,7 +1670,7 @@ let music = {
 }
 
 function startMusic() {
-  if (!MUSIC_ON || mediaDead || mediaProc) return
+  if (!musicOn || mediaDead || mediaProc) return
   const script = path.join(DIR, 'tools', 'media.py')
   if (!fs.existsSync(script)) {
     log('  [music] 没有 tools/media.py，音乐控制关掉')
@@ -1700,7 +1718,7 @@ function startMusic() {
       clearTimeout(w.timer)
       w.resolve({ ok: false, why: '音乐进程退出了' })
     }
-    if (!MUSIC_ON) return
+    if (!musicOn) return
     // ModuleNotFoundError 这种是「依赖没装」，重启一万次也没用
     if (/ModuleNotFoundError|No module named/i.test(errBuf)) {
       mediaDead = true
@@ -1718,7 +1736,7 @@ function startMusic() {
 /** 发一条命令给常驻进程，返回它的 JSON。超时/没起来都返回 {ok:false}。 */
 function mediaCmd(cmd, extra = {}, timeoutMs = 2500) {
   return new Promise((resolve) => {
-    if (!MUSIC_ON || mediaDead) return resolve({ ok: false, why: '音乐控制没开' })
+    if (!musicOn || mediaDead) return resolve({ ok: false, why: '音乐控制没开' })
     if (!mediaProc) {
       startMusic()
       return resolve({ ok: false, why: '音乐进程还没起来' })
@@ -1759,7 +1777,7 @@ async function mediaCmdSlow(cmd, extra = {}, timeoutMs = 26000) {
 
 /** 拉一次曲目，更新 music 快照 */
 async function pollMusic() {
-  if (!MUSIC_ON || mediaDead) return
+  if (!musicOn || mediaDead) return
   /* 音乐现在由插件放的时候，别让 QQ 音乐的快照盖掉它 ——
    * 两边都写同一个 music 对象，谁后写谁赢，会看到歌名每 1.5 秒来回跳。 */
   if (musicSrc === 'box') return
@@ -1933,6 +1951,9 @@ async function boxBase() {
 let box = { ok: false, alive: false, why: '还没连上', at: 0, now: null, pending: 0 }
 /** 音乐从哪儿来：'box' = 插件（DSH 里放），'qq' = 本机 QQ 音乐 */
 let musicSrc = 'box'
+/* 插件从什么时候开始连不上（0 = 现在连着）。用来做「心跳抖动宽限」，
+ * 见 pollMusicLoop 里那段注释。 */
+let boxDeadSince = 0
 /* 我们下发过的音量（闪避要用它算）。初值取配置里的「音乐基准音量」，
  * 这样重启后不会先把音乐顶到 100% 再被改回来。 */
 let boxVol = Math.min(1, Math.max(0, Number(mediaCfg.audio.music) / 100))
@@ -1955,6 +1976,47 @@ function boxQueuePush(name, hot = false) {
   if (!n) return
   boxQueue.push({ name: n, at: Date.now(), hot: !!hot })
   while (boxQueue.length > QUEUE_MAX) boxQueue.shift()
+}
+
+/* 观众点过的歌（2026-10-28）。画面现在**只显示观众点的歌**，热榜只后台放。
+ *
+ * 判断方式故意选成"点过的才显示"，而不是"热榜的不显示"：
+ *   热榜那条路认不全 —— 播放器可能自己切、桥重启过、切歌切到队列里的旧歌，
+ *   这些都不是"刚垫的热榜"，用 id 白名单永远会漏（实测过：切歌切到《逆光》，
+ *   它不在任何热榜记录里，就被画面当成观众点的显示出来了）。
+ *   反过来记"谁点过"是完备的：没点过的一律不显示。
+ *
+ * 落盘：桥一重启就清空的话，正在放的那首点歌会突然从画面消失。
+ */
+const REQ_ID_FILE = path.join(DIR, 'cache', 'requested-ids.json')
+const requestedIds = new Set()
+try {
+  const j = JSON.parse(fs.readFileSync(REQ_ID_FILE, 'utf8'))
+  /* 超过一天丢掉：点歌记录隔天没意义，只会让今天的同名歌被误判。 */
+  if (Date.now() - Number(j.at || 0) < 24 * 3600 * 1000) {
+    for (const x of (j.ids || [])) requestedIds.add(String(x))
+  }
+} catch { /* 第一次跑没有这个文件 */ }
+
+function saveRequestedIds() {
+  try {
+    fs.mkdirSync(path.dirname(REQ_ID_FILE), { recursive: true })
+    fs.writeFileSync(REQ_ID_FILE, JSON.stringify({ at: Date.now(), ids: [...requestedIds].slice(-300) }), 'utf8')
+  } catch (e) {
+    log(`  [music] 点歌记录存盘失败（不影响播放）：${e?.message ?? e}`)
+  }
+}
+
+function markRequested(id) {
+  const k = String(id || '')
+  if (!k) return
+  requestedIds.add(k)
+  if (requestedIds.size > 300) {
+    const arr = [...requestedIds]
+    requestedIds.clear()
+    for (const x of arr.slice(-150)) requestedIds.add(x)
+  }
+  saveRequestedIds()
 }
 /** 对账：让 boxQueue 重新等于「播放器里真正还没轮到的那几首」。
  *
@@ -2071,6 +2133,8 @@ function boxToMusic() {
     volume: boxVol,
     at: Date.now(),
     trackId: String(n.trackId || ''),
+    /* 这首是不是观众点的。false = 热榜/自动续播 → 画面不显示，只后台放。 */
+    hot: !requestedIds.has(String(n.trackId || '')),
   }
   if (music.title && (music.title !== prevTitle || music.playing !== boxLastPlaying)) {
     log(`  ♫ ${music.title}${music.artist ? ' - ' + music.artist : ''}${music.playing ? '' : '（暂停）'}`)
@@ -2082,13 +2146,53 @@ function boxToMusic() {
    * 热榜就一直不补。n 最多 20 项，1.5 秒一次的开销可以忽略。 */
   if (music.title) boxQueueSettle(music.title)
   boxLastPlaying = music.playing
+  checkStuck()
+}
+
+/* ── 卡带检测（2026-10-28）───────────────────────────────────────────
+ * 播放器会报 `playing: true`，但 audio 卡在缓冲 / 打不开输出流 ——
+ * currentTime 一动不动，观众那边是**完全没声音**，而面板一片绿。
+ * 实测：系统输出切到蓝牙耳机后，位置卡在 0.02 十几分钟，没人发现，
+ * 主人只能自己去猜"为什么没声"。
+ *
+ * 规矩：位置 20 秒没动 → 换下一首（单曲音源坏了能自愈）；
+ *       连续两次还卡 → 停手并标红（那是设备/浏览器的问题，换歌没用）。 */
+let posMark = { pos: -1, at: 0, tries: 0 }
+function checkStuck() {
+  if (!musicOn || !music.playing || music.pos <= 0) {
+    posMark = { pos: -1, at: 0, tries: posMark.tries }
+    return
+  }
+  if (Math.abs(music.pos - posMark.pos) > 0.3) {
+    posMark = { pos: music.pos, at: Date.now(), tries: 0 }
+    return
+  }
+  if (!posMark.at) { posMark.at = Date.now(); return }
+  if (Date.now() - posMark.at < 20000) return
+  if (posMark.tries >= 2) {
+    musicWatch.ok = false
+    musicWatch.why = '音乐卡住了（位置 20 秒没动，换歌也没用）—— 大概率是系统输出设备'
+    if (Date.now() - (musicWatch.naggedAt || 0) > 60000) {
+      musicWatch.naggedAt = Date.now()
+      log('  ♫ 自检：音乐一直卡着，位置不动 —— 检查系统输出设备（是不是切到蓝牙耳机、或者静音了）')
+    }
+    return
+  }
+  posMark.tries += 1
+  posMark.at = Date.now()
+  log(`  ♫ 自检：位置 20 秒没动（${music.pos.toFixed(1)}s），换下一首试试`)
+  boxJson('/bridge/command', { method: 'POST', body: { type: 'next' }, timeout: 6000 }).catch(() => {})
 }
 
 /** 每 1.5 秒一次：先问插件，插件不在再问 QQ 音乐。 */
 async function pollMusicLoop() {
+  /* 总开关关着就**连问都不要问**。只停止轮询还不够——box 那边照样会回歌名，
+   * 画面又出现「正在播放」，于是面板写着关、屏幕上却在放，是最难查的那种假状态。 */
+  if (!musicOn) return
   if (BOX_ON) {
     const s = await boxState()
     if (s.ok && s.alive) {
+      boxDeadSince = 0
       if (musicSrc !== 'box') log('  ♫ 音乐切到单身汉播放器（DSH 内播放）')
       musicSrc = 'box'
       boxToMusic()
@@ -2096,12 +2200,198 @@ async function pollMusicLoop() {
       maybeHot()
       return
     }
+    /* 🔴 心跳抖一下**不许**立刻切走（2026-10-28 实测的串台）。
+     *
+     * 播放器是 DSH 里的网页，标签切到后台会被浏览器节流到一分钟一次，
+     * 而它的 clientAlive 窗口只有 8 秒 —— 所以每 40 秒左右就"掉线"一次。
+     * 以前一掉就切 qq，画面歌名在《Marry》和
+     * 「下载dsh抖音刷视频插件 — DeepSeek Harness」（浏览器里别的视频！）之间
+     * 来回跳，主人看到的就是"怎么会有这种歌，串台了？"。
+     *
+     * 现在给 25 秒宽限：这段时间什么都不做，保持上一首的快照和 src，
+     * 真回不来才认输。宽限期内不调用 boxToMusic，所以歌名不会闪。 */
+    if (!boxDeadSince) boxDeadSince = Date.now()
+    if (Date.now() - boxDeadSince < 25000) return
     if (musicSrc === 'box') {
       musicSrc = 'qq'
-      log(`  ♫ 插件不在（${s.why}），音乐回落到本机 QQ 音乐`)
+      log(`  ♫ 播放器连不上超过 25 秒（${s.why}），音乐回落到本机 QQ 音乐`)
     }
   }
   await pollMusic()
+}
+
+/**
+ * 音乐总开关（2026-10-28，面板启动页那个「背景音乐」）。
+ *
+ * 关掉必须**主动**把播放器按停，不能只停轮询 —— 桥不管了，歌还在响，
+ * 观众听到的是「一段没人闪避、没人切歌、点歌也没人接的背景音」，
+ * 比直接静音更难查。三件事一起做：暂停当前音源 / 清空快照 / 清空点歌台。
+ *
+ * 三层状态，优先级从高到低：
+ *   1. `--no-music`、`ZY_MUSIC=0`  → MUSIC_FORCED_OFF，面板打不开（起桥参数最大）
+ *   2. `cache/media.json` 的 `musicOn` → 面板改的就是它，重启桥后记得
+ *   3. 都没有 → 默认开
+ */
+function setMusicOn(v, from = '') {
+  const want = !!v
+  if (want && MUSIC_FORCED_OFF) {
+    return { ok: false, on: false, error: '起桥时带了 --no-music / ZY_MUSIC=0，面板上打不开' }
+  }
+  if (want === musicOn) return { ok: true, changed: false, on: musicOn }
+  musicOn = want
+  mediaCfg.musicOn = want
+  saveMediaCfg()
+  if (!want) {
+    musicPausedByMedia = false
+    duckUntil = 0
+    clearTimeout(duckTimer)
+    duckTimer = null
+    if (musicSrc === 'box') {
+      boxJson('/bridge/command', { method: 'POST', body: { type: 'pause' }, timeout: 4000 }).catch(() => {})
+    } else if (!mediaDead) {
+      mediaCmd('pause').catch(() => {})
+    }
+    /* 快照要清干净：画面上那行「正在播放 · 歌名」必须立刻消失。
+     * 留着上一首 = 屏幕上写着在放、音箱里没有，观众第一反应是「卡了」。 */
+    music = {
+      ok: false, why: '音乐关着', found: false, playing: false, status: 'none',
+      title: '', artist: '', album: '', pos: 0, dur: 0, volume: null, at: Date.now(),
+    }
+    queue.list = []
+    queue.why = '背景音乐关着，没读歌单'
+    log(`  ♫ 背景音乐关掉了${from ? '（' + from + '）' : ''} —— 播放器已暂停，热榜不再补`)
+    broadcast('music', music)
+  } else {
+    log(`  ♫ 背景音乐打开了${from ? '（' + from + '）' : ''}`)
+    /* 立刻问一次，让面板/画面 0.2 秒内就有反馈，不用等下一轮 1.5 秒的定时器 */
+    pollMusicLoop().catch(() => {})
+  }
+  return { ok: true, changed: true, on: musicOn }
+}
+
+/* ── 音乐自检（2026-10-28）──────────────────────────────────────────
+ * 主人：「之前老是会断连，然后一直不放歌，看看能不能做一个自检，
+ *        除非手动点击这个开关关闭，其他就拉起」。
+ *
+ * 断连的真实机制（这次实测出来的）：
+ *   · 播放器的 `clientAlive` 是「8 秒内有没有 poll 过」—— SinglePlayer 里写死 `8e3`；
+ *   · 那个播放器是 DSH 里的网页，**标签切到后台会被浏览器节流**，
+ *     setInterval 压到一分钟一次 ⇒ 心跳必然超过 8 秒 ⇒ 桥上判"界面没开"；
+ *   · 桥一判死就把音源切成 QQ 音乐，而 QQ 音乐根本没开 ⇒ 全场静音，
+ *     而且页面还在后台，永远等不回来 —— 这就是"一直不放歌"。
+ *
+ * 自检只做三件事，全部在 musicOn=true 的前提下：
+ *   ① 抖一下不算死（25 秒容忍），同时逼 `boxBase()` 重扫端口 ——
+ *      DSH 重启会把端口从 4612 换到 14428，缓存里那个未必还活着；
+ *   ② 有播放器但没歌、队列也空 → 补热榜；
+ *   ③ 歌在，但停在暂停上 → 替主人按「继续」。
+ * 两种情况不插手：总开关关着；暂停是我们自己干的（闲时视频要静音）
+ * 或者主人刚手动按过暂停（给 3 分钟面子）。 */
+const WATCH_EVERY = 15 * 1000
+const WATCH_PAUSE_GRACE = 3 * 60 * 1000
+/* 系统输出（2026-10-28）：默认设备名 + 总音量 + 是否静音。
+ * 这一层以前完全不可见 —— 主人说「没声音」，桥这边一切正常，
+ * 实际是蓝牙耳机被静音、系统音量 2%。现在 30 秒读一次，面板直接写出来，
+ * 再也不用靠"猜是不是设备问题"。 */
+let sysAudio = { ok: false, dev: '', vol: null, mute: null, at: 0, why: '' }
+let sysAudioAt = 0
+let musicWatch = {
+  ok: true, why: '', checks: 0, fixes: 0, lastFix: '', lastFixAt: 0,
+  deadSince: 0, pausedSince: 0, emptySince: 0, naggedAt: 0,
+}
+/* 面板/遥控手动下过的播放命令时间。自检拿它判断「这个暂停是主人按的」。 */
+let lastUserCmdAt = 0
+
+async function musicWatchdog() {
+  if (!musicOn) {
+    musicWatch = { ...musicWatch, ok: true, why: '', deadSince: 0, pausedSince: 0, emptySince: 0 }
+    return
+  }
+  musicWatch.checks++
+  const now = Date.now()
+
+  /* 系统音量 30 秒读一次，放在最前面：就算播放器连不上、队列空着，
+   * 「系统被静音」这件事也必须能看见 —— 这是最常见、也最容易被当成
+   * "代码坏了"的那种没声音（实测：蓝牙耳机静音 + 音量 2%）。 */
+  if (now - sysAudioAt > 30000) {
+    sysAudioAt = now
+    mediaCmd('sysvol', {}, 4000)
+      .then((r) => {
+        if (!r) return
+        if (r.ok) {
+          sysAudio = {
+            ok: true, dev: String(r.dev || ''), vol: r.vol,
+            mute: Boolean(r.mute), at: Date.now(), why: '',
+          }
+        } else {
+          sysAudio = { ...sysAudio, ok: false, why: r.why || '读不到系统音量', at: Date.now() }
+        }
+      })
+      .catch(() => {})
+  }
+  const sysVol = Number(sysAudio.vol)
+  const sysBad = sysAudio.ok && (sysAudio.mute || (Number.isFinite(sysVol) && sysVol < 0.1))
+  const sysWhy = sysBad
+    ? `系统音量 ${Math.round((Number.isFinite(sysVol) ? sysVol : 0) * 100)}%`
+      + `${sysAudio.mute ? '（静音）' : ''} · ${sysAudio.dev || '默认设备'}`
+    : ''
+
+  if (!box.ok || !box.alive) {
+    if (!musicWatch.deadSince) musicWatch.deadSince = now
+    const deadFor = now - musicWatch.deadSince
+    if (deadFor < 25000) return // 25 秒内算浏览器节流的正常抖动，别乱动
+    musicWatch.ok = false
+    musicWatch.why = `播放器连不上 ${Math.round(deadFor / 1000)} 秒，正在重连${sysWhy ? `；${sysWhy}` : ''}`
+    boxApiAt = 0 // 逼 boxBase() 下一轮重扫端口
+    if (now - musicWatch.naggedAt > 60000) {
+      musicWatch.naggedAt = now
+      log('  ♫ 自检：播放器一直连不上，已重扫 DSH 端口（看一眼音乐页面是不是被关了，或者电脑睡了）')
+    }
+    return
+  }
+  musicWatch.deadSince = 0
+  /* 连得上 ≠ 有声音。系统静音/音量过低时这里必须报红，否则面板一片绿、
+   * 主人只能自己去猜"是不是又坏了"。 */
+  musicWatch.ok = !sysBad
+  musicWatch.why = sysWhy
+
+  const n = box.now
+  if (!n || !n.trackId) {
+    musicWatch.pausedSince = 0
+    if (!musicWatch.emptySince) musicWatch.emptySince = now
+    const emptyFor = now - musicWatch.emptySince
+    /* 🔴 播放器连上了、但一首歌都没有 —— 这正是「面板写着自检正常、音箱没声」
+     * 的来源（主人重启 DSH 后截图的那个状态）：队列被页面重载清空，
+     * 旧代码只看"连不连得上"，于是绿灯亮着、音乐静着。
+     * 超过 20 秒就标成异常，面板才会显示「播放器空着，正在补歌」。 */
+    if (emptyFor > 20000) {
+      musicWatch.ok = false
+      musicWatch.why = `播放器空着 ${Math.round(emptyFor / 1000)} 秒，正在补歌`
+        + `${hotWhy ? `（${hotWhy}）` : ''}${sysWhy ? `；${sysWhy}` : ''}`
+    }
+    /* 25 秒就补，不再等 45 秒 —— 重启 DSH 后主人等的是"多久有声音"，不是省几次请求。 */
+    if (emptyFor > 25000) {
+      musicWatch.emptySince = now
+      maybeHot() // 里面自己节流 + 防重入
+    }
+    return
+  }
+  musicWatch.emptySince = 0
+
+  if (n.playing) {
+    musicWatch.pausedSince = 0
+    return
+  }
+  if (musicPausedByMedia) return // 闲时视频主动暂停的，别抢
+  if (now - lastUserCmdAt < WATCH_PAUSE_GRACE) return // 主人刚按的暂停，先听他的
+  if (!musicWatch.pausedSince) musicWatch.pausedSince = now
+  if (now - musicWatch.pausedSince < 15000) return
+  musicWatch.pausedSince = 0
+  boxJson('/bridge/command', { method: 'POST', body: { type: 'resume' }, timeout: 4000 }).catch(() => {})
+  musicWatch.fixes++
+  musicWatch.lastFix = 'resume'
+  musicWatch.lastFixAt = now
+  log(`  ♫ 自检：停在暂停上 15 秒，已自动继续${n.name ? `《${n.name}》` : ''}`)
 }
 
 /** 下发音量（0-1）。闪避走这条 —— 插件的音量是网页播放器自己的，跟系统音量无关。 */
@@ -2131,6 +2421,9 @@ async function boxCmd(cmd, extra = {}) {
     return { ok: true, src: 'box', why: '' }
   }
   if (!box.alive) return { ok: false, src: 'box', why: box.why || '播放器界面没开（DSH 里把音乐打开）' }
+  /* 音乐关着时，面板上的播放/暂停/切歌一律不执行 —— 否则点一下就把
+   * 刚关掉的音乐又放起来了，而开关还显示"关着"。（vol 在上面已经放过。） */
+  if (!musicOn) return { ok: false, src: 'box', why: '背景音乐关着（启动页可以打开）' }
   const map = {
     playpause: 'play', play: 'resume', pause: 'pause',
     next: 'next', prev: 'prev', stop: 'pause',
@@ -2155,7 +2448,7 @@ function applyMusicVolume() {
     boxSetVolume(v)
     return
   }
-  if (!MUSIC_ON || mediaDead) return
+  if (!musicOn || mediaDead) return
   mediaCmd('vol', { v }).catch(() => {})
 }
 
@@ -2237,23 +2530,21 @@ function pickTrack(tracks, want, artist = '', auth = {}) {
       s += 2 // 没给歌手时，「单人署名」仍旧是最弱的原唱信号
     }
 
-    /* VIP 曲是**风险项**，不是优点（2026-10-28 凌晨实测推翻原来那句「正版优先」）。
-     * 两种失败方式都很实在：
-     *   网易云未登录 → VIP 曲回 trial，只放 30 秒；
-     *   QQ「已登录」但 cookie 缺 p_skey → VIP 曲直接 QQ_URL_EMPTY，一个音源都取不到。
-     * 所以 vip=true 一律扣分，vip=false 加分；登录了的那家少扣一点（至少还有机会）。
-     * 🔴 这条是 00:04 那次点歌翻车换来的：观众点《一半一半》没成，
-     *    因为 QQ 的四个 VIP 版本拿到最高分排在前面，全回 QQ_URL_EMPTY，
-     *    而下面明明有 QQ 和网易云的**非 VIP 原版**能放整首。 */
+    /* VIP 曲费不费，看这家**登录没登录**，别再一刀切当风险扣了。
+     * 2026-10-28 实测推翻原来的「VIP 一律扣分」：网易云 SVIP / QQ 登录后，
+     * 《刻在我心底的名字》《我不难过》等 VIP 曲全都能取到完整 mp3
+     * （/url 回 trial:false, vipRequired:false）。原唱绝大多数是 VIP，
+     * 给 VIP 扣分、给非 VIP 翻唱加分，等于亲手把原唱往下压、翻唱往上抬
+     * —— 观众点《体面》听到「老王同学吖」就是这么来的。
+     * 现在只对**没登录**那家的 VIP 扣分（那才是真取不到，只能放 30 秒）。 */
     if (t.vip === true) {
       const known = Object.prototype.hasOwnProperty.call(auth, t.provider)
-      s += known && auth[t.provider] ? -8 : -20
-    } else {
-      s += 6
+      if (!known || !auth[t.provider]) s -= 20      // 没登录那家的 VIP，可能只有试听
+      else s += 10                                  // 已登录能放完整 → 保留原唱优势
     }
     if (t.provider === 'kugou') s -= 30 // 酷狗只能搜不能放
-    if (t.provider === 'qq') s += 4
-    else if (t.provider === 'netease') s += 3
+    if (t.provider === 'qq') s -= 20 // 2026-10-28：QQ「已登录」但 VIP 音源一律取不到（缺权限），只能放非 VIP 翻唱 —— 让位给真正能放 VIP 的网易云
+    else if (t.provider === 'netease') s += 12 // 网易云 SVIP 实测能放 VIP 完整音源（《演员》《我不难过》等），真正的正版来源优先
     if (Number(t.durationMs) && Number(t.durationMs) < 90000) s -= 10 // 一分半的大概率是片段
     scored.push({ t, s })
   }
@@ -2268,9 +2559,19 @@ function pickTrack(tracks, want, artist = '', auth = {}) {
  */
 async function boxRequestSong(want, artist = '') {
   if (!BOX_ON) return { ok: false, fallback: true, why: '没开播放器插件' }
+  /* 🔴 音乐总开关关着时**不许偷偷放歌**（2026-10-28）。
+   * 不挡这一下的话：主人关了背景音乐，观众点一首，插件照样 play ——
+   * 音箱里突然出声，而面板上开关还是关的。这里不设 fallback，
+   * 免得掉进 QQ 那条老路又放一遍；reply 那边会照实说「音乐关着呢」。 */
+  if (!musicOn) return { ok: false, why: '背景音乐关着，点歌没法放' }
   const s = await boxState()
   if (!s.ok) return { ok: false, fallback: true, why: s.why }
   if (!s.alive) return { ok: false, why: s.why || '播放器界面没开' }
+
+  /* 2026-10-28 点歌优先闸：从进来这一刻起（搜索+预检最慢，热榜最容易趁虚而入）
+   * 就让热榜让路，等这首真正进队/播完再放开。finally 兜底，任何退路都会减回去。 */
+  songRequesting++
+  try {
 
   /* 搜索词带上歌手能显著提高命中率（同名歌太多），
    * 但**打分时必须把歌名和歌手拆开** —— 拿「孤勇者 陈奕迅」整串去比歌名，
@@ -2350,14 +2651,33 @@ async function boxRequestSong(want, artist = '') {
   }
   /* 什么都没在放 → 直接播这首；有歌但暂停着 → 先继续放再把新的排后面；
    * 正在放 → 只排队尾，绝不打断观众正在听的。 */
+  /* 点歌插队（2026-10-28，主人原话「点了歌不是应该排下一首吗」）。
+   *
+   * **每一首点歌都插到当前曲后面，offset = 已在等的点歌数**：
+   *   队里没有待播点歌 → offset 0，紧接当前曲
+   *   已经有人点了 1 首 → offset 1，排在它后面（FIFO，不抢别人的位）
+   * 这样播放器里的真实顺序 = 点歌台下单顺序，画面显示和实际播放终于一致；
+   * 热榜照旧 append 到队尾，永远排在所有点歌后面。
+   *
+   * 以前只有 queue_add（队尾追加），点歌会排在热榜后面 ——
+   * 观众点了《演员》，下一首却是热榜的《雨爱》，点歌台显示和实际播放对不上。 */
+  const waitingSongs = boxQueue.filter((x) => !x.hot)
   const cmds = []
   if (!cur) cmds.push({ type: 'play', track: hit })
   else {
     if (!cur.playing) cmds.push({ type: 'resume' })
-    cmds.push({ type: 'queue_add', tracks: [hit] })
+    cmds.push({ type: 'queue_next', tracks: [hit], offset: waitingSongs.length })
   }
   for (const c of cmds) {
-    const cmdR = await boxJson('/bridge/command', { method: 'POST', body: c, timeout: 6000 })
+    let cmdR = await boxJson('/bridge/command', { method: 'POST', body: c, timeout: 6000 })
+    /* 播放器还是旧版（没打 queue_next 补丁 / 没重启 DSH）→ 退成追加，
+     * 别让整次点歌失败。日志说清楚，免得以后又当成"点歌不优先"来查。 */
+    if (!cmdR.ok && c.type === 'queue_next') {
+      cmdR = await boxJson('/bridge/command', {
+        method: 'POST', body: { type: 'queue_add', tracks: [hit] }, timeout: 6000,
+      })
+      if (cmdR.ok) log('  ♫ 播放器还不支持插播（要重启 DSH 加载新代码），这首排到队尾了')
+    }
     if (!cmdR.ok || cmdR.queued === false) return { ok: false, why: cmdR.why || '命令没递进去' }
   }
 
@@ -2377,9 +2697,15 @@ async function boxRequestSong(want, artist = '') {
    * 排队成功（最常见的情况）时点歌台看不到刚点的那首，等于白点。
    * 现在不管 pending 有没有归零，都把歌记进队列，点歌台才有东西显示。 */
   boxQueuePush(hit.name)
+  /* 记下"这首是观众点的"—— 画面只显示点过的歌（热榜一律不显示）。
+   * 必须在这里记，不能靠歌名比对：热榜里可能有同名翻唱。 */
+  markRequested(hit.id)
   queue.list = boxQueueNames().slice(0, QUEUE_MAX)
   if (s2.pending > 0) log(`  ♫ 《${hit.name}》还堆在命令队列里（${s2.pending} 条），浏览器还没取走`)
   return { ok: true, title: hit.name, by, trial: trialOnly, how: 'queue' }
+  } finally {
+    songRequesting--
+  }
 }
 
 /* ── 热榜垫歌：没人点歌的时候不能死寂（2026-10-27 主人要求）──────────
@@ -2504,14 +2830,24 @@ async function hotSwapPlayable(track) {
 
 /** 还缺几首。点歌的排在热榜前面，这里只算总量够不够。
  *  🔴 先对账再算：拿「几小时前点了但被跳过」的老账当额度，就是 2026-10-27 那场
- *  55 分钟不补歌的事故 —— boxQueue 停在 3 首，HOT_KEEP 是 2，这里永远返回 0。 */
+ *  55 分钟不补歌的事故 —— boxQueue 停在 3 首，HOT_KEEP 是 2，这里永远返回 0。
+ *
+ *  2026-10-28 加「点歌严格优先」：热榜只会填**真·空缺**，永远排不到观众点歌前面。
+ *  两种点歌都让热榜闭嘴：
+ *    · 队里还有观众点的歌（非热榜项，`hot:false` 没放到）→ 不补；
+ *    · 有一首点歌正在搜索/预检/排队（songRequesting > 0，慢那 0.3~1 秒，
+ *      命令还没写进 boxQueue，也会被热榜抢在它前面入队）→ 不补。
+ *  等点歌全放完、队列真空了，才正常垫热榜到 HOT_KEEP 首。 */
+let songRequesting = 0
 function hotNeed() {
   boxQueueSettle(music.title)
+  if (songRequesting > 0) return 0
+  if (boxQueue.some((x) => !x.hot)) return 0
   return Math.max(0, HOT_KEEP - boxQueue.length)
 }
 
 async function fillHot() {
-  if (!HOT_ON || musicSrc !== 'box' || hotFilling || !box.alive) return
+  if (!musicOn || !HOT_ON || musicSrc !== 'box' || hotFilling || !box.alive) return
   if (hotNeed() <= 0) return
   if (!hotLoaded) {
     hotLoaded = true
@@ -2530,7 +2866,21 @@ async function fillHot() {
         const id = String((t && t.id) || '')
         return id && t.name && !hotPlayed.has(id)
       })
-      hotWhy = hotPool.length ? '' : '榜单里的今天都放过了'
+      /* 🔴 热榜池耗尽：网易云热歌榜固定 50 首，放完一轮就「可用 0 首」，
+       * 背景垫歌从那一刻起永久停摆（2026-10-28 实测日志连刷「可用 0 首」）。
+       * 这不是取流失败，是去重表把整榜都标了。放完一轮 → 清掉去重，重新能垫。 */
+      if (!hotPool.length && list.length) {
+        hotPlayed.clear()
+        saveHotPlayed()
+        hotPool = list.filter((t) => {
+          const id = String((t && t.id) || '')
+          return id && t.name
+        })
+        hotWhy = `热榜 50 首放完一轮，去重已重置（第 ${hotPlayed.size + 1} 轮）`
+        log(`  ♫ 热榜 ${list.length} 首全部放完，重置去重，重新可垫 ${hotPool.length} 首`)
+      } else {
+        hotWhy = hotPool.length ? '' : '榜单里的今天都放过了'
+      }
       if (list.length) log(`  ♫ 热榜 ${list.length} 首，可用 ${hotPool.length} 首`)
     }
 
@@ -2628,7 +2978,7 @@ async function fillHot() {
 
 /** 轮询里顺手叫一下，自己节流 —— 别每 1.5 秒去拉一次榜单。 */
 function maybeHot() {
-  if (!HOT_ON || musicSrc !== 'box') return
+  if (!musicOn || !HOT_ON || musicSrc !== 'box') return
   if (hotNeed() <= 0) return
   if (Date.now() - hotAt < HOT_GAP) return
   hotAt = Date.now()
@@ -2727,18 +3077,17 @@ function noteSong(prevTitle) {
 }
 
 /** 当前歌之后要放的 n 首（歌名数组）。没有快照就返回空。 */
+/** 画面上的「接下来」——**只列观众点的歌**（2026-10-28 主人定的规矩）。
+ *
+ *  以前把热榜也列进去（nextUp 读 queue.list），但热榜是直接 append 到播放器队尾的，
+ *  桥这本账和播放器真实队列迟早对不上 —— 于是「下一首」显示三首热榜，
+ *  实际播出来的却是另一首。主人原话：「下一首播放的跟实际显示的还是不一样」。
+ *
+ *  现在只列点歌（boxQueue 里 hot=false 的），顺序就是点单顺序；
+ *  播放器那边点歌也按**同一个顺序**插队（见 boxRequestSong 里的 offset），
+ *  两边终于说的是同一件事。热榜彻底退出画面，只在后台放。 */
 function nextUp(n = 3) {
-  const list = queue.list
-  if (!list.length) return []
-  const i = list.findIndex((t) => sameTitle(t, music.title))
-  const start = i >= 0 ? i + 1 : 0
-  const out = []
-  for (let k = 0; k < list.length && out.length < n; k++) {
-    const t = list[(start + k) % list.length]
-    if (sameTitle(t, music.title)) continue
-    out.push(t)
-  }
-  return out
+  return boxQueue.filter((x) => !x.hot).slice(0, n).map((x) => x.name)
 }
 
 /** 点歌时猜「还要往后翻几首」：快照里有就按位置算，没有就翻 SONG_MAX 首。
@@ -2756,7 +3105,7 @@ function skipHint(want) {
 }
 
 async function refreshQueue(force = false) {
-  if (!MUSIC_ON || mediaDead || queue.busy) return
+  if (!musicOn || mediaDead || queue.busy) return
   /* 插件在放的时候「翻歌单」毫无意义：那个歌单是 QQ 音乐的，
    * 而且翻一次要按十几次 next，会把插件正在放的歌切走。 */
   if (musicSrc === 'box') return
@@ -2827,7 +3176,7 @@ function duckMusic(ms) {
     boxSetVolume(Math.min(boxVol, duckTo))
     log(`  ♫ 音乐压到 ${Math.round(Math.min(boxDuckSaved, duckTo) * 100)}%（说完恢复 ${Math.round(boxDuckSaved * 100)}%）`)
   } else {
-    if (!MUSIC_ON || mediaDead) return
+    if (!musicOn || mediaDead) return
     mediaCmd('duck', { on: 1 }).then((r) => {
       if (r?.ok && r.ducked) log(`  ♫ 音乐压到 ${Math.round((r.vol ?? 0) * 100)}%（说完恢复 ${Math.round((r.saved ?? 1) * 100)}%）`)
     })
@@ -2840,13 +3189,21 @@ function scheduleUnduck() {
   duckTimer = setTimeout(() => {
     if (Date.now() < duckUntil) return scheduleUnduck()
     duckTimer = null
-    if (musicSrc === 'box') {
-      const back = boxDuckSaved == null ? boxVol : boxDuckSaved
+    /* 🔴 恢复不能看 `musicSrc`（2026-10-28 修的）。
+     * `musicSrc` 会因为心跳抖动在 box/qq 之间跳 —— 播放器是网页，标签到后台
+     * 就被浏览器节流到一分钟一次，25 秒宽限一过就切 qq。恢复动作正好落在那一瞬，
+     * 就会走进 mediaCmd('duck', off) 那个分支：QQ 根本没开 → 静默失败，
+     * 音乐永远停在 60%，而日志里一条「恢复」都没有（实测就这样卡了一整天）。
+     *
+     * 判断依据改成「这次是谁压的」：boxDuckSaved 有值 = 是 box 压的，就还给 box。 */
+    if (boxDuckSaved != null) {
+      const back = boxDuckSaved
       boxDuckSaved = null
       boxSetVolume(back)
       log(`  ♫ 音乐恢复到 ${Math.round(back * 100)}%`)
       return
     }
+    if (musicSrc === 'box') return // box 那边没有待恢复的音量，别乱发命令
     mediaCmd('duck', { on: 0 }).then((r) => {
       if (r?.ok && !r.ducked && r.vol != null) log(`  ♫ 音乐恢复到 ${Math.round(r.vol * 100)}%`)
     })
@@ -3081,6 +3438,19 @@ async function replyWorker() {
       if (!ctx.video.ok) log(`  🖥 观众点播没成：${ctx.video.why}`)
     }
 
+    /* 切歌（2026-10-28，主人要求「跟大肥鱼说切歌就可以切」）。
+     * 放在点歌之前：两者不会抢 —— `isSkipRequest` 只认**整句**指令，
+     * 「点歌，孤勇者」整句不是切歌，「切歌」也不含点歌关键词。
+     * 先真按了再回话，跟点歌同一个原则：别嘴上说切了、歌没动。 */
+    if (ctx.kind !== 'gift' && isSkipRequest(ctx.text)) {
+      const r = musicSrc === 'box' ? await boxCmd('next') : await mediaCmd('next')
+      ctx.skip = { ok: Boolean(r.ok), why: r.why || '' }
+      /* 记一笔：自检看到「刚手动操作过」就不会乱拉（next 会触发自动续播）。 */
+      lastUserCmdAt = Date.now()
+      log(`  🎵 有人喊切歌 → ${r.ok ? '切到下一首' : '没切动：' + (r.why || '')}`)
+      await pollMusicLoop()
+    }
+
     /* 点歌：真去放（2026-10-27 加，2026-10-27 晚换成插件）。
      * 之前只回了句「好嘞，这就放」——观众看着歌名没变，等于被骗。
      * 现在先真的放/排队，再生成回复，回复里才能说「切到《xxx》」而不是空口白话。 */
@@ -3115,7 +3485,7 @@ async function replyWorker() {
          * 直说原因 —— 不许再落到「排上了」那种话上。 */
         ctx.song = { name: want, artist: ask.artist, found: false, title: '', why: boxR.why || '没点成' }
         log(`  🎵 点歌「${q}」没成：${ctx.song.why}`)
-      } else if (!MUSIC_ON || mediaDead) {
+      } else if (!musicOn || mediaDead) {
         /* 音乐根本没接管（关掉了 / 播放器挂了）。
          * 这里必须显式给 ctx.song 一个 why，否则 reply.mjs 会落到
          * 「《X》排上了，唱完这首就到」那句上 —— 什么都没发生却说排上了，
@@ -3266,10 +3636,12 @@ function currentMood() {
 
 /* ------------------------------------------------------------ 主动开口
  * 直播不能只在被点名时才说话 —— 安静下来观众 30 秒就划走了。
- * 但要克制，否则会变成自说自话的复读机。三条闸门：
+ * 但要克制，否则会变成自说自话的复读机。四道闸门：
  *   · 安静 40 秒才考虑
  *   · 两次主动开口至少隔 90 秒（说错话/卡壳时也不会连环开炮）
  *   · 正在说话（TTS 还没放完）时一律不动
+ *   · 房间没人（online <= 0）不开腔 —— 2026-10-28 修：
+ *     原来 chitchat 完全不看在线人数，空房间也照烧 token 自己跟自己聊。
  * 说不了话的时候就让画面动一下（打哈欠/伸懒腰），至少不像死机。
  */
 const QUIET_FOR_TALK = Number(process.env.REPLY_QUIET_FOR_TALK || 40000)
@@ -3280,6 +3652,11 @@ let lastWelcome = 0
 
 setInterval(() => {
   if (Date.now() < speakUntil) return // 还在出声，别叠着说
+  // 房间没人就别自言自语白烧 token（2026-10-28 修）。
+  // stat.online 来自抖音 room_stats 心跳（display_value），空房间是 0；
+  // demo 模式每轮把 online 顶到 >=3，调试时照常自言自语，不受影响。
+  // 注意：若你的平台把主播自己算进在线（空房间显示 1），把 `<= 0` 改成 `<= 1`。
+  if (stat.online <= 0) return
   const quiet = Date.now() - quietSince
   if (quiet < QUIET_FOR_TALK) return
 
@@ -3916,6 +4293,74 @@ function roomOut() {
   }
 }
 
+/** 读原始请求体（二进制，给背景图上传用）。超过上限直接掐掉，返回 null。 */
+function readRaw(req, limit = 12 * 1024 * 1024) {
+  return new Promise((resolve) => {
+    const chunks = []
+    let size = 0
+    let done = false
+    const finish = (v) => { if (!done) { done = true; resolve(v) } }
+    req.on('data', (b) => {
+      size += b.length
+      if (size > limit) { finish(null); req.destroy(); return }
+      chunks.push(b)
+    })
+    req.on('end', () => finish(Buffer.concat(chunks)))
+    req.on('error', () => finish(null))
+  })
+}
+
+/* ── 画面版式（2026-10-28）─────────────────────────────────────────────
+ * 只认这 7 个组件，键名跟 native/render.py 里的 layout.json 一一对应。
+ * 校验的目的不是防坏人（本机 127.0.0.1），是防「编辑器传了个 NaN/字符串」
+ * 把 render.py 里的 int() 弄炸 —— 那会直接黑屏。
+ */
+const LAYOUT_PATH = path.join(DIR, 'cache', 'layout.json')
+const LAYOUT_KEYS = ['stats', 'songs', 'banner', 'character', 'monitor', 'danmaku', 'subtitle']
+
+function sanitizeLayout(b) {
+  if (!b || typeof b !== 'object' || Array.isArray(b)) return { ok: false, error: '要一个 JSON 对象' }
+  const src = b.items
+  if (!src || typeof src !== 'object' || Array.isArray(src)) return { ok: false, error: '缺 items' }
+  const num = (v, lo, hi, dflt) => {
+    const n = Number(v)
+    if (!Number.isFinite(n)) return dflt
+    return Math.max(lo, Math.min(hi, Math.round(n)))
+  }
+  const items = {}
+  for (const k of LAYOUT_KEYS) {
+    const v = src[k]
+    if (!v || typeof v !== 'object' || Array.isArray(v)) continue
+    const o = {
+      x: num(v.x, -1000, 3000, 0),
+      y: num(v.y, -1000, 3000, 0),
+      w: num(v.w, 120, 1920, 400),
+      visible: v.visible !== false,
+    }
+    if (k === 'banner') {
+      o.size = num(v.size, 12, 200, 50)
+      o.align = ['left', 'center', 'right'].includes(v.align) ? v.align : 'center'
+    }
+    items[k] = o
+  }
+  if (!Object.keys(items).length) return { ok: false, error: 'items 里没有一个认识的组件' }
+  const bgIn = (b.bg && typeof b.bg === 'object' && !Array.isArray(b.bg)) ? b.bg : {}
+  const bg = {
+    type: bgIn.type === 'color' ? 'color' : 'image',
+    // 去掉 .. 和前导斜杠：编辑器里手填一个 ../../etc/passwd 会读到别处去。
+    // render.py 那边是 os.path.join(项目根, 这个值)，绝对路径会把前半截丢掉。
+    image: typeof bgIn.image === 'string'
+      ? bgIn.image.replace(/\.\./g, '').replace(/^[\\/]+/, '').slice(0, 200)
+      : '',
+    color: /^#[0-9a-fA-F]{3,8}$/.test(String(bgIn.color || '')) ? String(bgIn.color) : '#1E182A',
+    dim: Math.max(0, Math.min(0.9, Number(bgIn.dim) || 0)),
+  }
+  return {
+    ok: true,
+    data: { version: 1, theme: b.theme === 'light' ? 'light' : 'dark', bg, items },
+  }
+}
+
 async function dyRoute(p, u, req) {
   /* ══════════════════════════════════════════════════════════════════
    * 礼物档位媒体（2026-10-27 加）
@@ -4111,6 +4556,14 @@ async function dyRoute(p, u, req) {
       if (mediaCfg.audio.music !== before.music) applyMusicVolume()
       if (mediaCfg.audio.duck !== before.duck) log(`  ♫ 说话时音乐压到 ${mediaCfg.audio.duck}%`)
     }
+    /* 背景音乐总开关（2026-10-28）：面板启动页那个开关走这里。
+     * 交给 setMusicOn 而不是直接改 mediaCfg —— 关掉要顺带把播放器按停、清空快照，
+     * 只改一个布尔值的话，声音还在响，面板却显示"关着"。 */
+    let musicSwitch = null
+    if (typeof b.musicOn === 'boolean') {
+      musicSwitch = setMusicOn(b.musicOn, '面板')
+      if (!musicSwitch.ok) return { ok: false, error: musicSwitch.error, musicOn }
+    }
     saveMediaCfg()
     mediaScanAt = 0
     log(`  🖥 媒体设置已更新：${mediaCfg.on ? '开' : '关'} · 冷却 ${mediaCfg.rules.cooldown}s · ` +
@@ -4119,12 +4572,13 @@ async function dyRoute(p, u, req) {
       /* 这两项不写出来，主人改完只能在日志里干等「到底生效没有」——
        * 礼物不分档尤其需要一句话确认，不然他分不清是没开还是没抽中。 */
       (mediaCfg.rules.flatGift ? ' · 礼物不分档（1–4 混着抽）' : '') +
-      (mediaCfg.rules.idleFull ? ' · 0 档放完为止（说话只压低）' : ''))
+      (mediaCfg.rules.idleFull ? ' · 0 档放完为止（说话只压低）' : '') +
+      ` · 背景音乐${musicOn ? '开' : '关'}`)
     if (b.idlePlay && typeof b.idlePlay === 'object') {
       const ip = mediaCfg.idlePlay
       log(`  🕐 闲时自动放：${ip.on ? '开' : '关'} · 安静 ${ip.quietSec}s 算闲 · 两条隔 ${ip.gapSec}s · 开播 ${ip.startSec}s 后才开始`)
     }
-    return { ok: true, cfg: mediaCfg, ...mediaOut() }
+    return { ok: true, musicOn, cfg: mediaCfg, ...mediaOut() }
   }
 
   if (p === '/media/play') {
@@ -4596,6 +5050,80 @@ async function dyRoute(p, u, req) {
     }
   }
 
+  /* ---- 画面版式（2026-10-28 加）--------------------------------------
+   * editor.html 拖完要落盘，浏览器写不了磁盘，所以走桥：
+   *   GET  /layout        读 cache/layout.json（编辑器打开时先拉这份，跟画面一致）
+   *   POST /layout        整份覆盖写（校验 + 原子写）
+   *
+   * 🔴 为什么必须原子写：native/render.py 每 0.5 秒 stat 一次这个文件，
+   *    写一半被读到就会解析失败。它虽然会退回上一份版式（不会黑屏），
+   *    但下一次 mtime 变了才会重试 —— 中间那段时间画面停在旧版式上，
+   *    表现是「拖了但没反应」。所以先写 .tmp 再 rename。
+   */
+  if (p === '/layout' && req.method === 'POST') {
+    const b = await readJson(req)
+    const clean = sanitizeLayout(b)
+    if (!clean.ok) return clean
+    try {
+      fs.mkdirSync(path.dirname(LAYOUT_PATH), { recursive: true })
+      const tmp = LAYOUT_PATH + '.tmp'
+      fs.writeFileSync(tmp, JSON.stringify(clean.data, null, 2), 'utf8')
+      fs.renameSync(tmp, LAYOUT_PATH)
+      log(`  [layout] 版式已保存（${Object.keys(clean.data.items).length} 个组件，主题 ${clean.data.theme}）`)
+      return { ok: true, at: new Date().toISOString(), theme: clean.data.theme,
+               bg: clean.data.bg.type, items: Object.keys(clean.data.items).length }
+    } catch (e) {
+      return { ok: false, error: '写不进去：' + String((e && e.message) || e).slice(0, 200) }
+    }
+  }
+  /* 背景图：列目录 + 上传
+   *   GET  /layout/bg               assets/ 里能当背景的图（编辑器下拉用）
+   *   POST /layout/bg?name=x.png    请求体就是图片二进制（拖一张图进编辑器）
+   * 为什么要上传：主人原话「背景可以替换选择，允许人更改」——
+   *   让他为了换张图去手动拷文件、再手打路径，那就不叫"可以替换"了。 */
+  if (p === '/layout/bg' && req.method === 'GET') {
+    try {
+      const dir = path.join(DIR, 'assets')
+      const files = fs.readdirSync(dir)
+        .filter((f) => /\.(png|jpe?g|webp)$/i.test(f))
+        .map((f) => {
+          let kb = 0
+          try { kb = Math.round(fs.statSync(path.join(dir, f)).size / 1024) } catch { /* 忽略 */ }
+          return { name: f, path: 'assets/' + f, kb }
+        })
+        .sort((a, b) => b.kb - a.kb)
+      return { ok: true, files }
+    } catch (e) {
+      return { ok: false, error: '读不了 assets/：' + String((e && e.message) || e).slice(0, 160) }
+    }
+  }
+  if (p === '/layout/bg' && req.method === 'POST') {
+    const raw = await readRaw(req, 12 * 1024 * 1024)
+    if (!raw || !raw.length) return { ok: false, error: '没收到图片数据（或者超过 12MB）' }
+    // 扩展名只认这三种，其余一律当 png —— 反正下面 Pillow 打开时还会再判一次
+    let name = String(u.searchParams.get('name') || 'bg.png')
+    name = name.replace(/[^\w.\-]/g, '_').replace(/^\.+/, '').slice(-60)
+    if (!/\.(png|jpe?g|webp)$/i.test(name)) name = name.replace(/\.[^.]*$/, '') + '.png'
+    try {
+      const dir = path.join(DIR, 'assets')
+      fs.mkdirSync(dir, { recursive: true })
+      fs.writeFileSync(path.join(dir, name), raw)
+      log(`  [layout] 背景图已存 assets/${name}（${Math.round(raw.length / 1024)}KB）`)
+      return { ok: true, path: 'assets/' + name, kb: Math.round(raw.length / 1024) }
+    } catch (e) {
+      return { ok: false, error: '写不进去：' + String((e && e.message) || e).slice(0, 200) }
+    }
+  }
+
+  if (p === '/layout') {
+    try {
+      const raw = fs.readFileSync(LAYOUT_PATH, 'utf8')
+      return { ok: true, layout: JSON.parse(raw), path: LAYOUT_PATH }
+    } catch (e) {
+      return { ok: false, error: '还没有版式文件（画面正在用内置默认版式）', path: LAYOUT_PATH }
+    }
+  }
+
   return { ok: false, error: '不认识的接口：' + p }
 }
 
@@ -4688,7 +5216,7 @@ const server = http.createServer(async (req, res) => {
    *    （/music/auth、/music/login/qq…）当时写进了 dyRoute，但**前缀没挂到
    *    这里**，于是它们一直是 404 —— 面板那张卡点「扫码登录」当然没反应。
    *    实测：curl /music/auth → `404 D:\Workplace\zhibo\music\auth`。 */
-  if (p.startsWith('/dy/') || p.startsWith('/gift/') || p.startsWith('/user/') || p.startsWith('/persona') || p.startsWith('/music/') || (p.startsWith('/media') && p !== '/media') || p === '/room' || p.startsWith('/room/') || p.startsWith('/reply/')) {
+  if (p.startsWith('/dy/') || p.startsWith('/gift/') || p.startsWith('/user/') || p.startsWith('/persona') || p.startsWith('/music/') || (p.startsWith('/media') && p !== '/media') || p === '/room' || p.startsWith('/room/') || p.startsWith('/reply/') || p.startsWith('/layout')) {
     res.setHeader('access-control-allow-origin', '*')
     res.setHeader('content-type', 'application/json; charset=utf-8')
     let out
@@ -4744,16 +5272,18 @@ const server = http.createServer(async (req, res) => {
       moneySpent: money.spent,
       // 老字段留着：music.html / 面板还有地方读 token，别让它们读不到
       token: money.left,
-      // 点歌台：QQ 音乐歌单里「接下来」的 3 首（只有歌名，观众不需要看歌手）。
-      // 数据来自 queue 快照，不是观众点歌的请求队列 —— 点歌是真切歌，
-      // 切完当前歌就变了，这里跟着自然往后走。
+      // 点歌台：**只放观众点的歌**（2026-10-28 改）。热榜只在后台放，不进画面。
+      // 以前这里读整个队列快照，热榜和点歌混在一起，显示的顺序跟播放器实际顺序
+      // 对不上（主人：「下一首播放的跟实际显示的还是不一样」）。
       songs: nextUp(3),
-      queue: { total: queue.list.length, why: queue.why || '', hot: hotWhy || '' },
+      // total 也改成只数点歌 —— 卡片右上角那个「歌单 N 首」写 4 首，
+      // 结果画面里只列得出 1 首，观众会以为显示坏了。
+      queue: { total: boxQueue.filter((x) => !x.hot).length, why: queue.why || '', hot: hotWhy || '' },
       danmaku: recent,
       subtitle: speaking ? say.text : null,
-      // 正在播的歌（本机 QQ 音乐）。画面右下角「点歌台」旁边会显示。
+      // 正在播的歌。`hot=true` 表示这是热榜垫的 —— 画面**不显示**（只后台放）。
       music: music.found
-        ? { title: music.title, artist: music.artist, playing: music.playing }
+        ? { title: music.title, artist: music.artist, playing: music.playing, hot: Boolean(music.hot) }
         : null,
       // 礼物档位媒体：画面右侧那台「电脑」放什么全靠这一段。
       // seq 变了 = 换了一份素材，画面要重新打开文件。
@@ -4801,7 +5331,7 @@ const server = http.createServer(async (req, res) => {
     res.setHeader('cache-control', 'no-store')
     if (!cmd) {
       if (u.searchParams.get('fresh') === '1') await pollMusic()
-      res.end(JSON.stringify({ ...music, on: MUSIC_ON || BOX_ON, src: musicSrc, box: { ok: box.ok, alive: box.alive, why: box.why, pending: box.pending }, age: music.at ? Date.now() - music.at : null }))
+      res.end(JSON.stringify({ ...music, on: musicOn, forcedOff: MUSIC_FORCED_OFF, src: musicSrc, box: { ok: box.ok, alive: box.alive, why: box.why, pending: box.pending }, watch: { ok: musicWatch.ok, why: musicWatch.why, fixes: musicWatch.fixes, lastFixAt: musicWatch.lastFixAt || null }, sys: { ok: sysAudio.ok, dev: sysAudio.dev, vol: sysAudio.vol, mute: sysAudio.mute }, age: music.at ? Date.now() - music.at : null }))
       return
     }
     const ok = ['playpause', 'play', 'pause', 'next', 'prev', 'stop', 'vol'].includes(cmd)
@@ -4811,6 +5341,9 @@ const server = http.createServer(async (req, res) => {
       return
     }
     const extra = cmd === 'vol' ? { v: Number(u.searchParams.get('v') ?? 1) } : {}
+    /* 记一笔「主人手动按过」—— 自检看到最近 3 分钟内有手动命令，
+     * 就不去拉起暂停（否则面板点暂停 15 秒后自己又响了）。 */
+    if (['playpause', 'play', 'pause', 'stop'].includes(cmd)) lastUserCmdAt = Date.now()
     /* 按「现在到底是谁在放」分流 —— 别再一律打给 QQ 音乐（见 boxCmd 上面的注释）。 */
     const r = musicSrc === 'box'
       ? await boxCmd(cmd, extra)
@@ -4862,16 +5395,40 @@ const server = http.createServer(async (req, res) => {
           why: LIVE.why || null,
         },
         tts: TTS_ON ? `${TTS_VOICE} ${TTS_RATE}` : '关着',
-        music: MUSIC_ON || BOX_ON
-          ? {
-              on: !!mediaProc,
-              title: music.title || null,
-              artist: music.artist || null,
-              playing: music.playing,
-              volume: music.volume,
-              why: music.ok ? null : music.why || null,
-            }
-          : '关着',
+        /* 音乐这一段 2026-10-28 改了语义：
+         *   on        = 背景音乐总开关（面板启动页那个开关），关掉也照样报字段
+         *   forcedOff = 起桥时被 --no-music / ZY_MUSIC=0 强制关的（面板打不开）
+         *   proc      = 本机 QQ 音乐那条 python 链在不在
+         * 原来只有一个 on = !!mediaProc，面板分不清「主人关的」和「播放器挂了」，
+         * 两种情况显示同一句话，排查时全靠猜。 */
+        music: {
+          on: musicOn,
+          forcedOff: MUSIC_FORCED_OFF,
+          src: musicSrc,
+          proc: !!mediaProc,
+          title: music.title || null,
+          artist: music.artist || null,
+          playing: musicOn && music.playing,
+          volume: music.volume,
+          why: music.ok ? null : music.why || null,
+          /* 自检结果。面板据此显示「正在重连」或「已拉起 N 次」——
+           * 没有这个字段的话，「断连又自己好了」这件事在界面上完全看不见。 */
+          watch: {
+            ok: musicWatch.ok,
+            why: musicWatch.why || null,
+            fixes: musicWatch.fixes,
+            lastFixAt: musicWatch.lastFixAt || null,
+          },
+          /* 系统输出这一层（设备名/音量/静音）。面板直接写出来 ——
+           * 「没声音」十次有八次是这里，而它以前完全不可见。 */
+          sys: {
+            ok: sysAudio.ok,
+            dev: sysAudio.dev || '',
+            vol: sysAudio.vol,
+            mute: sysAudio.mute,
+            why: sysAudio.why || null,
+          },
+        },
         overlayAgeMs: lastOverlayAt ? Date.now() - lastOverlayAt : null,
         upSec: Math.floor((Date.now() - START) / 1000),
       })
@@ -4919,7 +5476,24 @@ const server = http.createServer(async (req, res) => {
     return
   }
 
-  if (p === '/') return serveFile(res, path.join(DIR, 'index.html'))
+  // `/` 不再指向已删除的浏览器叠加层 index.html —— 生产画面走原生 Win32 窗口。
+  // 这里只回一个状态页，方便人直接开桥地址时看一眼有哪些接口/页面。
+  if (p === '/') {
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
+    res.end(
+      '<!doctype html><meta charset="utf-8"><title>大肥鱼弹幕桥</title>' +
+      '<body style="font:14px/1.7 system-ui,sans-serif;background:#0e1116;color:#e6edf3;padding:24px">' +
+      '<h2>大肥鱼弹幕桥运行中</h2>' +
+      '<p>画面走原生 Win32 窗口（非浏览器）。可用接口与页面：</p>' +
+      '<ul>' +
+      '<li><a style="color:#4dd0e1" href="/state.json">/state.json</a> — 状态快照（JSON）</li>' +
+      '<li><a style="color:#4dd0e1" href="/events">/events</a> — 弹幕事件 SSE 流</li>' +
+      '<li><a style="color:#4dd0e1" href="/settings.html">/settings.html</a> — 设置面板</li>' +
+      '<li><a style="color:#4dd0e1" href="/music.html">/music.html</a> — 音乐台</li>' +
+      '</ul></body>'
+    )
+    return
+  }
   return serveFile(res, path.join(DIR, p.replace(/^\/+/, '')))
 })
 
@@ -5154,7 +5728,11 @@ async function main() {
   // 回复引擎先自报家门：配了 key 不等于能用，探一次比事后猜「她怎么说话变呆了」强
   log(`回复模式：${REPLY_ON ? replyMode : '关掉了（--no-reply）'}`)
   log(`语音：${TTS_ON ? `${TTS_VOICE} ${TTS_RATE}（edge-tts，缓存命中即 0 延迟）` : '关掉了（--no-tts）'}`)
-  log(`音乐：${MUSIC_ON ? '接管本机 QQ 音乐（画面显示曲目 + 说话自动闪避）' : '关掉了（--no-music）'}`)
+  log(`音乐：${musicOn
+    ? '接管本机 QQ 音乐 / 单身汉播放器（画面显示曲目 + 说话自动闪避）'
+    : MUSIC_FORCED_OFF
+      ? '关着（起桥参数 --no-music / ZY_MUSIC=0 强制关）'
+      : '关着（cache/media.json 里 musicOn=false，DSH 启动页可打开）'}`)
 
   server.listen(HTTP_PORT, '127.0.0.1', () => {
     log(`叠加层地址 http://127.0.0.1:${HTTP_PORT}/`)
@@ -5170,19 +5748,17 @@ async function main() {
     log('demo 模式默认不出声（想在 demo 里听声音加 --speak）')
   }
 
-  if (MUSIC_ON || BOX_ON) {
-    if (MUSIC_ON) {
-      startMusic()
-      // 上一次可能是被强杀的，音乐还压着（甚至 _saved 都丢了、就卡在 3%）——
-      // 开局无条件做一次体检，把音量拉回该有的位置。
-      setTimeout(() => {
-        mediaCmd('reset', {}, 9000).then((r) => {
-          if (!r?.ok) return
-          if (r.fixed != null) log(`  ♫ 上次音量卡在 ${Math.round((r.wasLow ?? 0) * 100)}%，已拉回 ${Math.round(r.fixed * 100)}%`)
-          else if (r.restored != null && r.restored < 0.9) log(`  ♫ 上次没收尾，音乐音量已还原到 ${Math.round(r.restored * 100)}%`)
-        })
-      }, 1200)
-    }
+  if (musicOn) {
+    startMusic()
+    // 上一次可能是被强杀的，音乐还压着（甚至 _saved 都丢了、就卡在 3%）——
+    // 开局无条件做一次体检，把音量拉回该有的位置。
+    setTimeout(() => {
+      mediaCmd('reset', {}, 9000).then((r) => {
+        if (!r?.ok) return
+        if (r.fixed != null) log(`  ♫ 上次音量卡在 ${Math.round((r.wasLow ?? 0) * 100)}%，已拉回 ${Math.round(r.fixed * 100)}%`)
+        else if (r.restored != null && r.restored < 0.9) log(`  ♫ 上次没收尾，音乐音量已还原到 ${Math.round(r.restored * 100)}%`)
+      })
+    }, 1200)
     /* 先问插件、再问 QQ 音乐（见 pollMusicLoop）。1.5 秒一次，
      * 画面每 1.5 秒取一次快照，对得上。 */
     const timer = setInterval(pollMusicLoop, Math.min(MUSIC_POLL, BOX_POLL))
@@ -5193,7 +5769,13 @@ async function main() {
         else log(`  音乐：插件没就绪（${s.why}）—— 点歌会回落到本机 QQ 音乐`)
       })
     }
+  } else {
+    log(`音乐：关着（${MUSIC_FORCED_OFF ? '--no-music / ZY_MUSIC=0 强制关，面板打不开' : '面板上关掉的，启动页可以打开'}）`)
   }
+  /* 自检无条件挂上：musicOn 关着时它第一行就 return，
+   * 这样「关掉再打开」不用重新挂定时器（少一个状态就少一个 bug）。 */
+  const musicWd = setInterval(musicWatchdog, WATCH_EVERY)
+  musicWd.unref?.()
 
   if (REPLY_ON && llmConfigured) {
     const p = await probeLLM()
