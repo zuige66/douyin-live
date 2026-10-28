@@ -269,6 +269,14 @@ body.preview #previewHint{display:block}
 const W = 1920, H = 1080;
 const LS_KEY = 'zhibo.layout.v2';
 
+/* 🔴 桥的地址（2026-10-28 修「Ctrl+S 报 Failed to fetch」）
+   编辑器被双击打开（file://）、或者从面板里打开时，相对路径 `/layout` 会被解析到
+   那个页面自己的域名上 —— file:// 下就是 file:///layout，压根发不到桥。
+   所以这里认一下：不是从桥的 18081 端口来的，就走绝对地址。
+   配合下面用 text/plain 发 POST（简单请求，不触发预检），跨源也能通。 */
+const API = (location.protocol === 'http:' && location.port === '18081')
+  ? '' : 'http://127.0.0.1:18081';
+
 /* 七个组件：名字、图标、基准宽、默认位置。顺序 = 画面里的绘制顺序。 */
 const COMPS = [
   { key:'stats',     name:'本场数据卡', icon:'▤', w:452, x:64,   y:54   },
@@ -339,6 +347,8 @@ function normalize(src) {
 /* ── 工具 ── */
 const $ = s => document.querySelector(s);
 const clamp = (v,a,b) => Math.max(a, Math.min(b, v));
+/* 图片地址：file:// 打开时 /assets/xx 指向本地盘，读不到，得走桥的绝对地址 */
+const assetUrl = p => (API ? API + '/' : '/') + String(p || '').replace(/^\/+/, '');
 const esc = s => String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;')
   .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 function toast(msg, ms) {
@@ -390,7 +400,7 @@ function renderBg() {
   const bg = $('#bgLayer');
   bg.style.backgroundImage = '';
   bg.style.backgroundColor = b.color || '#1E182A';
-  if (b.type === 'image' && b.image) bg.style.backgroundImage = 'url("' + b.image + '")';
+  if (b.type === 'image' && b.image) bg.style.backgroundImage = 'url("' + assetUrl(b.image) + '")';
   $('#scrim').style.opacity = String(clamp(Number(b.dim) || 0, 0, 0.9));
   $('#stage').dataset.theme = scene.theme === 'light' ? 'light' : 'dark';
 }
@@ -450,7 +460,7 @@ function htmlOf(key, it) {
       return s + '</div>';
     }
     case 'character':
-      return '<div class="t-character"><img src="/assets/dafeiyu.png" alt=""></div>';
+      return '<div class="t-character"><img src="' + assetUrl('assets/dafeiyu.png') + '" alt=""></div>';
     case 'monitor':
       return '<div class="t-monitor" style="position:absolute;inset:0">' +
         '<div class="shell"><div class="scr">素材播放区</div></div>' +
@@ -830,8 +840,10 @@ function autoSave() {
 
 async function save(quiet) {
   try {
-    const r = await fetchT('/layout', {
-      method: 'POST', headers: { 'content-type': 'application/json' }, body: snap(),
+    const r = await fetchT(API + '/layout', {
+      // text/plain 是 CORS 的「简单请求」，不会先发 OPTIONS 预检。
+      // 桥那边只把请求体当字符串 JSON.parse，不看 content-type。
+      method: 'POST', headers: { 'content-type': 'text/plain;charset=UTF-8' }, body: snap(),
     }, 6000);
     const j = await r.json();
     if (j.ok) {
@@ -848,14 +860,16 @@ async function save(quiet) {
     return false;
   } catch (e) {
     setSync('err', '连不上桥');
-    if (!quiet) toast('连不上桥（' + (e.name === 'AbortError' ? '超时' : e.message) + '）', 4000);
+    // 说清楚连的是谁 —— 「Failed to fetch」本身不告诉人该去哪儿查
+    if (!quiet) toast('连不上桥（' + (e.name === 'AbortError' ? '超时' : e.message) +
+      '）· 地址 ' + (API || location.origin), 5000);
     return false;
   }
 }
 
 async function loadFromBridge(showToast) {
   try {
-    const r = await fetchT('/layout', {}, 6000);
+    const r = await fetchT(API + '/layout', {}, 6000);
     const j = await r.json();
     if (j.ok && j.layout) {
       scene = normalize(j.layout);
@@ -875,7 +889,7 @@ async function loadFromBridge(showToast) {
 
 async function loadBgList(showToast) {
   try {
-    const r = await fetchT('/layout/bg', {}, 5000);
+    const r = await fetchT(API + '/layout/bg', {}, 5000);
     const j = await r.json();
     if (j.ok && Array.isArray(j.files)) {
       renderBgPane._files = j.files;
@@ -893,8 +907,9 @@ async function uploadBg(file) {
   if (file.size > 12 * 1024 * 1024) { toast('图太大了，控制在 12MB 以内', 3000); return; }
   toast('正在上传…', 4000);
   try {
-    const r = await fetchT('/layout/bg?name=' + encodeURIComponent(file.name), {
-      method: 'POST', headers: { 'content-type': file.type || 'application/octet-stream' },
+    const r = await fetchT(API + '/layout/bg?name=' + encodeURIComponent(file.name), {
+      // 同样用 text/plain 绕开预检；桥按二进制原样落盘，不看 content-type
+      method: 'POST', headers: { 'content-type': 'text/plain;charset=UTF-8' },
       body: file,
     }, 30000);
     const j = await r.json();

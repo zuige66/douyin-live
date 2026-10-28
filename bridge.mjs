@@ -5218,6 +5218,20 @@ const server = http.createServer(async (req, res) => {
    *    实测：curl /music/auth → `404 D:\Workplace\zhibo\music\auth`。 */
   if (p.startsWith('/dy/') || p.startsWith('/gift/') || p.startsWith('/user/') || p.startsWith('/persona') || p.startsWith('/music/') || (p.startsWith('/media') && p !== '/media') || p === '/room' || p.startsWith('/room/') || p.startsWith('/reply/') || p.startsWith('/layout')) {
     res.setHeader('access-control-allow-origin', '*')
+    /* CORS 预检（2026-10-28 加）。
+     * editor.html 如果是从别的源打开的（双击本地文件 = Origin: null），
+     * 带 JSON 头的 POST 会先发一个 OPTIONS。以前这里没人答，
+     * 浏览器直接判成 "Failed to fetch" —— 面板上看着就是「连不上桥」，
+     * 但 GET 明明是通的（GET 不预检），所以特别难查。
+     * 现在编辑器那边改成了 text/plain（简单请求，根本不预检），这里是兜底。 */
+    if (req.method === 'OPTIONS') {
+      res.setHeader('access-control-allow-methods', 'GET, POST, OPTIONS')
+      res.setHeader('access-control-allow-headers', 'content-type')
+      res.setHeader('access-control-max-age', '600')
+      res.writeHead(204)
+      res.end()
+      return
+    }
     res.setHeader('content-type', 'application/json; charset=utf-8')
     let out
     try {
