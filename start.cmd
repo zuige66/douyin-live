@@ -1,13 +1,22 @@
 @echo off
 setlocal enableextensions
 cd /d "%~dp0"
-title Douyin Live Overlay - Bridge
+title Douyin Live - Console
 
-rem ---------------------------------------------------------------------------
-rem  Usage:
-rem    start.cmd              -> demo mode, fake danmaku, nothing leaves this PC
-rem    start.cmd 123456789    -> attach to a real live room
-rem ---------------------------------------------------------------------------
+rem =====================================================================
+rem  Double-click this file to start the live console.
+rem
+rem  It runs server.mjs on 127.0.0.1:18082 -- NOT the bridge.
+rem  The console opens the browser itself. The page has the
+rem  Start / Restart / Stop buttons, so the bridge no longer needs
+rem  to be launched by hand.
+rem
+rem  Want the bridge's own console window (debug only)?
+rem  Double-click start-bridge.cmd instead.
+rem
+rem  NOTE: keep this file ASCII-only. cmd.exe mis-parses UTF-8
+rem  Chinese inside rem/echo lines and tries to run them as commands.
+rem =====================================================================
 
 set "NODE_EXE="
 if exist "D:\Apps\node22\node.exe" set "NODE_EXE=D:\Apps\node22\node.exe"
@@ -27,23 +36,20 @@ if not defined NODE_EXE (
   exit /b 1
 )
 
-echo  node : %NODE_EXE%
-echo  dir  : %CD%
+echo.
+echo   node : %NODE_EXE%
+echo   dir  : %CD%
+echo.
+echo   Console : http://127.0.0.1:18082/   (opens automatically)
+echo   Keep this window open - closing it stops the bridge too.
+echo.
+echo  ---------------------------------------------------------------
 echo.
 
-if "%~1"=="" (
-  echo  mode : DEMO  ^(fake danmaku, never touches Douyin^)
-  echo.
-  "%NODE_EXE%" bridge.mjs --demo
-) else (
-  echo  mode : LIVE  room %~1
-  echo.
-  "%NODE_EXE%" bridge.mjs --rid %~1
-)
+"%NODE_EXE%" server.mjs --open
 
 echo.
 echo  ---------------------------------------------------------------
-echo  Bridge stopped. If it died on startup, the reason is above.
-echo  Press any key to close.
+echo   Console stopped. If it died on startup, the reason is above.
 echo  ---------------------------------------------------------------
 pause >nul
