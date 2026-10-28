@@ -5491,8 +5491,11 @@ const server = http.createServer(async (req, res) => {
   }
 
   // `/` 不再指向已删除的浏览器叠加层 index.html —— 生产画面走原生 Win32 窗口。
-  // 这里只回一个状态页，方便人直接开桥地址时看一眼有哪些接口/页面。
+  // 2026-10-28：根页面改成磁盘上的 home.html（M3E 控制台）。
+  // 放磁盘而不是内联字符串，改样式不用重启桥 —— 跟 settings.html 一个待遇。
   if (p === '/') {
+    const home = path.join(DIR, 'home.html')
+    if (fs.existsSync(home)) return serveFile(res, home)
     res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
     res.end(
       '<!doctype html><meta charset="utf-8"><title>大肥鱼弹幕桥</title>' +

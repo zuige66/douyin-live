@@ -36,6 +36,9 @@
 
   /* ── 顶部：状态点 + 名字 + 直播 chip ── */
   .head{display:flex;align-items:center;gap:10px;padding:0 8px;margin-bottom:16px}
+  .back{display:grid;place-items:center;width:38px;height:38px;flex:none;border-radius:999px;
+        background:var(--surface-2);color:var(--on-variant);text-decoration:none;font-size:16px}
+  .back:hover{background:var(--surface-3);color:var(--on-surface)}
   .dot{width:10px;height:10px;border-radius:50%;background:var(--muted);flex:none}
   .dot.on{background:var(--primary)}
   .dot.warn{background:var(--warn)}
@@ -140,6 +143,7 @@
 <body>
 <div class="wrap">
   <div class="head">
+    <a class="back" href="/" title="回控制台">←</a>
     <span class="dot" id="dot"></span>
     <span class="name" id="appName">音乐台</span>
     <span class="chip" id="liveChip">直播中</span>

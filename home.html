@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>大肥鱼 · 控制台</title>
+<style>
+  /* Material 3 Expressive · dark · teal
+     跟 settings.html / music.html 用同一套变量 —— 三个页面看起来得是一个产品。
+     规矩照旧：只用纯色，任何地方都不许出现渐变。 */
+  :root{
+    --surface:#0f1417;
+    --surface-1:#171d21;
+    --surface-2:#1d2429;
+    --surface-3:#262f35;
+    --surface-4:#313a41;
+    --on-surface:#dfe3e6;
+    --on-variant:#b3bcc1;
+    --primary:#7fddc4;
+    --on-primary:#00382c;
+    --primary-c:#005143;
+    --on-primary-c:#9bfbdf;
+    --warn:#f5c06b;
+    --warn-c:#4a3410;
+    --danger:#f2b8b5;
+    --muted:#6d777d;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{
+    background:var(--surface);color:var(--on-surface);
+    font:15px/1.45 "Google Sans",-apple-system,"Segoe UI","Microsoft YaHei",system-ui,sans-serif;
+    padding:40px 20px 64px;-webkit-font-smoothing:antialiased;
+    min-height:100%;
+  }
+  .wrap{width:100%;max-width:720px;margin:0 auto}
+
+  /* ── 头 ── */
+  .head{display:flex;align-items:center;gap:10px;padding:0 6px;margin-bottom:6px}
+  .dot{width:10px;height:10px;border-radius:50%;background:var(--muted);flex:none}
+  .dot.on{background:var(--primary)}
+  .dot.warn{background:var(--warn)}
+  .name{font-size:22px;font-weight:600;letter-spacing:-.3px;flex:1}
+  .chip{font-size:13px;font-weight:600;padding:6px 14px;border-radius:999px;
+        background:var(--surface-3);color:var(--on-variant);white-space:nowrap}
+  .chip.live{background:var(--primary-c);color:var(--on-primary-c)}
+  .sub{font-size:13px;color:var(--muted);padding:0 6px;margin-bottom:26px;
+       display:flex;gap:14px;flex-wrap:wrap}
+  .sub b{font-weight:600;color:var(--on-variant)}
+
+  /* ── 卡片 ── */
+  .card{
+    display:block;text-decoration:none;color:inherit;
+    background:var(--surface-1);border-radius:28px;padding:24px 26px;
+    margin-bottom:14px;transition:background .15s,transform .15s;
+    border:1px solid transparent;
+  }
+  .card:hover{background:var(--surface-2)}
+  .card:active{transform:scale(.995)}
+  .card.hero{
+    background:var(--primary-c);padding:28px 26px;
+  }
+  .card.hero:hover{background:#005c4c}
+  .card.hero .t{color:var(--on-primary-c)}
+  .card.hero .d{color:var(--on-primary-c);opacity:.75}
+  .card.hero .go{background:var(--primary);color:var(--on-primary)}
+  .t{font-size:16.5px;font-weight:600;display:flex;align-items:center;gap:10px}
+  .card.hero .t{font-size:20px;letter-spacing:-.2px}
+  .t .ico{width:22px;height:22px;flex:none;opacity:.9}
+  .card.hero .t .ico{width:24px;height:24px;opacity:1}
+  .d{font-size:13.5px;color:var(--muted);margin-top:6px;line-height:1.6;max-width:52ch}
+  .go{
+    display:inline-flex;align-items:center;gap:6px;margin-top:16px;
+    font-size:13px;font-weight:600;padding:8px 16px;border-radius:999px;
+    background:var(--surface-3);color:var(--on-surface);
+  }
+  .pair{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  @media (max-width:620px){.pair{grid-template-columns:1fr}}
+
+  /* ── 底部小链接 ── */
+  .foot{display:flex;gap:10px;flex-wrap:wrap;margin-top:20px;padding:0 6px}
+  .link{
+    font-size:12.5px;color:var(--muted);text-decoration:none;
+    padding:7px 13px;border-radius:999px;border:1px solid var(--surface-3);
+  }
+  .link:hover{color:var(--on-surface);border-color:var(--surface-4)}
+  .note{font-size:12px;color:var(--muted);margin-top:22px;padding:0 6px;line-height:1.8}
+  code{font-family:"Cascadia Mono",Consolas,monospace;font-size:12px;
+       background:var(--surface-2);padding:2px 6px;border-radius:6px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="head">
+    <div class="dot" id="dot"></div>
+    <div class="name">大肥鱼 · 控制台</div>
+    <div class="chip" id="liveChip">读取中…</div>
+  </div>
+  <div class="sub">
+    <span>本机 <b>127.0.0.1:18081</b></span>
+    <span id="statLine">—</span>
+  </div>
+
+  <a class="card hero" href="/editor.html">
+    <div class="t">
+      <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+        <rect x="3" y="3" width="7" height="7" rx="2"/><rect x="14" y="3" width="7" height="7" rx="2"/>
+        <rect x="3" y="14" width="7" height="7" rx="2"/><path d="M14 17.5h7M17.5 14v7"/>
+      </svg>
+      画面编辑器
+    </div>
+    <div class="d">拖组件、拉宽度、换背景、切配色。改完 1 秒内上画面，不用重启。</div>
+    <div class="go">打开编辑器 →</div>
+  </a>
+
+  <div class="pair">
+    <a class="card" href="/settings.html">
+      <div class="t">
+        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+          <circle cx="12" cy="12" r="3.2"/>
+          <path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-2.9 1.2V21a2 2 0 1 1-4 0v-.1A1.7 1.7 0 0 0 7 19.4a1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1A1.7 1.7 0 0 0 3 15a1.7 1.7 0 0 0-1.6-1H1a2 2 0 1 1 0-4h.1A1.7 1.7 0 0 0 3 9a1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1A1.7 1.7 0 0 0 9 3V3a2 2 0 1 1 4 0v.1A1.7 1.7 0 0 0 15 4.6a1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1A1.7 1.7 0 0 0 21 9h.1a2 2 0 1 1 0 4H21a1.7 1.7 0 0 0-1.6 1z"/>
+        </svg>
+        设置面板
+      </div>
+      <div class="d">用户记忆、人格性格、音源登录。</div>
+      <div class="go">打开设置 →</div>
+    </a>
+
+    <a class="card" href="/music.html">
+      <div class="t">
+        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+          <path d="M9 18V6l10-2v12"/><circle cx="6.5" cy="18" r="2.5"/><circle cx="16.5" cy="16" r="2.5"/>
+        </svg>
+        音乐台
+      </div>
+      <div class="d">当前曲目、点歌队列、播放控制。</div>
+      <div class="go">打开音乐台 →</div>
+    </a>
+  </div>
+
+  <div class="foot">
+    <a class="link" href="/state.json" target="_blank">状态快照 state.json</a>
+    <a class="link" href="/events" target="_blank">弹幕事件流 /events</a>
+  </div>
+
+  <div class="note">
+    画面走原生 Win32 窗口，不是浏览器 —— 直播伴侣里用「窗口捕捉」抓它。<br>
+    版式存在 <code>cache/layout.json</code>，编辑器保存后画面自己重建静态层。
+  </div>
+</div>
+
+<script>
+/* 头部状态：直播中 / 未开播 + 在线 + 本场时长。5 秒刷一次。 */
+(function () {
+  const dot = document.getElementById('dot');
+  const chip = document.getElementById('liveChip');
+  const line = document.getElementById('statLine');
+
+  function tick() {
+    fetch('/state.json', { cache: 'no-store' })
+      .then(r => r.json())
+      .then(s => {
+        const live = s.live || {};
+        const on = live.status === 'live';
+        dot.className = 'dot' + (on ? ' on' : '');
+        chip.className = 'chip' + (on ? ' live' : '');
+        chip.textContent = on ? '直播中' : (live.text || '未开播');
+        const sec = Number(s.sec || 0);
+        const mm = String(Math.floor(sec / 60)).padStart(2, '0');
+        const ss = String(sec % 60).padStart(2, '0');
+        line.textContent = '在线 ' + (s.online || 0) + ' · 本场 ' + mm + ':' + ss;
+      })
+      .catch(() => {
+        dot.className = 'dot warn';
+        chip.className = 'chip';
+        chip.textContent = '桥没响应';
+        line.textContent = '—';
+      });
+  }
+  tick();
+  setInterval(tick, 5000);
+})();
+</script>
+</body>
+</html>
