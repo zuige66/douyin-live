@@ -44,7 +44,7 @@
         background:var(--surface-3);color:var(--on-variant);white-space:nowrap}
   .chip.live{background:var(--primary-c);color:var(--on-primary-c)}
 
-  .tabs{display:flex;gap:8px;padding:0 8px 16px}
+  .tabs{display:flex;gap:8px;padding:0 8px 16px;flex-wrap:wrap}
   .tab{font-size:14px;font-weight:600;padding:9px 18px;border-radius:999px;cursor:pointer;
        background:var(--surface-2);color:var(--on-variant);border:none;font-family:inherit}
   .tab.on{background:var(--primary-c);color:var(--on-primary-c)}
@@ -123,6 +123,60 @@
   .out .len{font-size:11px;color:var(--muted);display:block;margin-top:6px}
 
   .hint{font-size:12px;color:var(--muted);line-height:1.7;margin-top:10px}
+
+  /* ══════════ 搬 DSH 面板过来的那几页要用的控件（2026-10-28） ══════════
+     只用纯色、只用 999px 胶囊和 16~18px 圆角，跟前面几页一个调子。 */
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  @media (max-width:600px){.grid2{grid-template-columns:1fr}}
+
+  /* 开关：方块开关不好点，M3 用胶囊 + 圆点位移 */
+  .swrow{display:flex;align-items:center;gap:12px;padding:12px 14px;border-radius:16px;
+         background:var(--surface-2);margin-top:10px}
+  .swrow .lbl{flex:1;font-size:14px;font-weight:600}
+  .swrow .tip{font-size:12px;color:var(--muted);font-weight:400;margin-top:3px;line-height:1.5}
+  .sw{position:relative;width:52px;height:30px;border-radius:999px;background:var(--surface-4);
+      border:none;cursor:pointer;flex:none;padding:0;transition:background .15s}
+  .sw::after{content:'';position:absolute;top:5px;left:5px;width:20px;height:20px;border-radius:50%;
+             background:var(--on-variant);transition:transform .15s,background .15s}
+  .sw[data-on]{background:var(--primary)}
+  .sw[data-on]::after{transform:translateX(22px);background:var(--on-primary)}
+  .sw:disabled{opacity:.45;cursor:not-allowed}
+
+  /* 滑杆一行：标签 + 滑杆 + 数字 */
+  .rng{display:flex;align-items:center;gap:12px;margin-top:12px}
+  .rng > label{width:104px;flex:none;font-size:13px;color:var(--on-variant)}
+  .rng input[type=range]{flex:1;accent-color:var(--primary);min-width:0}
+  .rng .val{width:56px;flex:none;text-align:right;font-size:13px;font-weight:600;
+            font-variant-numeric:tabular-nums}
+
+  /* 分段选择（回复档位那种三选一） */
+  .seg{display:inline-flex;background:var(--surface-2);border-radius:999px;padding:4px;gap:2px;flex-wrap:wrap}
+  .seg button{font:inherit;font-size:13px;font-weight:600;border:none;background:transparent;
+              color:var(--on-variant);padding:8px 15px;border-radius:999px;cursor:pointer}
+  .seg button[data-on]{background:var(--primary-c);color:var(--on-primary-c)}
+
+  /* 一排小数字（诊断页） */
+  .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(118px,1fr));gap:10px}
+  .stat{background:var(--surface-2);border-radius:16px;padding:12px 14px}
+  .stat .k{font-size:11.5px;color:var(--muted)}
+  .stat .v{font-size:18px;font-weight:600;margin-top:4px;font-variant-numeric:tabular-nums}
+
+  /* 档位卡（电脑页） */
+  .tier{background:var(--surface-2);border-radius:18px;padding:14px 16px;margin-top:10px}
+  .tier .th{display:flex;align-items:center;gap:10px;font-size:14px;font-weight:600}
+  .tier .badge{font-size:11px;font-weight:600;padding:3px 9px;border-radius:999px;
+               background:var(--surface-4);color:var(--on-variant);flex:none}
+  .tier .tr{display:flex;align-items:center;gap:10px;margin-top:10px;font-size:13px;color:var(--on-variant)}
+  .tier .tr > span{width:66px;flex:none}
+  .tier .tr input[type=number]{width:84px;flex:none;padding:7px 10px;border-radius:10px;font-size:13px}
+  .tier .tr input[type=range]{flex:1;accent-color:var(--primary);min-width:0}
+
+  .avatar{width:56px;height:56px;border-radius:50%;object-fit:cover;background:var(--surface-3);flex:none}
+  .kv2{display:grid;grid-template-columns:92px 1fr;gap:8px 14px;font-size:13px;margin-top:14px}
+  .kv2 .k{color:var(--muted)}
+  .kv2 .v{word-break:break-all}
+  .mono{font-family:"Cascadia Mono",Consolas,monospace;font-size:12px}
+
   .hide{display:none}
   .toast{position:fixed;left:50%;bottom:28px;transform:translateX(-50%);
          background:var(--surface-4);color:var(--on-surface);font-size:13px;font-weight:600;
@@ -140,13 +194,240 @@
   </div>
 
   <div class="tabs">
-    <button class="tab on" data-tab="users">用户记忆</button>
-    <button class="tab" data-tab="persona">人格性格</button>
+    <button class="tab on" data-tab="account">账号</button>
+    <button class="tab" data-tab="reply">回复</button>
+    <button class="tab" data-tab="gift">礼物</button>
+    <button class="tab" data-tab="computer">电脑</button>
+    <button class="tab" data-tab="sound">声音</button>
     <button class="tab" data-tab="music">音源</button>
+    <button class="tab" data-tab="users">记忆</button>
+    <button class="tab" data-tab="persona">人格</button>
+    <button class="tab" data-tab="diag">诊断</button>
   </div>
 
   <!-- ══════════════ 卡片 I：用户记忆 ══════════════ -->
-  <section id="tab-users">
+  <!-- ══════════════ ① 账号 ══════════════ -->
+  <section id="tab-account">
+    <div class="card">
+      <h2>抖音账号</h2>
+      <div class="sub" id="accSub">扫码登录一次，之后桥自己保活</div>
+      <div id="accBox"><div class="hint">正在问…</div></div>
+      <div id="accQr"></div>
+    </div>
+
+    <div class="card">
+      <h2>直播房间</h2>
+      <div class="sub">粘一条分享链接就行，桥自己认出房间号</div>
+      <div class="row">
+        <input type="text" id="roomIn" placeholder="https://live.douyin.com/208717515082，或直接填房间号">
+        <button class="btn pri" id="btnRoom">连上</button>
+      </div>
+      <div class="kv2" id="roomKv"></div>
+      <div class="row wrap" style="margin-top:14px">
+        <button class="btn ghost" id="btnRoomRe">重新识别</button>
+        <button class="btn ghost" id="btnRoomHard">硬重连</button>
+      </div>
+      <div class="hint">
+        「硬重连」用在监听灯还绿着、但一条弹幕都没有的时候 —— 上游偶尔会静默掉线。
+        重连必然让上游把历史弹幕再吐一遍，桥里有去重，不会重复回。
+      </div>
+    </div>
+  </section>
+
+  <!-- ══════════════ ② 回复 ══════════════ -->
+  <section id="tab-reply" class="hide">
+    <div class="card">
+      <h2>回复档位</h2>
+      <div class="sub" id="modeSub">正在问…</div>
+      <div class="seg" id="modeSeg">
+        <button data-mode="flash">DeepSeek flash</button>
+        <button data-mode="dsh">DSH 转发</button>
+        <button data-mode="local">本地话术</button>
+      </div>
+      <div class="hint">
+        改完<b>下一条弹幕</b>就走新档，不用重启桥。重启后会回到 <code>llm.json</code> 里写的那一档 ——
+        想永久生效就改那个文件。
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>两条之间隔多久</h2>
+      <div class="sub">连着回两条像刷屏；间隔太长发完上一条就冷场了</div>
+      <div class="rng">
+        <label>间隔</label>
+        <input type="range" id="gapRng" min="0.5" max="15" step="0.5" value="2.5">
+        <span class="val" id="gapVal">2.5s</span>
+      </div>
+      <div class="row" style="margin-top:16px"><button class="btn pri" id="btnGap">保存</button></div>
+    </div>
+  </section>
+
+  <!-- ══════════════ ③ 礼物 ══════════════ -->
+  <section id="tab-gift" class="hide">
+    <div class="card">
+      <h2>礼物感谢</h2>
+      <div class="sub">收到礼物要不要念一句</div>
+      <div class="swrow">
+        <div class="lbl">开礼物感谢<div class="tip">关掉之后礼物只放素材，不说话</div></div>
+        <button class="sw" id="giftOn"></button>
+      </div>
+      <div class="swrow">
+        <div class="lbl">让模型自己说<div class="tip">关掉就用下面的模板套，省 token</div></div>
+        <button class="sw" id="giftLlm"></button>
+      </div>
+      <div class="grid2" style="margin-top:14px">
+        <div class="field" style="margin-top:0"><label>冷却（秒）</label>
+          <input type="number" id="giftCd" min="0" max="600"></div>
+        <div class="field" style="margin-top:0"><label>同一人重复送，几秒内只念一次</label>
+          <input type="number" id="giftDedupe" min="0" max="3600"></div>
+      </div>
+      <div class="field">
+        <label>话术模板（<code>{user}</code> 昵称 · <code>{gift}</code> 礼物名 · <code>{n}</code> 数量）</label>
+        <textarea id="giftTpl" placeholder="谢谢 {user} 的 {gift}，爱你哟～"></textarea>
+      </div>
+      <div class="row" style="margin-top:14px">
+        <button class="btn pri" id="btnGift">保存这一页</button>
+        <span class="hint" id="giftStat" style="margin-top:0"></span>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>礼物名 → 档位</h2>
+      <div class="sub">决定这个礼物播哪一档素材。1 档最轻、4 档最重（档位本身在「电脑」页配）</div>
+      <div id="giftMapBox"><div class="hint">正在读…</div></div>
+      <div class="row" style="margin-top:14px">
+        <input type="text" id="gmName" placeholder="礼物名，例如 小心心">
+        <select id="gmTier" style="width:112px;flex:none">
+          <option value="1">1 档</option><option value="2">2 档</option>
+          <option value="3">3 档</option><option value="4">4 档</option>
+        </select>
+        <button class="btn" id="btnGmAdd">加上</button>
+      </div>
+      <div class="hint">
+        认不出的礼物走「电脑」页的默认档位。想让 1–4 档混着随机抽，
+        就在「电脑」页打开「礼物不分档」—— 那样子就不看礼物名了。
+      </div>
+    </div>
+  </section>
+
+  <!-- ══════════════ ④ 电脑 ══════════════ -->
+  <section id="tab-computer" class="hide">
+    <div class="card">
+      <h2>素材区</h2>
+      <div class="sub">右边那台显示器里放什么</div>
+      <div class="swrow">
+        <div class="lbl">收到礼物就放素材<div class="tip">关掉之后礼物只说话，不切画面</div></div>
+        <button class="sw" id="mdOn"></button>
+      </div>
+      <div class="field">
+        <label>没有素材在放的时候显示什么</label>
+        <select id="mdIdle">
+          <option value="standby">待机（深色 + 时钟）</option>
+          <option value="black">纯黑</option>
+          <option value="wallpaper">桌面壁纸</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>档位参数</h2>
+      <div class="sub">档位 = 素材文件名开头那个数字。<code>0-</code> 是闲时/点播，<code>1-</code>~<code>4-</code> 是礼物</div>
+      <div id="tierBox"><div class="hint">正在读…</div></div>
+      <div class="row" style="margin-top:16px"><button class="btn pri" id="btnTier">保存这一页</button></div>
+      <div class="hint">
+        时长上限是<b>解码层</b>截断的：设 20 秒就只解码前 21 秒，看起来像自然播完
+        （日志里写「画面播完」）。改完立刻生效，不用重启。
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>规则</h2>
+      <div class="swrow">
+        <div class="lbl">高档打断低档<div class="tip">4 档礼物来了，正在放的 1 档要不要让位</div></div>
+        <button class="sw" id="rInt"></button>
+      </div>
+      <div class="swrow">
+        <div class="lbl">说话时压音乐<div class="tip">她开口的时候把背景音乐压到「声音」页那个深度</div></div>
+        <button class="sw" id="rDuck"></button>
+      </div>
+      <div class="swrow">
+        <div class="lbl">礼物不分档<div class="tip">打开后不看礼物名，1–4 档混着随机抽</div></div>
+        <button class="sw" id="rFlat"></button>
+      </div>
+      <div class="swrow">
+        <div class="lbl">0 档放完为止<div class="tip">开着：她说话只把视频音量压低，礼物来了排队不顶掉。关着：说一句话就把视频切走</div></div>
+        <button class="sw" id="rIdleFull"></button>
+      </div>
+      <div class="grid2" style="margin-top:14px">
+        <div class="field" style="margin-top:0"><label>冷却（秒）· 两次礼物之间至少隔多久</label>
+          <input type="number" id="rCd" min="0" max="600"></div>
+        <div class="field" style="margin-top:0"><label>队列上限</label>
+          <input type="number" id="rMaxQ" min="1" max="20"></div>
+      </div>
+      <div class="field">
+        <label>同一档连着来，怎么办</label>
+        <select id="rSame">
+          <option value="queue">排队，一个个放</option>
+          <option value="merge">合并，只放一个</option>
+        </select>
+      </div>
+      <div class="row" style="margin-top:16px"><button class="btn pri" id="btnRules">保存这一页</button></div>
+    </div>
+
+    <div class="card">
+      <h2>闲时自动放</h2>
+      <div class="sub">没人说话的时候自己放点素材，别让画面一直死着</div>
+      <div class="swrow">
+        <div class="lbl">开着<div class="tip">安静够久就自动放一段 0 档素材</div></div>
+        <button class="sw" id="ipOn"></button>
+      </div>
+      <div class="grid2" style="margin-top:14px">
+        <div class="field" style="margin-top:0"><label>安静多少秒算闲（10–3600）</label>
+          <input type="number" id="ipQuiet" min="10" max="3600"></div>
+        <div class="field" style="margin-top:0"><label>两条之间隔多少秒（30–7200）</label>
+          <input type="number" id="ipGap" min="30" max="7200"></div>
+      </div>
+      <div class="field"><label>开播多少秒后才开始（0–3600）</label>
+        <input type="number" id="ipStart" min="0" max="3600"></div>
+      <div class="row" style="margin-top:16px"><button class="btn pri" id="btnIdlePlay">保存这一页</button></div>
+    </div>
+
+    <div class="card">
+      <h2>素材列表</h2>
+      <div class="sub" id="mdListSub">正在扫…</div>
+      <div id="mdList"></div>
+      <div class="row wrap" style="margin-top:14px">
+        <button class="btn ghost" id="btnMdScan">重新扫</button>
+        <button class="btn danger" id="btnMdStop">停下</button>
+      </div>
+      <div class="hint">素材放在 <code>media/</code>，文件名开头写档位数字。刚丢进去的新文件点「重新扫」就能看到。</div>
+    </div>
+  </section>
+
+  <!-- ══════════════ ⑤ 声音 ══════════════ -->
+  <section id="tab-sound" class="hide">
+    <div class="card">
+      <h2>四个音量</h2>
+      <div class="sub">都是 0–100。素材音量是<b>乘</b>在档位音量上的，不是直接替换</div>
+      <div class="rng"><label>她说话</label><input type="range" id="avVoice" min="0" max="100"><span class="val" id="avVoiceV">—</span></div>
+      <div class="rng"><label>素材视频</label><input type="range" id="avMedia" min="0" max="100"><span class="val" id="avMediaV">—</span></div>
+      <div class="rng"><label>音乐基准</label><input type="range" id="avMusic" min="0" max="100"><span class="val" id="avMusicV">—</span></div>
+      <div class="rng"><label>说话时压到</label><input type="range" id="avDuck" min="0" max="100"><span class="val" id="avDuckV">—</span></div>
+      <div class="row" style="margin-top:18px"><button class="btn pri" id="btnAudio">保存</button></div>
+      <div class="hint">「说话时压到」同时也是说完之后恢复的目标音量。音乐基准改了会立刻落到播放器上，不用等下一首。</div>
+    </div>
+
+    <div class="card">
+      <h2>背景音乐</h2>
+      <div class="swrow">
+        <div class="lbl">总开关<div class="tip">关掉会把播放器按停并清空快照，不是只静音</div></div>
+        <button class="sw" id="musicOnSw"></button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══════════════ ⑦ 记忆 ══════════════ -->
+  <section id="tab-users" class="hide">
     <div class="card">
       <h2>用户记忆</h2>
       <div class="sub" id="userSub">按抖音 uid 记账，只存本机</div>
@@ -270,6 +551,34 @@
       <div class="out" id="testOut">还没测</div>
     </div>
   </section>
+
+  <!-- ══════════════ ⑨ 诊断 ══════════════ -->
+  <section id="tab-diag" class="hide">
+    <div class="card">
+      <h2>桥和直播间</h2>
+      <div class="sub" id="diagSub">正在问…</div>
+      <div class="stats" id="diagStats"></div>
+      <div class="row wrap" style="margin-top:16px">
+        <button class="btn ghost" id="btnDiag">刷新</button>
+        <a class="btn ghost" href="/state.json" target="_blank">state.json</a>
+        <a class="btn ghost" href="/events" target="_blank">事件流</a>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>模型调用</h2>
+      <div class="sub">缓存命中率和失败次数 —— 命中率掉下来就该怀疑额度或 key</div>
+      <div class="stats" id="llmStats"></div>
+      <div class="hint" id="llmWhy"></div>
+    </div>
+
+    <div class="card">
+      <h2>礼物通道</h2>
+      <div class="sub">礼物事件是单独一条流，它断了弹幕还在，最容易漏看</div>
+      <div class="stats" id="giftChStats"></div>
+      <div class="hint" id="giftChWhy"></div>
+    </div>
+  </section>
 </div>
 <div class="toast" id="toast"></div>
 
@@ -299,9 +608,25 @@ document.querySelectorAll('.tab').forEach((btn) => {
     document.querySelectorAll('section[id^="tab-"]').forEach((s) => {
       s.classList.toggle('hide', s.id !== 'tab-' + btn.dataset.tab)
     })
-    if (btn.dataset.tab === 'music') loadSrc()
+    runLoader(btn.dataset.tab)
   }
 })
+
+/* 每页自己的取数函数。**切到哪页才取哪页** —— 九页一起发请求，开页面就卡一下。
+   用 function 声明（会提升），所以上面的点击处理现在就能引用到。 */
+function runLoader(key) {
+  try {
+    if (key === 'account') loadAccount()
+    else if (key === 'reply') loadReply()
+    else if (key === 'gift') loadGift()
+    else if (key === 'computer') { loadMedia(); loadMediaList() }
+    else if (key === 'sound') loadMedia()
+    else if (key === 'music') loadSrc()
+    else if (key === 'users') loadUsers()
+    else if (key === 'persona') loadPersona()
+    else if (key === 'diag') loadDiag()
+  } catch (e) { toast('这一页没打开：' + e.message) }
+}
 
 /* ══════════════════ 用户记忆 ══════════════════ */
 function ago(ms) {
@@ -648,9 +973,499 @@ $('pTest').onkeydown = (e) => { if (e.key === 'Enter') $('btnTest').click() }
 $('btnSearch').onclick = loadUsers
 $('q').onkeydown = (e) => { if (e.key === 'Enter') loadUsers() }
 
+/* ══════════════════════════════════════════════════════════════════════
+   下面这几页是把 DSH 插件的面板搬过来的（2026-10-28）。
+   为什么要搬：那些设置本来就存在桥里，插件只是个转发壳 —— 桥自己有端口，
+   网页直连就行，不用为了改个音量去开 DSH。
+
+   两个小工具先说清楚：
+   · 开关是 <button class="sw">，状态存在 data-on 这个属性上（有=开）
+   · 所有保存都必须有超时，否则桥卡住时按钮会永久变灰、还不报错
+   ══════════════════════════════════════════════════════════════════════ */
+const swOn = (id, on) => {
+  const e = $(id)
+  if (on) e.setAttribute('data-on', '')
+  else e.removeAttribute('data-on')
+}
+const swVal = (id) => $(id).hasAttribute('data-on')
+/* 翻转后把新值交给回调；回调失败要自己把开关拨回去，别让它显示成存过了 */
+function swBind(id, onChange) {
+  const e = $(id)
+  e.onclick = async () => {
+    const on = !e.hasAttribute('data-on')
+    swOn(id, on)
+    try { await onChange(on) } catch (err) { swOn(id, !on); toast('没存上：' + err.message) }
+  }
+}
+/* 带超时的 fetch —— 桥卡住时不能让界面永远「保存中…」 */
+async function apiT(path, opt, ms) {
+  const c = new AbortController()
+  const t = setTimeout(() => c.abort(), ms || 8000)
+  try { return await api(path, Object.assign({}, opt, { signal: c.signal })) }
+  finally { clearTimeout(t) }
+}
+const postT = (path, body, ms) =>
+  apiT(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }, ms)
+
+/* ══════════════════ ① 账号 ══════════════════ */
+let qrTimer = null
+
+async function loadAccount() {
+  try {
+    const s = await apiT('/dy/status')
+    const p = s.profile || {}
+    if (s.loggedIn && p.nickname) {
+      $('accSub').textContent = '已登录 · 桥自己保活，不用管它'
+      $('accBox').innerHTML = `<div class="row">
+        <img class="avatar" src="${esc(p.avatar || '')}" alt="">
+        <div style="flex:1;min-width:0">
+          <div style="font-size:16px;font-weight:600">${esc(p.nickname)}</div>
+          <div class="hint" style="margin-top:4px">
+            抖音号 ${esc(p.uniqueId || '—')} · 粉丝 ${p.fans == null ? '—' : p.fans} · 关注 ${p.following == null ? '—' : p.following}
+          </div>
+        </div>
+        <button class="btn ghost" id="btnRelogin">重新登录</button>
+      </div>`
+      $('btnRelogin').onclick = () => startQr()
+    } else {
+      $('accSub').textContent = s.why ? '没登录：' + s.why : '还没登录，扫一下码'
+      $('accBox').innerHTML = `<div class="row">
+        <button class="btn pri" id="btnQr">扫码登录</button>
+        <span class="hint" style="margin-top:0">用抖音 App 扫，扫完手机上点「确认登录」</span></div>`
+      $('btnQr').onclick = () => startQr()
+    }
+  } catch (e) {
+    $('accSub').textContent = '桥没回话'
+    $('accBox').innerHTML = `<div class="hint">${esc(e.name === 'AbortError' ? '超时（桥可能在忙）' : e.message)}</div>`
+  }
+  loadRoom()
+}
+
+async function startQr() {
+  clearInterval(qrTimer)
+  $('accQr').innerHTML = '<div class="hint" style="margin-top:12px">取二维码…</div>'
+  try {
+    const r = await apiT('/dy/qr', {}, 20000)
+    if (!r.ok) {
+      $('accQr').innerHTML = `<div class="hint" style="margin-top:12px">${esc(r.error || '取不到二维码')}</div>`
+      return
+    }
+    $('accQr').innerHTML = `
+      <div class="qrwrap" style="margin-top:16px"><img src="${r.img}" alt="抖音登录二维码"></div>
+      <div class="hint" id="qrTip">用抖音 App 扫，扫完在手机上点「确认登录」</div>`
+    qrTimer = setInterval(async () => {
+      try {
+        const p = await apiT('/dy/qr/poll?token=' + encodeURIComponent(r.token), {}, 8000)
+        if (p.state === 'confirmed') {
+          clearInterval(qrTimer)
+          $('accQr').innerHTML = '<div class="hint" style="margin-top:12px">登录成功，正在读账号…</div>'
+          setTimeout(loadAccount, 1500)
+        } else if (p.state === 'scanned') {
+          const t = $('qrTip')
+          if (t) t.textContent = '已扫码，在手机上点「确认登录」'
+        } else if (p.state === 'expired') {
+          clearInterval(qrTimer)
+          $('accQr').innerHTML = '<div class="hint" style="margin-top:12px">二维码过期了，点上面的「重新登录」再取一张</div>'
+        }
+      } catch (e) { /* 轮询失败就等下一拍，别把人踢回第一步 */ }
+    }, 2000)
+  } catch (e) {
+    $('accQr').innerHTML = `<div class="hint" style="margin-top:12px">${esc(e.name === 'AbortError' ? '取码超时' : e.message)}</div>`
+  }
+}
+
+async function loadRoom() {
+  try {
+    const r = await apiT('/room')
+    if (!r.ok) { $('roomKv').innerHTML = ''; return }
+    const st = r.status === 'live' ? '直播中' : (r.statusText || r.status || '—')
+    $('roomKv').innerHTML = `
+      <div class="k">房间号</div><div class="v mono">${esc(r.webRid || r.target || '—')}</div>
+      <div class="k">状态</div><div class="v">${esc(st)}${r.idle ? '（待机中，每 30 秒重试）' : ''}</div>
+      <div class="k">标题</div><div class="v">${esc(r.title || '—')}</div>
+      <div class="k">房间 id</div><div class="v mono">${esc(r.roomId || '—')}</div>`
+    if (r.webRid) $('roomIn').placeholder = r.webRid
+  } catch (e) { /* 房间读不到不影响别的，静默 */ }
+}
+
+$('btnRoom').onclick = async () => {
+  const v = $('roomIn').value.trim()
+  if (!v) return toast('先粘一条链接或房间号')
+  $('btnRoom').disabled = true
+  try {
+    const o = await postT('/room/set', { room: v }, 25000)
+    toast(o.ok ? '连上了' : (o.error || '连不上'))
+    if (o.ok) { $('roomIn').value = ''; loadRoom() }
+  } catch (e) { toast(e.name === 'AbortError' ? '超时：上游没回话' : '连不上：' + e.message) }
+  finally { $('btnRoom').disabled = false }
+}
+$('btnRoomRe').onclick = async () => {
+  try { const o = await apiT('/room/refresh', {}, 25000); toast(o.ok ? '识别完了' : (o.error || '没认出来')); loadRoom() }
+  catch (e) { toast('没认出来：' + e.message) }
+}
+$('btnRoomHard').onclick = async () => {
+  try { const o = await apiT('/room/refresh?force=1', {}, 25000); toast(o.ok ? '已硬重连' : (o.error || '重连失败')); loadRoom() }
+  catch (e) { toast('重连失败：' + e.message) }
+}
+
+/* ══════════════════ ② 回复 ══════════════════ */
+async function loadReply() {
+  try {
+    const m = await apiT('/reply/mode')
+    const text = m.text || '—'
+    $('modeSub').textContent = text
+    /* 桥的 GET 只回一句话（"模型 xxx @ https://…" / "dsh → xxx" / "本地话术（…）"），
+       没有单独的 mode 字段。这里按前缀认，认不出就不高亮 —— 别猜一个假的选中态。 */
+    const cur = /^本地话术/.test(text) ? 'local' : (/^dsh/i.test(text) ? 'dsh' : 'flash')
+    document.querySelectorAll('#modeSeg button').forEach((b) => {
+      if (b.dataset.mode === cur) b.setAttribute('data-on', '')
+      else b.removeAttribute('data-on')
+    })
+    const g = await apiT('/reply/gap')
+    if (Number.isFinite(+g.sec)) {
+      $('gapRng').value = g.sec
+      $('gapVal').textContent = (+g.sec).toFixed(1) + 's'
+    }
+  } catch (e) { $('modeSub').textContent = '桥没回话：' + (e.name === 'AbortError' ? '超时' : e.message) }
+}
+
+document.querySelectorAll('#modeSeg button').forEach((b) => {
+  b.onclick = async () => {
+    b.disabled = true
+    try {
+      const o = await postT('/reply/mode', { mode: b.dataset.mode })
+      toast(o.ok ? '切到 ' + (o.text || b.dataset.mode) : (o.error || o.why || '切不了'))
+      if (o.ok) loadReply()
+    } catch (e) { toast('切不了：' + e.message) } finally { b.disabled = false }
+  }
+})
+
+$('gapRng').oninput = () => { $('gapVal').textContent = (+$('gapRng').value).toFixed(1) + 's' }
+$('btnGap').onclick = async () => {
+  $('btnGap').disabled = true
+  try {
+    const o = await postT('/reply/gap', { sec: +$('gapRng').value })
+    toast(o.ok ? `两条之间改成 ${(+o.sec).toFixed(1)} 秒` : (o.error || '存不下'))
+  } catch (e) { toast('存不下：' + e.message) } finally { $('btnGap').disabled = false }
+}
+
+/* ══════════════════ ③ 礼物 ══════════════════ */
+let GMAP = {}
+
+async function loadGift() {
+  try {
+    const r = await apiT('/gift/cfg')
+    const c = r.cfg || {}
+    swOn('giftOn', c.on !== false)
+    swOn('giftLlm', c.useLlm !== false)
+    $('giftCd').value = c.cooldown == null ? 0 : c.cooldown
+    $('giftDedupe').value = c.dedupe == null ? 120 : c.dedupe
+    $('giftTpl').value = c.template || ''
+    const st = r.stat || {}
+    $('giftStat').textContent = `本场收到 ${st.gift || 0} 个 · 谢了 ${st.thanked || 0} 次`
+  } catch (e) { toast('读礼物设置失败：' + (e.name === 'AbortError' ? '超时' : e.message)) }
+  loadGiftMap()
+}
+
+async function loadGiftMap() {
+  try {
+    const r = await apiT('/media/box')
+    GMAP = Object.assign({}, (r.cfg && r.cfg.giftMap) || {})
+    renderGiftMap()
+  } catch (e) { $('giftMapBox').innerHTML = '<div class="hint">读不到：' + esc(e.message) + '</div>' }
+}
+
+function renderGiftMap() {
+  const keys = Object.keys(GMAP).sort((a, b) => GMAP[a] - GMAP[b] || a.localeCompare(b, 'zh'))
+  if (!keys.length) {
+    $('giftMapBox').innerHTML = '<div class="hint">还没有映射。认不出的礼物走默认档位。</div>'
+    return
+  }
+  $('giftMapBox').innerHTML = `<div class="row wrap" style="gap:8px">` + keys.map((k) =>
+    `<span class="chip" style="cursor:pointer" data-gm="${esc(k)}" title="点一下删掉">${esc(k)} → ${GMAP[k]} 档 ✕</span>`
+  ).join('') + `</div>`
+  $('giftMapBox').querySelectorAll('[data-gm]').forEach((el) => {
+    el.onclick = async () => {
+      const name = el.dataset.gm
+      delete GMAP[name]
+      renderGiftMap()
+      await saveGiftMap()
+    }
+  })
+}
+
+async function saveGiftMap() {
+  try {
+    const o = await postT('/media/config', { giftMap: GMAP }, 12000)
+    if (!o.ok) { toast(o.error || '映射没存上'); return false }
+    return true
+  } catch (e) { toast('映射没存上：' + e.message); return false }
+}
+
+$('btnGmAdd').onclick = async () => {
+  const name = $('gmName').value.trim()
+  if (!name) return toast('先填礼物名')
+  GMAP[name] = Number($('gmTier').value) || 1
+  $('gmName').value = ''
+  renderGiftMap()
+  if (await saveGiftMap()) toast(`${name} → ${GMAP[name]} 档`)
+}
+
+$('btnGift').onclick = async () => {
+  $('btnGift').disabled = true
+  try {
+    const o = await postT('/gift/cfg', {
+      on: swVal('giftOn'),
+      useLlm: swVal('giftLlm'),
+      cooldown: Number($('giftCd').value) || 0,
+      dedupe: Number($('giftDedupe').value) || 0,
+      template: $('giftTpl').value,
+    })
+    toast(o.ok ? '存好了' : (o.error || '存不下'))
+    if (o.ok) loadGift()
+  } catch (e) { toast('存不下：' + e.message) } finally { $('btnGift').disabled = false }
+}
+
+/* ══════════════════ ④ 电脑 / ⑤ 声音 ══════════════════
+   这两页读的是同一份 /media/box，一次取回来各自填。 */
+let MCFG = null
+const TIER_LABEL = { 0: '闲时 / 点播', 1: '1 档 · 最轻', 2: '2 档', 3: '3 档', 4: '4 档 · 最重' }
+const TIER_MODE = { sequence: '顺序放', random: '随机抽' }
+
+async function loadMedia() {
+  let r
+  try { r = await apiT('/media/box') } catch (e) {
+    toast('读不到媒体设置：' + (e.name === 'AbortError' ? '超时' : e.message)); return
+  }
+  const cfg = r.cfg || {}
+  MCFG = cfg
+  /* — 电脑页 — */
+  swOn('mdOn', cfg.on !== false)
+  $('mdIdle').value = cfg.idle || 'standby'
+  renderTiers(cfg.tiers || {})
+  const ru = cfg.rules || {}
+  swOn('rInt', ru.interrupt !== false)
+  swOn('rDuck', ru.duckMusic !== false)
+  swOn('rFlat', !!ru.flatGift)
+  swOn('rIdleFull', ru.idleFull !== false)
+  $('rCd').value = ru.cooldown == null ? 3 : ru.cooldown
+  $('rMaxQ').value = ru.maxQueue == null ? 5 : ru.maxQueue
+  $('rSame').value = ru.sameTier === 'merge' ? 'merge' : 'queue'
+  const ip = cfg.idlePlay || {}
+  swOn('ipOn', !!ip.on)
+  $('ipQuiet').value = ip.quietSec == null ? 100 : ip.quietSec
+  $('ipGap').value = ip.gapSec == null ? 240 : ip.gapSec
+  $('ipStart').value = ip.startSec == null ? 120 : ip.startSec
+  /* — 声音页 — */
+  const a = cfg.audio || {}
+  for (const [id, key] of [['avVoice', 'voice'], ['avMedia', 'media'], ['avMusic', 'music'], ['avDuck', 'duck']]) {
+    const v = a[key] == null ? 100 : a[key]
+    $(id).value = v
+    $(id + 'V').textContent = v + '%'
+  }
+  swOn('musicOnSw', !!cfg.musicOn)
+}
+
+function renderTiers(tiers) {
+  $('tierBox').innerHTML = [0, 1, 2, 3, 4].map((t) => {
+    const d = tiers[t] || tiers[String(t)] || {}
+    const vol = d.volume == null ? 1 : d.volume
+    return `<div class="tier" data-tier="${t}">
+      <div class="th">${esc(TIER_LABEL[t])}<span class="badge">${esc(TIER_MODE[d.mode] || d.mode || '随机抽')}</span></div>
+      <div class="tr"><span>音量</span>
+        <input type="range" data-k="volume" min="0" max="100" value="${Math.round(vol * 100)}">
+        <b data-v style="width:44px;text-align:right">${Math.round(vol * 100)}%</b></div>
+      <div class="tr"><span>时长上限</span>
+        <input type="number" data-k="maxSec" min="1" max="600" value="${d.maxSec == null ? 30 : d.maxSec}">
+        <span style="width:auto">秒</span></div>
+    </div>`
+  }).join('')
+  $('tierBox').querySelectorAll('.tier').forEach((box) => {
+    const rng = box.querySelector('input[data-k="volume"]')
+    const out = box.querySelector('[data-v]')
+    rng.oninput = () => { out.textContent = rng.value + '%' }
+  })
+}
+
+$('btnTier').onclick = async () => {
+  const tiers = {}
+  $('tierBox').querySelectorAll('.tier').forEach((box) => {
+    const t = Number(box.dataset.tier)
+    tiers[t] = {
+      volume: Number(box.querySelector('input[data-k="volume"]').value) / 100,
+      maxSec: Number(box.querySelector('input[data-k="maxSec"]').value) || 30,
+    }
+  })
+  $('btnTier').disabled = true
+  try {
+    const o = await postT('/media/config', { tiers }, 12000)
+    toast(o.ok ? '档位存好了，立刻生效' : (o.error || '存不下'))
+  } catch (e) { toast('存不下：' + e.message) } finally { $('btnTier').disabled = false }
+}
+
+$('btnRules').onclick = async () => {
+  $('btnRules').disabled = true
+  try {
+    const o = await postT('/media/config', {
+      rules: {
+        interrupt: swVal('rInt'), duckMusic: swVal('rDuck'),
+        flatGift: swVal('rFlat'), idleFull: swVal('rIdleFull'),
+        cooldown: Number($('rCd').value) || 0,
+        maxQueue: Number($('rMaxQ').value) || 1,
+        sameTier: $('rSame').value,
+      },
+    }, 12000)
+    toast(o.ok ? '规则存好了' : (o.error || '存不下'))
+  } catch (e) { toast('存不下：' + e.message) } finally { $('btnRules').disabled = false }
+}
+
+$('btnIdlePlay').onclick = async () => {
+  $('btnIdlePlay').disabled = true
+  try {
+    const o = await postT('/media/config', {
+      idlePlay: {
+        on: swVal('ipOn'),
+        quietSec: Number($('ipQuiet').value) || 100,
+        gapSec: Number($('ipGap').value) || 240,
+        startSec: Number($('ipStart').value) || 0,
+      },
+    }, 12000)
+    toast(o.ok ? '闲时设置存好了' : (o.error || '存不下'))
+  } catch (e) { toast('存不下：' + e.message) } finally { $('btnIdlePlay').disabled = false }
+}
+
+/* 这两个开关是「一点就存」的，不像上面那些要按保存 —— 它们只有一个值，多一步没意义 */
+swBind('mdOn', async (on) => {
+  const o = await postT('/media/config', { on }, 12000)
+  if (!o.ok) throw new Error(o.error || '存不下')
+  toast(on ? '素材区开着' : '素材区关了')
+})
+swBind('musicOnSw', async (on) => {
+  const o = await postT('/media/config', { musicOn: on }, 12000)
+  if (!o.ok) throw new Error(o.error || '存不下')
+  toast(on ? '背景音乐开了' : '背景音乐关了')
+})
+
+/* 待机画面改完立刻存 —— 下拉框只有一个值，再要人点一次保存是多余的 */
+$('mdIdle').onchange = async () => {
+  try {
+    const o = await postT('/media/config', { idle: $('mdIdle').value }, 12000)
+    toast(o.ok ? '待机画面改了' : (o.error || '存不下'))
+  } catch (e) { toast('存不下：' + e.message) }
+}
+
+async function loadMediaList() {
+  let r
+  try { r = await apiT('/media/list') } catch (e) {
+    $('mdListSub').textContent = '扫不到：' + e.message; return
+  }
+  if (!r.ok) { $('mdListSub').textContent = r.error || '扫不到'; return }
+  const byTier = r.byTier || {}
+  let total = 0
+  const parts = []
+  for (const t of [0, 1, 2, 3, 4]) {
+    const arr = byTier[t] || byTier[String(t)] || []
+    total += arr.length
+    if (!arr.length) {
+      parts.push(`<div class="tier"><div class="th">${esc(TIER_LABEL[t])}<span class="badge">空</span></div>
+        <div class="hint" style="margin-top:6px">这个档位还没有素材 —— 丢一个 <code>${t}-名字.mp4</code> 进 media/ 就行</div></div>`)
+      continue
+    }
+    parts.push(`<div class="tier"><div class="th">${esc(TIER_LABEL[t])}<span class="badge">${arr.length} 个</span></div>
+      <div class="row wrap" style="gap:8px;margin-top:10px">` +
+      arr.map((f) => `<span class="chip" style="cursor:pointer" data-play="${esc(f.file)}" title="点一下试播">${esc(f.name)}</span>`).join('') +
+      `</div></div>`)
+  }
+  $('mdListSub').textContent = `${r.dir || 'media/'} · 一共 ${total} 个文件`
+  $('mdList').innerHTML = parts.join('')
+  $('mdList').querySelectorAll('[data-play]').forEach((el) => {
+    el.onclick = async () => {
+      try {
+        const o = await postT('/media/play', { file: el.dataset.play }, 12000)
+        toast(o.ok ? '播了' : (o.error || '播不了'))
+      } catch (e) { toast('播不了：' + e.message) }
+    }
+  })
+}
+$('btnMdScan').onclick = () => { loadMediaList(); loadMedia(); toast('重新扫了') }
+$('btnMdStop').onclick = async () => {
+  try { const o = await postT('/media/stop', {}, 12000); toast(o.ok ? '停了' : (o.error || '停不下')) }
+  catch (e) { toast('停不下：' + e.message) }
+}
+
+/* ══════════════════ ⑤ 声音 ══════════════════ */
+for (const id of ['avVoice', 'avMedia', 'avMusic', 'avDuck']) {
+  $(id).oninput = () => { $(id + 'V').textContent = $(id).value + '%' }
+}
+$('btnAudio').onclick = async () => {
+  $('btnAudio').disabled = true
+  try {
+    const o = await postT('/media/config', {
+      audio: {
+        voice: +$('avVoice').value, media: +$('avMedia').value,
+        music: +$('avMusic').value, duck: +$('avDuck').value,
+      },
+    }, 12000)
+    toast(o.ok ? '音量存好了，立刻生效' : (o.error || '存不下'))
+  } catch (e) { toast('存不下：' + e.message) } finally { $('btnAudio').disabled = false }
+}
+
+/* ══════════════════ ⑨ 诊断 ══════════════════ */
+async function loadDiag() {
+  let h
+  try { h = await apiT('/healthz') } catch (e) {
+    $('diagSub').textContent = '桥没回话：' + (e.name === 'AbortError' ? '超时' : e.message); return
+  }
+  const st = h.stat || {}
+  const lv = h.live || {}
+  $('diagSub').textContent =
+    `房间 ${h.rid || '—'} · ${lv.status === 'live' ? '直播中' : (lv.text || '未开播')}` +
+    (h.idle ? '（待机）' : '') + ` · 回话 ${h.replyMode || '—'}`
+  const cell = (k, v) => `<div class="stat"><div class="k">${esc(k)}</div><div class="v">${esc(v)}</div></div>`
+  $('diagStats').innerHTML =
+    cell('在线', st.online == null ? '—' : st.online) +
+    cell('弹幕', st.chat == null ? '—' : st.chat) +
+    cell('礼物', st.gift == null ? '—' : st.gift) +
+    cell('进场', st.member == null ? '—' : st.member) +
+    cell('点赞', st.like == null ? '—' : st.like) +
+    cell('已回复', st.replied == null ? '—' : st.replied) +
+    cell('重复丢弃', st.dup == null ? '—' : st.dup) +
+    cell('间隔', (h.chatGapSec == null ? '—' : h.chatGapSec) + 's')
+
+  const c = h.cache || {}
+  const m = h.llm || {}
+  $('llmStats').innerHTML =
+    cell('缓存命中', (c.rate == null ? '—' : c.rate) + '%') +
+    cell('成功', m.ok == null ? '—' : m.ok) +
+    cell('失败', m.fails == null ? '—' : m.fails) +
+    cell('冷却中', m.cooling ? '是' : '否')
+  $('llmWhy').textContent = m.lastError
+    ? '最近一次失败：' + m.lastError + (m.lastErrorAgoMs ? `（${Math.round(m.lastErrorAgoMs / 1000)} 秒前）` : '')
+    : '没有失败记录。命中率掉下来通常意味着前缀被改动了（提示词/人格），缓存要重新热。'
+
+  const g = h.giftChannel || {}
+  $('giftChStats').innerHTML =
+    cell('通道状态', g.state || '—') +
+    cell('本场收到', g.seen == null ? '—' : g.seen) +
+    cell('最近一次', g.lastAgoSec == null ? '—' : g.lastAgoSec + ' 秒前') +
+    cell('其他事件', g.others == null ? '—' : g.others)
+  $('giftChWhy').textContent = g.why ? '为什么不对：' + g.why : '通道正常。礼物事件和弹幕是两条流，它断了弹幕还在，最容易漏看。'
+}
+$('btnDiag').onclick = loadDiag
+
 /* ── 起来 ── */
 loadUsers()
 loadPersona()
+loadAccount()
+
+/* 支持 #页签 深链：settings.html#sound 直接落在「声音」页。
+   一是能收藏/分享到具体一页，二是验收时可以逐页截图。 */
+;(function () {
+  const want = (location.hash || '').replace(/^#/, '')
+  if (!want) return
+  const btn = document.querySelector('.tab[data-tab="' + want + '"]')
+  if (btn) btn.click()
+})()
 </script>
 </body>
 </html>
