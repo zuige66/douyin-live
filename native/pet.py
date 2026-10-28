@@ -3,32 +3,43 @@
 """动作帧播放器 —— 让大肥鱼真的动起来
 
 素材从哪儿来：
-  QCYTSN/dsh-dafeiyu（MIT）把 PC2005-cloud/dsh-pet 的 AI 生成动画导成了
-  16 段透明 WebP 帧序列，共 3444 帧，统一画布 412×344，源 24fps。
-  角色和我们 assets/dafeiyu.png 是**同一只**鲸鱼女仆，只是姿势不同。
-  用 tools/fetch-pet.mjs 拉，落在 assets/pet/<clip>/<clip>_001.webp。
+  两套，2026-10-28 起默认用 R2（assets/pet2）：
+  · assets/pet  —— QCYTSN/dsh-dafeiyu（MIT）导出的 PC2005-cloud/dsh-pet 动画，
+                   10 段情绪共 2287 帧，统一画布 412×344，源 24fps。
+                   角色只有 213px 宽，显示到 570 要放大 2.57 倍，靠锐化硬撑。
+  · assets/pet2 —— VideoGen 直接生成的 768 源，714×714，124 帧 pingpong。
+                   角色 676px 宽，**显示时是缩小的**，原生就清楚。
+                   代价：只有 idle 一段，雀跃/委屈/思考/张望/打哈欠/伸懒腰/甩尾/
+                   戳/摸头 这 9 段没有 —— clip_for() 一律兜底回 idle，
+                   所以礼物来了也不会消失，只是不再做动作。
+                   要切回旧素材：环境变量 ZY_PET_DIR=pet。
 
-为什么按 12fps 播而不是 24fps：
-  这些动作是呼吸、摇晃这种慢动作，24fps 和 12fps 肉眼几乎分不出来，
-  但每秒少解一半的帧。要改：环境变量 ZY_PET_FPS=24。
+为什么按 24fps 播：
+  FRAME_MS=42 就是源节奏（24fps）。老注释说 12fps 是早期抽帧留下的，早就不是了。
 
 尺寸怎么定（这块踩过坑，别乱改）：
-  1. 不按"帧宽 412 拉到 570"，而是按**角色本身**的 alpha 包围盒定宽 ——
-     412 的画布里角色只占 222px，按帧宽拉会让她凭空小一圈。
-  2. 只缩**裁出来的那一块**，不缩整帧。整帧 412×344 放大到 1058×883 要 13ms，
+  1. 不按"帧宽拉到 CHAR_W"，而是按**角色本身**的 alpha 包围盒定宽 ——
+     画布里角色只占一部分，按帧宽拉会让她凭空小/大一圈。
+  2. 只缩**裁出来的那一块**，不缩整帧。整帧放大要 13ms，
      裁到角色那一块再放大只要 4ms，而且贴图位置也算得更准。
   3. 裁切框所有动作共用一个（idle 和各动作包围盒的并集 + 边距），
      否则高兴时跳一下、委屈时矮一截，人会上下乱窜。
+  4. R2 素材显示时 scale≈1.0，这时候**跳过 resize 和锐化** ——
+     锐化是给 2.57 倍放大准备的，1:1 还锐就是无端加振铃。
 
 素材缺失（没拉帧）时 frame() 返回 None，渲染层退回静态 PNG，不会开天窗。
 """
+import json
 import os
 from collections import OrderedDict
 
 from PIL import Image, ImageFilter
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-PET_DIR = os.path.join(os.path.dirname(HERE), "assets", "pet")
+# ZY_PET_DIR 只认目录名，不给绝对路径 —— 免得配置写歪了读到大盘去。
+PET_DIR = os.path.join(
+    os.path.dirname(HERE), "assets", (os.environ.get("ZY_PET_DIR") or "pet2").strip()
+)
 
 FRAME_MS = 42  # 源 24fps（作者在 animation-behavior.md 里写的运行时 42ms/帧）
 FPS = float(os.environ.get("ZY_PET_FPS") or 10)
@@ -60,6 +71,37 @@ CLIP_OF_MOOD = {
 _frames = {}   # clip -> [绝对路径]
 _scaled = OrderedDict()  # (path, scale) -> RGBA
 _geom = None   # 几何信息（裁切框、缩放、锚点）
+_manifest = None
+
+
+def manifest():
+    """素材自带的 manifest.json（没有就当空字典）。
+
+    R2 的循环方式是 pingpong —— 原视频首尾帧差 47.5，直接循环会跳一下。
+    正放+倒放天然无缝，代价是周期翻倍（124 帧 → 246 拍）。
+    """
+    global _manifest
+    if _manifest is None:
+        try:
+            with open(os.path.join(PET_DIR, "manifest.json"), encoding="utf-8") as f:
+                _manifest = json.load(f) or {}
+        except Exception:
+            _manifest = {}
+    return _manifest
+
+
+def _frame_index(t, n):
+    """t 秒 → 第几帧。pingpong 时 0..n-1..1，别让首尾帧各出现两次。"""
+    if n <= 0:
+        return 0
+    i = int(t * 1000 / FRAME_MS)
+    if manifest().get("loop_mode") == "pingpong" and n > 1:
+        period = 2 * n - 2
+        i %= period
+        if i >= n:
+            i = period - i
+        return i
+    return i % n
 
 
 def _clip_frames(clip):
@@ -172,7 +214,7 @@ def frame(clip, t, char_w):
     if not g or not fr:
         return None
     s = char_w / g["char_w"]
-    path = fr[int(t * 1000 / FRAME_MS) % len(fr)]
+    path = fr[_frame_index(t, len(fr))]
     key = (path, round(s, 4))
     im = _scaled.get(key)
     if im is not None:
@@ -180,18 +222,20 @@ def frame(clip, t, char_w):
         return im
 
     raw = _raw(path).crop(g["crop"])
-    out = raw.resize(
-        (max(1, int(round(raw.width * s))), max(1, int(round(raw.height * s)))),
-        Image.LANCZOS,
-    )
-    if SHARPEN:
-        # 角色源只有 222px，放到 570px 是 2.57 倍放大，不锐化就是一团糊。
-        # 只锐化 RGB、alpha 原样保留 —— 连 alpha 一起锐化会在轮廓外啃出白边。
-        # 实测：先放大再锐化 20.7ms（明显更脆），先锐化再放大 8.8ms（边缘发脏）。
-        # 这里是"先放大再锐化"，值这个钱。
-        r, gch, b, a = out.split()
-        rgb = Image.merge("RGB", (r, gch, b)).filter(ImageFilter.SHARPEN)
-        out = Image.merge("RGBA", (*rgb.split(), a))
+    size = (max(1, int(round(raw.width * s))), max(1, int(round(raw.height * s))))
+    # R2 素材 1:1 显示（s≈1）—— 别走 resize，也别锐化。
+    # 锐化是给 2.57 倍放大补细节的，1:1 再锐只会沿轮廓加一圈振铃。
+    if abs(size[0] - raw.width) <= 1 and abs(size[1] - raw.height) <= 1:
+        out = raw
+    else:
+        out = raw.resize(size, Image.LANCZOS)
+        if SHARPEN and s > 1.05:
+            # 只锐化 RGB、alpha 原样保留 —— 连 alpha 一起锐化会在轮廓外啃出白边。
+            # 实测：先放大再锐化 20.7ms（明显更脆），先锐化再放大 8.8ms（边缘发脏）。
+            # 这里是"先放大再锐化"，值这个钱。
+            r, gch, b, a = out.split()
+            rgb = Image.merge("RGB", (r, gch, b)).filter(ImageFilter.SHARPEN)
+            out = Image.merge("RGBA", (*rgb.split(), a))
     _scaled[key] = out
     while len(_scaled) > CACHE_MAX:
         _scaled.popitem(last=False)

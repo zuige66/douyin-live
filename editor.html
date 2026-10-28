@@ -307,7 +307,7 @@ const COMPS = [
   { key:'stats',     name:'本场数据卡', icon:'▤', w:452, x:64,   y:54   },
   { key:'songs',     name:'点歌台',     icon:'♫', w:452, x:64,   y:294  },
   { key:'banner',    name:'顶部标语',   icon:'T', w:520, x:700,  y:26   },
-  { key:'character', name:'皮套',       icon:'人', w:570, x:675,  y:343  },
+  { key:'character', name:'皮套',       icon:'人', w:696, x:612,  y:240  },
   { key:'monitor',   name:'素材显示器', icon:'▭', w:594, x:1262, y:485  },
   { key:'danmaku',   name:'弹幕列',     icon:'💬', w:470, x:1386, y:180, visible:false },
   { key:'subtitle',  name:'字幕条',     icon:'≡', w:900, x:510,  y:960  },
@@ -321,7 +321,8 @@ function H_(key, y, w) {
   if (key === 'stats') return 216;
   if (key === 'songs') return 478;
   if (key === 'banner') return 64;
-  if (key === 'character') return Math.round(w * 1078 / 1005);
+  /* 皮套 = 角色包围盒 676×693（R2 素材）。改这里必须同步 render.py 的 CHAR_RATIO。 */
+  if (key === 'character') return Math.round(w * 693 / 676);
   if (key === 'monitor') return Math.round(w * 389 / 594);
   if (key === 'danmaku') return Math.max(80, DM_FLOOR - y);
   if (key === 'subtitle') return 86;
@@ -364,6 +365,9 @@ function normalize(src) {
       o.size = Number.isFinite(+v.size) ? +v.size : 50;
       o.align = ['left','center','right'].indexOf(v.align) >= 0 ? v.align : 'center';
     }
+    /* 皮套用哪套素材 —— 原样带回去。丢了它画面会以为还是旧版式，
+       下次重启又按新基准换算一遍，人越存越大。 */
+    if (c.key === 'character' && (v.pet === 'pet2' || v.pet === 'pet')) o.pet = v.pet;
     out.items[c.key] = o;
   }
   return out;
@@ -485,7 +489,7 @@ function htmlOf(key, it) {
       return s + '</div>';
     }
     case 'character':
-      return '<div class="t-character"><img src="' + assetUrl('assets/dafeiyu.png') + '" alt=""></div>';
+      return '<div class="t-character"><img src="' + assetUrl('assets/pet2-still.png') + '" alt=""></div>';
     case 'monitor':
       return '<div class="t-monitor" style="position:absolute;inset:0">' +
         '<div class="shell"><div class="scr">素材播放区</div></div>' +

@@ -69,7 +69,7 @@ F_BOLD = "C:/Windows/Fonts/msyhbd.ttc"
 # BRAND_X / BRAND_Y / AV 已经没人用了（face_disc / ring 两个工具函数留着，
 # 以后想加回头像直接调用就行，不占运行时开销 —— 它们是惰性加载的）。
 CARD_X, CARD_Y, CARD_W = 64, 54, 452
-CHAR_W, CHAR_BOTTOM = 570, 126
+CHAR_W, CHAR_BOTTOM = 696, 126
 DM_RIGHT, DM_MAXW, DM_BOTTOM = W - 64, 470, H - 206
 DM_NAMEW = 140  # 昵称最多占多宽（约 6 个汉字），超了截断，把地方留给正文
 SUB_W, SUB_H, SUB_BOTTOM = 900, 86, 34
@@ -114,8 +114,12 @@ LAYOUT_FILE = os.path.join(os.path.dirname(HERE), "cache", "layout.json")
 # 高度 = 底边 - 顶边 —— 拖 y 就是「能显示几条」。
 DM_FLOOR = H - 206
 
-# 皮套原图比例（assets/dafeiyu.png = 1005×1078）。宽度定了高度就定了。
-CHAR_RATIO = 1078.0 / 1005.0
+# 皮套比例：宽度定了高度就定了。
+# 2026-10-28 换成 R2 素材（assets/pet2）—— 角色包围盒 676×693（714 画布里的实心部分）。
+# 老素材是 assets/dafeiyu.png 的 1005×1078，但那是**静态立绘**的比例，
+# 跟动画帧的包围盒本来就差一截（老的一套框比实际贴图小）。换成 R2 后
+# 直接按角色包围盒来，编辑器里那个框终于是贴着人的。
+CHAR_RATIO = 693.0 / 676.0
 # 显示器整体比例：屏幕 560×315 + 边框 + 脖子 + 底座 = 594×389
 MON_RATIO = 389.0 / 594.0
 
@@ -160,7 +164,10 @@ def _layout_default():
             "songs":     {"x": 64,   "y": 294,  "w": 452, "visible": True},
             "banner":    {"x": 700,  "y": 26,   "w": 520, "visible": True,
                           "size": 50, "align": "center"},
-            "character": {"x": 675,  "y": 343,  "w": 570, "visible": True},
+            # 皮套换 R2 素材后 w 从 570 → 696（角色 676 宽，696 让她还是 714 高），
+            # x/y 是倒推的：中线还在 960、脚底还在 954，她站的地方一点没挪。
+            # pet 标记 = 这份版式已经按 R2 换算过了，别再迁一次。
+            "character": {"x": 612,  "y": 240,  "w": 696, "visible": True, "pet": "pet2"},
             "monitor":   {"x": 1262, "y": 485,  "w": 594, "visible": True},
             "danmaku":   {"x": 1386, "y": 180,  "w": 470, "visible": False},
             "subtitle":  {"x": 510,  "y": 960,  "w": 900, "visible": True},
@@ -197,6 +204,69 @@ _LAYOUT_NEXT_CHECK = 0.0
 VIS = {}
 
 
+# 皮套换 R2 素材（2026-10-28）的一次性版式迁移用。
+# 旧素材（assets/pet）角色包围盒 213×267，w=570 时她高 714；
+# 新素材（assets/pet2）是 676×693，同一个 570 只能画出 584 —— 人会凭空小一圈。
+# 换算系数 = 「让 570 变成 696」：696×693/676 = 714，身高正好对上。
+_PET_MIGRATE = 696.0 / 570.0
+
+
+def _migrate_pet(data, base):
+    """把旧版式按 R2 素材换算一次，返回 True 表示 base 已被改写、该写回磁盘。
+
+    三件事一起保住：**脚底不动、中线不挪、身高不变**。
+    ⚠️ 判断依据必须是**文件里**有没有 pet，不能看合并后的 base ——
+       默认版式自己就带 pet:"pet2"，合并后永远「有标记」，迁移永远不跑。
+       第一次就是这么写错的：跑完 w 还是 570，标记倒是打上了，从此再不迁移。
+    写回失败不影响这一帧的显示（内存里已经换好了），下次重启会再算一遍，
+    结果同一个数（换算只依赖 w，不累积），不会越存越大。
+    """
+    raw = (data.get("items") or {}).get("character")
+    if not isinstance(raw, dict) or raw.get("pet"):
+        return False
+    ch = (base.get("items") or {}).get("character")
+    if not isinstance(ch, dict):
+        return False
+    try:
+        w0 = float(raw.get("w") or 0)
+        y0 = float(raw.get("y") or 0)
+        x0 = float(raw.get("x") or 0)
+    except (TypeError, ValueError):
+        return False
+    if w0 <= 0:
+        return False
+    w1 = int(round(w0 * _PET_MIGRATE))
+    # 旧框高用旧比例算，新框高用 comp_h —— 差出来的那截从 y 上扣掉，脚底就钉住了
+    h0 = int(round(w0 * 1078.0 / 1005.0))
+    h1 = comp_h("character", 0, 0, w1)
+    ch["w"] = w1
+    ch["y"] = int(round(y0 + h0 - h1))
+    ch["x"] = int(round(x0 + (w0 - w1) / 2.0))
+    ch["pet"] = "pet2"
+    print(f"[layout] 皮套换 R2：w {int(w0)}→{w1}，y {int(y0)}→{ch['y']}，"
+          f"x {int(x0)}→{ch['x']}（脚底 {ch['y'] + h1}、中线 {ch['x'] + w1 / 2:.0f}）",
+          file=sys.stderr)
+    return True
+
+
+def _write_layout(data):
+    """原子写回版式。写不成就算了 —— 版式坏掉比不迁移严重得多。"""
+    tmp = LAYOUT_FILE + ".mig"
+    try:
+        with open(tmp, "w", encoding="utf-8") as fp:
+            json.dump(data, fp, ensure_ascii=False, indent=2)
+        os.replace(tmp, LAYOUT_FILE)
+        return True
+    except Exception as e:
+        print(f"[layout] 迁移结果写不回去（{type(e).__name__}: {e}），内存里照用",
+              file=sys.stderr)
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        return False
+
+
 def layout():
     """读 layout.json。0.5 秒最多 stat 一次 —— 逐帧调用它也不能拖慢 compose。"""
     global _LAYOUT, _LAYOUT_MT, _LAYOUT_STAMP, _LAYOUT_NEXT_CHECK
@@ -230,6 +300,10 @@ def layout():
             if isinstance(v, dict):
                 items[k] = dict(items.get(k) or {}, **v)
         base["items"] = items
+        # 皮套换素材的一次性迁移（2026-10-28）。放在合并之后、生效之前 ——
+        # 迁移改的是 base，这一帧就用新坐标，不用等下一次 mtime。
+        if _migrate_pet(data, base):
+            _write_layout(base)
         _LAYOUT = base
         _LAYOUT_MT = mt
         bg = base["bg"]
@@ -295,7 +369,7 @@ def apply_layout():
         BANNER_SIZE = 50
     BANNER_ALIGN = str(b.get("align") or "center")
 
-    CHAR_X, CHAR_Y, CHAR_W = g("character", 675, 343, 570)
+    CHAR_X, CHAR_Y, CHAR_W = g("character", 612, 240, 696)
     CHAR_H = comp_h("character", CHAR_X, CHAR_Y, CHAR_W)
     CHAR_BOTTOM = H - (CHAR_Y + CHAR_H)   # 老代码还按「距底多少」算，保留
 
@@ -473,10 +547,15 @@ _FACE = None
 
 
 def character(width):
-    """皮套图按目标宽度缩放一次就缓存住——之前每帧 LANCZOS 是最大的开销"""
+    """皮套图按目标宽度缩放一次就缓存住——之前每帧 LANCZOS 是最大的开销
+
+    2026-10-28：换成 R2 素材的静态帧（assets/pet2-still.png，676×693，
+    从 idle 首帧按角色包围盒裁出来的）。只在**动画帧读不到**时兜底用，
+    但兜底也得是同一只人 —— 不然直播里会突然从红发换成蓝发。
+    """
     global _CHAR
     if _CHAR is None:
-        _CHAR = Image.open(os.path.join(ASSETS, "dafeiyu.png")).convert("RGBA")
+        _CHAR = Image.open(os.path.join(ASSETS, "pet2-still.png")).convert("RGBA")
     if width not in _CHAR_SCALED:
         h = int(_CHAR.height * width / _CHAR.width)
         _CHAR_SCALED[width] = _CHAR.resize((width * SS, h * SS), Image.LANCZOS)

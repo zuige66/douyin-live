@@ -4341,6 +4341,10 @@ function sanitizeLayout(b) {
       o.size = num(v.size, 12, 200, 50)
       o.align = ['left', 'center', 'right'].includes(v.align) ? v.align : 'center'
     }
+    /* 皮套用哪套素材（2026-10-28）。**必须原样留着** —— render.py 靠它判断
+     * 这份版式是不是已经按新素材换算过了；编辑器保存时丢掉这个字段，
+     * 画面就会以为还是旧版式，又按新基准换算一次，人越存越大。 */
+    if (k === 'character' && (v.pet === 'pet2' || v.pet === 'pet')) o.pet = v.pet
     items[k] = o
   }
   if (!Object.keys(items).length) return { ok: false, error: 'items 里没有一个认识的组件' }
