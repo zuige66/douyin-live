@@ -1226,15 +1226,21 @@ def _music_bg(path, w, h):
     im = im.resize((max(8, w // 14), max(8, h // 14)), Image.BOX)
     im = im.resize((w, h), Image.LANCZOS)
 
-    # 压暗，保证白字看得清。**按亮度自适应**：暗封面少压（别真压成黑屏，
-    # 主人嫌的就是黑屏），亮封面多压（不然白字糊在浅色上啥也看不见）。
+    # 蒙一层红膜（2026-10-28 晚改）。原来往深紫黑 (26,22,36) 压，主人看完说
+    # 「现在是黑色吧，能不能用红色膜覆盖」—— 对，压成黑的了。
+    #
+    # 🔴 红膜不能是「深红 + 压暗」：暗封面本来就是黑的，再往上压只会更黑。
+    #    要**往一个比封面亮的红里调**（152,26,58），暗封面才会被抬成能看出红的
+    #    暗红；亮封面则多调一点，压到白字放得下的亮度。
+    #    亮度是按封面均亮度自适应的，两边都试过（暗 66 / 亮 180）。
+    #    这个红跟页面强调色 #B0274A 是一路的，别换成大红 (255,0,0)。
     try:
         from PIL import ImageStat
         lum = sum(ImageStat.Stat(im).mean) / 3.0
     except Exception:
         lum = 100.0
-    k = 0.46 + 0.40 * max(0.0, min(1.0, (lum - 50) / 150.0))
-    im = Image.blend(im, Image.new("RGB", im.size, (26, 22, 36)), k)
+    k = 0.58 + 0.26 * max(0.0, min(1.0, (lum - 50) / 150.0))
+    im = Image.blend(im, Image.new("RGB", im.size, (152, 26, 58)), k)
 
     out = Image.new("RGBA", (w, h), (0, 0, 0, 0))
     out.paste(im, (0, 0), _round_mask(w, h, 8))
