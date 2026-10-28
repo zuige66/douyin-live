@@ -1246,44 +1246,19 @@ def draw_computer(img, st, d, f):
     led = (70, 224, 192, 255) if (cur and not err) else (255, 255, 255, 40)
     d.ellipse((MON_X + 14, MON_Y + MON_H - 11, MON_X + 20, MON_Y + MON_H - 5), fill=led)
 
-    # ---- 上方说明：正在放什么 / 谁送的 / 哪个礼物 ----
-    if cur and not err:
-        d.text((MON_X, CAP_Y), "正在播放", font=f(20), fill=DIM)
-        # 档位徽标（0 档是闲时素材，不叫「档位0」）
-        # 0 档还分两种：场子冷了自动放的「闲时」/ 观众喊「放个视频」的「点播」。
-        # 只写「闲时」的话，点播那次的画面看着像是自己冒出来的，第二行的观众昵称
-        # 也就变成了没头没尾的一个名字。
-        if tier == 0:
-            # `user` 兜底是为了「桥还没重启」的情况：闲时那一路从来不填 user，
-            # 所以只要第二行有名字，就一定有人点播过。这样这次改动不用为一行
-            # 徽标去重启正在直播的桥。
-            badge = "点播" if (cur.get("request") or cur.get("user")) else "闲时"
-        else:
-            badge = f"档位{tier}"
-        bw2 = int(d.textlength(badge, font=f(19, True))) + 20
-        # 徽标：底色只留一点档位 hue，**字用亮的 INK**。
-        # 原来字也用档位色，配青/金那种高饱和色还挺清楚；换成浅紫之后
-        # 字和底几乎同色，「档位1」糊成一团（截图里实测）。
-        blit(img, rr_patch(bw2, 28, 8, (col[0], col[1], col[2], 46),
-                           outline=(col[0], col[1], col[2], 140)), MON_X + 96, CAP_Y - 4)
-        d.text((MON_X + 96 + bw2 // 2, CAP_Y + 10), badge, font=f(19, True),
-               fill=INK, anchor="mm")
-        nm = os.path.splitext(str(cur.get("name") or ""))[0]
-        d.text((MON_X + 96 + bw2 + 12, CAP_Y), fit_text(nm, MON_W - 96 - bw2 - 12, 20),
-               font=f(20), fill=INK)
-        who = " · ".join(x for x in [str(cur.get("user") or ""), str(cur.get("gift") or "")]
-                         if x)
-        if who:
-            d.text((MON_X, CAP_Y + 34), fit_text(who, MON_W, 22), font=f(22), fill=DIM)
-    elif err:
+    # ---- 上方说明（2026-10-28 晚按主人要求整块去掉）----
+    # 主人原话：「把组件电脑显示屏上面的，播放视频时候的介绍（档位礼物什么的）去掉」。
+    # 原来这里画两行：
+    #   「正在播放  [档位4]  4-瑞克摇」
+    #   「某某某 · 小心心」
+    # 显示器本身就在放画面，再念一遍档位、文件名、谁送的是多余的 ——
+    # 而且档位徽标会把「这是礼物视频还是闲时素材」这种内部概念怼到观众脸上。
+    #
+    # ⚠️ `err` 那条**留着**：那是「素材打不开」的故障提示，不是介绍。
+    #   出问题的时候屏幕上得有个说法，不然观众只看到一块黑屏。
+    if err:
         d.text((MON_X, CAP_Y + 10), "素材有问题（不影响直播和感谢）",
                font=f(21), fill=(255, 150, 140, 220))
-    else:
-        # 待机时右栏**什么都不写**（2026-10-27 晚主人要求：「这个就不用显示了」）。
-        # 原来这里是「电脑待机中 - 刷礼物有惊喜」一行 24 号字。
-        # 那句话已经挪到画面最上方的空带里做成频道标语，右栏留着只是一块黑屏，
-        # 空着反而干净 —— 显示器本来就是「待机中」的状态，不用再解释一遍。
-        pass
 
     # ---- 把这一层半透明的东西合回去（只处理右栏那一小块，别整图过一遍）----
     box = _LAY_BOX
