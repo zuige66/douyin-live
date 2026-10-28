@@ -1186,19 +1186,73 @@ def _cover_placeholder(px, radius):
     return ph
 
 
+_COVER_BG = {}  # (路径, mtime, 宽, 高) -> 已经做好的整屏模糊底
+
+
+def _music_bg(path, w, h):
+    """拿封面做整屏高斯模糊底。同一个文件只算一次。
+
+    🔴 别直接上 GaussianBlur(radius=40)：560×315 上跑一次要 10ms 以上，
+       换歌那一下画面会卡一顿。**缩小再放大**是等效的模糊，代价低一个数量级 ——
+       缩到 1/14 时每个像素已经是原图 14×14 块的平均，再放大回去边界足够软。
+    """
+    try:
+        mt = os.path.getmtime(path)
+    except OSError:
+        return None
+    key = (path, mt, w, h)
+    p = _COVER_BG.get(key)
+    if p is not None:
+        return p
+    try:
+        im = Image.open(path)
+        im.load()
+        im = im.convert("RGB")
+    except Exception:
+        return None
+
+    # 铺满屏幕：按「cover」裁，宁可裁掉两头也不拉伸
+    sw, sh = im.size
+    if sw <= 0 or sh <= 0:
+        return None
+    k = max(w / float(sw), h / float(sh))
+    im = im.resize((max(1, int(round(sw * k))), max(1, int(round(sh * k)))),
+                   Image.LANCZOS)
+    lx = (im.width - w) // 2
+    ly = (im.height - h) // 2
+    im = im.crop((lx, ly, lx + w, ly + h))
+
+    # 缩小（BOX = 块平均，最像模糊）再放大
+    im = im.resize((max(8, w // 14), max(8, h // 14)), Image.BOX)
+    im = im.resize((w, h), Image.LANCZOS)
+
+    # 压暗，保证白字看得清。**按亮度自适应**：暗封面少压（别真压成黑屏，
+    # 主人嫌的就是黑屏），亮封面多压（不然白字糊在浅色上啥也看不见）。
+    try:
+        from PIL import ImageStat
+        lum = sum(ImageStat.Stat(im).mean) / 3.0
+    except Exception:
+        lum = 100.0
+    k = 0.46 + 0.40 * max(0.0, min(1.0, (lum - 50) / 150.0))
+    im = Image.blend(im, Image.new("RGB", im.size, (26, 22, 36)), k)
+
+    out = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    out.paste(im, (0, 0), _round_mask(w, h, 8))
+    _COVER_BG.clear()
+    _COVER_BG[key] = out
+    return out
+
+
 def _screen_music(lay, d, f, st, mus):
     """放歌时的屏幕：左边当前时钟，右边方形圆角专辑封面。
 
     lay 是那张全尺寸 RGBA 层 —— 封面要贴进这一层才能跟其它半透明元件
     一起合成；直接贴 img（RGB）会被后面的整块合成盖掉。
-    """
-    d.rectangle((SCR_X, SCR_Y, SCR_X + SCR_W, SCR_Y + SCR_H), fill=(33, 29, 44, 255))
-    # 跟待机同一套网格：一眼就知道「还是那块屏」，只是内容换了
-    for gx in range(SCR_X + 18, SCR_X + SCR_W, 26):
-        d.line((gx, SCR_Y, gx, SCR_Y + SCR_H), fill=(255, 255, 255, 26))
-    for gy in range(SCR_Y + 18, SCR_Y + SCR_H, 26):
-        d.line((SCR_X, gy, SCR_X + SCR_W, gy), fill=(255, 255, 255, 26))
 
+    底色（2026-10-28 晚加）：原来是一块深紫底 + 网格，主人说「黑屏有点难看」。
+    现在拿**同一张封面**做成整屏模糊当底 —— 一块屏上只有这一首歌的颜色，
+    观众扫一眼就知道在放什么。封面取不到时还是退回原来的深色网格。
+    """
     # 封面：正方形。边长跟着屏幕走（显示器能拖宽），上限 200 —— 再大就压住时钟了。
     side = int(min(SCR_H * 0.63, SCR_W * 0.36))
     side = max(48, side)
@@ -1206,13 +1260,26 @@ def _screen_music(lay, d, f, st, mus):
     cvx = SCR_X + SCR_W - 26 - side
     cvy = SCR_Y + (SCR_H - side) // 2
 
-    patch = None
     path = str(mus.get("coverFile") or "")
-    if path:
-        patch = _cover_patch(path, side, rad)
-    if patch is None:
-        patch = _cover_placeholder(side, rad)
-    lay.paste(patch, (cvx, cvy), patch)
+    cover = _cover_patch(path, side, rad) if path else None
+    bg = _music_bg(path, SCR_W, SCR_H) if cover is not None else None
+
+    if bg is not None:
+        lay.paste(bg, (SCR_X, SCR_Y), bg)
+    else:
+        d.rectangle((SCR_X, SCR_Y, SCR_X + SCR_W, SCR_Y + SCR_H), fill=(33, 29, 44, 255))
+        # 跟待机同一套网格：一眼就知道「还是那块屏」，只是内容换了
+        for gx in range(SCR_X + 18, SCR_X + SCR_W, 26):
+            d.line((gx, SCR_Y, gx, SCR_Y + SCR_H), fill=(255, 255, 255, 26))
+        for gy in range(SCR_Y + 18, SCR_Y + SCR_H, 26):
+            d.line((SCR_X, gy, SCR_X + SCR_W, gy), fill=(255, 255, 255, 26))
+
+    if cover is None:
+        cover = _cover_placeholder(side, rad)
+    lay.paste(cover, (cvx, cvy), cover)
+    # 一圈极淡的白描边：模糊底可能就是封面的同一片颜色，不给边界会糊成一坨
+    d.rounded_rectangle((cvx, cvy, cvx + side - 1, cvy + side - 1),
+                        radius=rad, outline=(255, 255, 255, 46), width=1)
 
     # 左边：大号时钟。字号跟着屏幕高走，放不下就缩 —— 拖窄了不会溢出到封面上去。
     hhmm = time.strftime("%H:%M")
@@ -1222,7 +1289,7 @@ def _screen_music(lay, d, f, st, mus):
     while fs > 22 and d.textlength(hhmm, font=f(fs, True)) > room:
         fs -= 2
     d.text((lx, SCR_Y + SCR_H // 2), hhmm, font=f(fs, True),
-           fill=(255, 255, 255, 215), anchor="lm")
+           fill=(255, 255, 255, 232), anchor="lm")
 
 
 # 逐帧图层（半透明元件专用）。全尺寸 RGBA 每帧新建要 8MB 的分配，15fps 下太浪费；
