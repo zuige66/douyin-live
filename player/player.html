@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>大肥鱼 · 音乐播放器</title>
+<!--
+  这个页面才是真正出声的地方。
+  播放器服务（musicd.mjs）只记账、取直链、转命令；声音必须由浏览器放，
+  跟原来 DSH 里那个播放器一个原理 —— 区别只是这个页面由控制台自己发，
+  不需要 DSH。
+
+  必须一直开着（最小化可以，关掉就没声音了）。
+-->
+<style>
+  :root {
+    --bg: #12101a;
+    --card: #1d1a28;
+    --line: #2e2a3d;
+    --fg: #ece9f5;
+    --dim: #9d97b5;
+    --acc: #c9a2ff;
+    --ok: #59d99a;
+    --bad: #ff7a7a;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    background: var(--bg);
+    color: var(--fg);
+    font: 14px/1.5 system-ui, "Microsoft YaHei", sans-serif;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+  }
+  .wrap { width: 100%; max-width: 520px; }
+  .bar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 16px;
+    color: var(--dim);
+    font-size: 13px;
+  }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--dim); flex: 0 0 auto; }
+  .dot.ok { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+  .dot.bad { background: var(--bad); }
+  .bar .spacer { flex: 1; }
+  .bar input[type=range] { width: 96px; vertical-align: middle; accent-color: var(--acc); }
+
+  .now {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 16px;
+    padding: 18px;
+    display: flex;
+    gap: 16px;
+    align-items: center;
+  }
+  #cover {
+    width: 92px; height: 92px;
+    border-radius: 12px;
+    object-fit: cover;
+    background: #2a2639;
+    flex: 0 0 auto;
+  }
+  .meta { min-width: 0; flex: 1; }
+  .name { font-size: 17px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .artist { color: var(--dim); font-size: 13px; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .prog { height: 4px; background: #2a2639; border-radius: 2px; margin-top: 14px; overflow: hidden; }
+  .fill { height: 100%; width: 0%; background: var(--acc); transition: width .25s linear; }
+  .times { display: flex; justify-content: space-between; color: var(--dim); font-size: 12px; margin-top: 6px; }
+
+  .queue {
+    margin-top: 14px;
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 16px;
+    padding: 12px 16px;
+    max-height: 210px;
+    overflow: auto;
+  }
+  .queue h3 { margin: 0 0 8px; font-size: 13px; color: var(--dim); font-weight: 500; }
+  .qitem { display: flex; gap: 8px; padding: 4px 0; font-size: 13px; color: var(--dim); }
+  .qitem b { color: var(--fg); font-weight: 500; }
+  .empty { color: var(--dim); font-size: 13px; }
+
+  #boot {
+    margin-top: 16px;
+    width: 100%;
+    padding: 14px;
+    border: 0;
+    border-radius: 14px;
+    background: var(--acc);
+    color: #1a1226;
+    font-size: 15px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  #boot:active { transform: scale(.99); }
+  .hint { color: var(--dim); font-size: 12px; margin-top: 10px; text-align: center; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="bar">
+    <span id="dot" class="dot"></span>
+    <span id="stat">连接中…</span>
+    <span class="spacer"></span>
+    <span>音量</span>
+    <input id="vol" type="range" min="0" max="100" value="70">
+    <span id="volTxt">70%</span>
+  </div>
+
+  <div class="now">
+    <img id="cover" alt="">
+    <div class="meta">
+      <div id="name" class="name">还没开始</div>
+      <div id="artist" class="artist">等点歌</div>
+      <div class="prog"><div id="fill" class="fill"></div></div>
+      <div class="times"><span id="pos">0:00</span><span id="dur">0:00</span></div>
+    </div>
+  </div>
+
+  <div class="queue">
+    <h3>接下来</h3>
+    <div id="qlist" class="empty">队列是空的</div>
+  </div>
+
+  <button id="boot">▶ 点这里启动播放</button>
+  <div class="hint">浏览器不让页面自己出声，必须点一次。点完之后就不用管了。</div>
+</div>
+
+<audio id="au" preload="auto"></audio>
+
+<script>
+const $ = (s) => document.querySelector(s)
+const au = $('#au')
+
+let currentId = ''      // 形如 netease:123
+let currentSongId = ''  // 纯数字 id，取流用
+let unlocked = false
+let polling = false
+
+const mmss = (sec) => {
+  const s = Math.max(0, Math.floor(Number(sec) || 0))
+  return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0')
+}
+
+async function api(path, opt) {
+  const r = await fetch(path, opt)
+  if (!r.ok) throw new Error('HTTP ' + r.status)
+  return r.json()
+}
+
+const post = (path, body) =>
+  api(path, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body || {}),
+  })
+
+function setStatus(text, cls) {
+  $('#stat').textContent = text
+  $('#dot').className = 'dot' + (cls ? ' ' + cls : '')
+}
+
+function paintTrack(track) {
+  currentId = String(track.id || track.trackId || '')
+  currentSongId = String(track.songId || currentId.replace(/\D/g, ''))
+  $('#name').textContent = track.name || '未知曲目'
+  const artists = Array.isArray(track.artists) ? track.artists : [track.artists || '']
+  $('#artist').textContent = artists.filter(Boolean).join(' / ') || '未知歌手'
+  if (track.cover) $('#cover').src = track.cover
+  $('#fill').style.width = '0%'
+  $('#pos').textContent = '0:00'
+  $('#dur').textContent = mmss((Number(track.durationMs) || 0) / 1000)
+}
+
+/** 放一首：先取直链，再交给 audio */
+async function playTrack(track) {
+  paintTrack(track)
+  let u
+  try {
+    u = await api('/url?id=' + encodeURIComponent(currentSongId) + '&quality=exhigh')
+  } catch (e) {
+    await post('/client/error', { why: '取直链失败：' + e.message })
+    return
+  }
+  if (!u || !u.url) {
+    await post('/client/error', { why: u && u.why ? u.why : '取不到直链' })
+    setStatus('这首歌取不到音源，跳过', 'bad')
+    // 直接报播完，让它自动跳下一首，别卡死
+    setTimeout(() => post('/client/ended', { trackId: currentId }).then(applyCommands), 800)
+    return
+  }
+  au.src = u.url
+  au.load()
+  try {
+    await au.play()
+    setStatus('播放中' + (u.trial ? '（试听片段）' : ''), 'ok')
+  } catch (e) {
+    /* 自动播放被拦：把启动按钮放回来，别假装在放 */
+    setStatus('被浏览器拦了，点下面的按钮', 'bad')
+    $('#boot').style.display = 'block'
+    $('#boot').textContent = '▶ 点这里启动播放'
+  }
+}
+
+async function applyCommands(list) {
+  for (const c of list || []) {
+    try {
+      if (c.type === 'play') await playTrack(c.track)
+      else if (c.type === 'pause') { au.pause(); }
+      else if (c.type === 'resume') { try { await au.play() } catch {} }
+      else if (c.type === 'volume') { au.volume = Math.min(1, Math.max(0, Number(c.value) || 0)); syncVol() }
+      else if (c.type === 'stop') { au.pause(); au.removeAttribute('src'); currentId = ''; currentSongId = ''; }
+      else if (c.type === 'queue') paintQueue(c.queue)
+    } catch (e) {
+      console.warn('命令执行失败', c, e)
+    }
+  }
+}
+
+function paintQueue(list) {
+  const box = $('#qlist')
+  if (!list || !list.length) {
+    box.className = 'empty'
+    box.textContent = '队列是空的'
+    return
+  }
+  box.className = ''
+  box.innerHTML = list
+    .slice(0, 20)
+    .map((t, i) => {
+      const a = Array.isArray(t.artists) ? t.artists.join('/') : t.artists || ''
+      return '<div class="qitem"><span>' + (i + 1) + '.</span><b>' + esc(t.name || '') + '</b><span>' + esc(a) + '</span></div>'
+    })
+    .join('')
+}
+
+const esc = (s) =>
+  String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c])
+
+function syncVol() {
+  const v = Math.round((au.volume || 0) * 100)
+  $('#vol').value = String(v)
+  $('#volTxt').textContent = v + '%'
+}
+
+/* ── 轮询命令 ─────────────────────────────────────────────────── */
+async function tick() {
+  if (polling) return
+  polling = true
+  try {
+    const r = await api('/client/poll')
+    await applyCommands(r.commands)
+    if (!r.commands || !r.commands.length) {
+      /* 没有新命令也要同步状态：页面刷新后接上正在放的那首 */
+      if (!currentId && r.nowPlaying) {
+        paintTrack(r.nowPlaying)
+        const u = await api('/url?id=' + encodeURIComponent(currentSongId)).catch(() => null)
+        if (u && u.url) {
+          au.src = u.url
+          if (unlocked) { try { await au.play() } catch {} }
+        }
+      }
+      if (typeof r.volume === 'number' && Math.abs((au.volume || 0) - r.volume) > 0.02) {
+        au.volume = r.volume
+        syncVol()
+      }
+    }
+    setStatus(unlocked ? '已连接' : '已连接（等你点启动）', 'ok')
+  } catch (e) {
+    setStatus('连不上播放器服务', 'bad')
+  } finally {
+    polling = false
+  }
+}
+
+/* ── 上报真实进度（服务端的账本以这个为准）───────────────────── */
+async function report() {
+  if (!currentId) return
+  try {
+    await post('/client/report', {
+      trackId: currentId,
+      positionSec: au.currentTime || 0,
+      durationSec: au.duration || 0,
+      playing: !au.paused,
+    })
+  } catch {}
+}
+
+/* ── 进度条 ───────────────────────────────────────────────────── */
+setInterval(() => {
+  const d = au.duration || 0
+  const c = au.currentTime || 0
+  $('#fill').style.width = d ? Math.min(100, (c / d) * 100) + '%' : '0%'
+  $('#pos').textContent = mmss(c)
+  $('#dur').textContent = d ? mmss(d) : $('#dur').textContent
+}, 500)
+
+/* ── 播完自动下一首 ───────────────────────────────────────────── */
+au.addEventListener('ended', async () => {
+  try {
+    const r = await post('/client/ended', { trackId: currentId })
+    await applyCommands(r.commands)
+    if (!r.next) setStatus('队列放完了', 'ok')
+  } catch (e) {
+    setStatus('切歌失败：' + e.message, 'bad')
+  }
+})
+
+au.addEventListener('error', async () => {
+  if (!currentId) return
+  const err = au.error
+  await post('/client/error', { why: 'audio 错误 code=' + (err && err.code) })
+  setStatus('这首放不出来，跳下一首', 'bad')
+  setTimeout(async () => {
+    try {
+      const r = await post('/client/ended', { trackId: currentId })
+      await applyCommands(r.commands)
+    } catch {}
+  }, 600)
+})
+
+/* ── 用户交互 ─────────────────────────────────────────────────── */
+$('#boot').addEventListener('click', async () => {
+  unlocked = true
+  $('#boot').style.display = 'none'
+  au.volume = Number($('#vol').value) / 100
+  try { await au.play() } catch {}
+  tick()
+})
+
+$('#vol').addEventListener('input', () => {
+  au.volume = Number($('#vol').value) / 100
+  $('#volTxt').textContent = $('#vol').value + '%'
+})
+
+/* ── 启动 ─────────────────────────────────────────────────────── */
+au.volume = 0.7
+setInterval(tick, 1000)
+setInterval(report, 2000)
+tick()
+</script>
+</body>
+</html>

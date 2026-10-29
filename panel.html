@@ -163,6 +163,21 @@
   </div>
 
   <div class="card">
+    <h2>音乐</h2>
+    <div class="sub">播放器服务跟着控制台一起起，<b>不再依赖 DSH</b>。声音由「播放页」出，那个页面要一直开着（最小化可以，关掉就没声）。</div>
+    <div class="grid">
+      <div class="stat"><div class="k">播放器服务</div><div class="v" id="mSvc">查中…</div></div>
+      <div class="stat"><div class="k">播放页</div><div class="v" id="mClient">—</div></div>
+      <div class="stat"><div class="k">正在放</div><div class="v" id="mNow">—</div></div>
+      <div class="stat"><div class="k">队列</div><div class="v" id="mQueue">—</div></div>
+    </div>
+    <div class="row" style="margin-top:12px">
+      <a class="btn sm" id="mOpen" href="http://127.0.0.1:18083/player.html" target="_blank" rel="noopener">打开播放页</a>
+    </div>
+    <div class="sub" id="mHint" style="margin:10px 0 0"></div>
+  </div>
+
+  <div class="card">
     <h2>去别的页</h2>
     <div class="sub">这些页都是桥发的，但请求会经过这个控制台转给桥 —— 不用记端口。</div>
     <div class="links">
@@ -333,7 +348,33 @@ function render(s) {
   const mode = $('#mode')
   if (document.activeElement !== mode && s.cfg.mode) mode.value = s.cfg.mode
 
+  renderMusic(s.music || { up: false })
   renderFeed(s.recent || [])
+}
+
+/** 音乐卡片。数据全来自 /ctl/status 的 music 字段，不额外发请求。 */
+function renderMusic(m) {
+  if (!m.up) {
+    $('#mSvc').innerHTML = '<span style="color:var(--danger)">没起来</span>'
+    $('#mClient').textContent = '—'
+    $('#mNow').textContent = '—'
+    $('#mQueue').textContent = '—'
+    $('#mHint').textContent = '播放器服务没跑，点歌和热榜都不会响。原因看 .run/musicd.log。'
+    return
+  }
+  $('#mSvc').innerHTML = '<span style="color:var(--primary)">在跑</span>'
+  $('#mClient').innerHTML = m.clientAlive
+    ? '<span style="color:var(--primary)">开着</span>'
+    : '<span style="color:var(--warn)">没开</span>'
+  const n = m.now
+  $('#mNow').textContent = n && n.name ? `${n.name} · ${(n.artists || []).join('/')}` : '—'
+  $('#mQueue').textContent = m.queue && m.queue.length ? `${m.queue.length} 首` : '空'
+
+  const bits = []
+  if (!m.clientAlive) bits.push('播放页没开，现在没有声音 —— 点「打开播放页」，进去点一次启动。')
+  if (m.auth && m.auth.ok === false) bits.push(m.auth.why || '没找到网易云登录态')
+  if (m.lastError) bits.push('最近一次错误：' + m.lastError)
+  $('#mHint').textContent = bits.join(' ')
 }
 
 function renderFeed(list) {

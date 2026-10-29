@@ -38,6 +38,10 @@ const PID_FILE = path.join(RUN, 'pids.json')
 const BRIDGE_PORT = 18081
 const BRIDGE = `http://127.0.0.1:${BRIDGE_PORT}`
 const PORT = Number(process.env.ZY_CTL_PORT || 18082)
+/* 音乐播放器服务（player/musicd.mjs）。桥通过 DSH_MUSIC_API 指过来，
+ * 所以桥那边一行都不用改 —— 它本来就把播放器当成一个 HTTP 服务。 */
+const MUSIC_PORT = Number(process.env.ZY_MUSIC_PORT || 18083)
+const MUSIC = `http://127.0.0.1:${MUSIC_PORT}`
 
 /* ══════════════════════════════════════════════════════════════════════
  * 配置与 pid
@@ -236,6 +240,78 @@ const pickPython = () => {
   return PY_CACHE.pick
 }
 
+/* ══════════════════════════════════════════════════════════════════════
+ * 音乐播放器服务
+ *
+ * 为什么要有：原来播放器是 DSH 的插件（dsh-music-huazai），DSH 不开就没音乐。
+ * 现在换成 player/musicd.mjs —— 同样是「HTTP 服务 + 浏览器页面出声」的模型，
+ * 但页面由我们自己发，所以不再依赖 DSH。
+ * ══════════════════════════════════════════════════════════════════════ */
+
+async function musicAlive() {
+  const ctl = new AbortController()
+  const t = setTimeout(() => ctl.abort(), 1200)
+  try {
+    const res = await fetch(`${MUSIC}/health`, { signal: ctl.signal })
+    if (!res.ok) return false
+    const j = await res.json()
+    return Boolean(j && j.ok)
+  } catch {
+    return false
+  } finally {
+    clearTimeout(t)
+  }
+}
+
+/** 起播放器服务。已经在跑就不动（它是无状态的，重启会丢当前队列）。 */
+async function musicEnsure() {
+  if (await musicAlive()) return { ok: true, already: true, message: '播放器服务已经在跑' }
+  const entry = path.join(DIR, 'player', 'musicd.mjs')
+  if (!fs.existsSync(entry)) return { ok: false, error: `找不到 ${entry}` }
+  let spawned
+  try {
+    spawned = spawnDetached(process.execPath, [entry], { tag: 'musicd' })
+  } catch (e) {
+    return { ok: false, error: `起不来：${e?.message ?? e}` }
+  }
+  for (let i = 0; i < 20; i++) {
+    await new Promise((r) => setTimeout(r, 200))
+    if (await musicAlive()) return { ok: true, pid: spawned.pid, message: '播放器服务起来了' }
+    if (!alive(spawned.pid)) break
+  }
+  const tail = tailOf(spawned.logFile)
+  return {
+    ok: false,
+    error: '播放器服务没起来' + (tail ? '：' + tail.split(/\r?\n/).filter(Boolean).slice(-2).join(' / ') : ''),
+    log: spawned.logFile,
+  }
+}
+
+/** 播放器服务的状态快照（桥的 /media 里有音乐，这里给页面用的精简版） */
+async function musicState() {
+  const ctl = new AbortController()
+  const t = setTimeout(() => ctl.abort(), 1500)
+  try {
+    const res = await fetch(`${MUSIC}/health`, { signal: ctl.signal })
+    if (!res.ok) return { up: false }
+    const j = await res.json()
+    return {
+      up: true,
+      clientAlive: Boolean(j.clientAlive),
+      now: j.nowPlaying || null,
+      pending: Number(j.pending) || 0,
+      queue: Array.isArray(j.queue) ? j.queue.slice(0, 5) : [],
+      lastError: String(j.lastError || ''),
+      auth: j.auth || null,
+      url: `http://127.0.0.1:${MUSIC_PORT}/player.html`,
+    }
+  } catch {
+    return { up: false }
+  } finally {
+    clearTimeout(t)
+  }
+}
+
 /** 读日志最后几行 —— 进程秒退时把真原因捞出来，别只回一句"起不来" */
 const tailOf = (file, bytes = 8192) => {
   try {
@@ -310,11 +386,16 @@ async function start(o = {}) {
 
   let spawned
   try {
+    /* 播放器活着就把桥直接指过去 —— 桥见到 DSH_MUSIC_API 就跳过「扫 DSH 端口」
+     * 那一整套，点歌/热榜/闪避全走 player/musicd.mjs。
+     * 没起来就什么都不设，桥自己回落到本机 QQ 音乐（跟以前一样，不会更差）。 */
+    const musicUp = await musicAlive()
     spawned = spawnDetached(process.execPath, args, {
       tag: 'bridge',
       env: {
         REPLY_MODE: mode,
         REPLY_CHAT_GAP: String(Math.round(gapSec() * 1000)),
+        ...(musicUp ? { DSH_MUSIC_API: MUSIC } : {}),
       },
     })
   } catch (e) {
@@ -608,6 +689,8 @@ async function status() {
       pythonUsed: PY_CACHE.pick && PY_CACHE.pick.ok ? PY_CACHE.pick.cmd : '',
       chatGap: gapSec(),
     },
+    /* 音乐播放器（player/musicd.mjs）—— 页面上的「音乐」卡片读这个 */
+    music: await musicState(),
     recent: parseBridgeLog(tailOf(path.join(RUN, 'bridge.log'), 128 * 1024), 14),
   }
 }
@@ -791,6 +874,9 @@ const server = http.createServer(async (req, res) => {
 server.listen(PORT, '127.0.0.1', () => {
   log(`控制台 http://127.0.0.1:${PORT}/  （项目目录 ${DIR}）`)
   log(`桥的接口原样代理到 :${BRIDGE_PORT}，桥没跑时页面照样能打开`)
+  /* 播放器服务跟着控制台一起起 —— 它挂了不影响弹幕，只影响音乐，
+   * 所以失败只记一行日志，绝不拦住控制台本身。 */
+  musicEnsure().then((r) => log(r.ok ? `音乐：${r.message}` : `音乐：${r.error}`))
   /* start.cmd 双击时要顺手把浏览器打开 —— 但必须等 listen 之后，
    * 否则浏览器比服务先到，看到的是"无法连接"，主人以为没起来。 */
   if (process.argv.includes('--open')) {
