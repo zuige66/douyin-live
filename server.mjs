@@ -146,6 +146,96 @@ const spawnDetached = (cmd, args, { tag, env } = {}) => {
   return { pid: child.pid, logFile }
 }
 
+/* ══════════════════════════════════════════════════════════════════════
+ * python 解释器探测
+ *
+ * 🔴 为什么非要有这一步：画面 native/render.py 第 24 行就 `from PIL import ...`，
+ *    解释器没有 Pillow 就秒退，页面上只剩一句 ModuleNotFoundError。
+ *    而 Windows 上 `python` 到底指哪个，取决于「启动控制台的那个 cmd」的 PATH ——
+ *    实测同一台机器：从 Git Bash 里 `python` 是 3.13（有 Pillow 13.0.0），
+ *    从 start.cmd 的 cmd 里却是 D:\download\python3.12.10（没有 Pillow）。
+ *    ⇒ 不能信命令名，必须真的 `import PIL` 跑一次。
+ * ══════════════════════════════════════════════════════════════════════ */
+
+const PY_CACHE = { stamp: null, pick: null }
+
+const pyHasPillow = (cmd, args = []) => {
+  try {
+    const r = spawnSync(cmd, [...args, '-c', 'import PIL'], {
+      encoding: 'utf8',
+      timeout: 8000,
+      windowsHide: true,
+    })
+    return r.status === 0
+  } catch {
+    return false
+  }
+}
+
+/** 候选：配置里那个 → PATH 里的 python / python3 → py -3 → 常见安装位置（扫目录，不写死版本） */
+const pythonCandidates = () => {
+  const out = []
+  const add = (cmd, args = []) => {
+    const c = String(cmd || '').trim()
+    if (!c) return
+    if (out.some((x) => x.cmd === c && x.args.join(' ') === args.join(' '))) return
+    out.push({ cmd: c, args })
+  }
+  add(cfg().python)
+  add('python')
+  add('python3')
+  add('py', ['-3'])
+  const roots = [
+    path.join(process.env.USERPROFILE || '', '.workbuddy-ai', 'binaries', 'python', 'versions'),
+    path.join(process.env.LOCALAPPDATA || '', 'Programs', 'Python'),
+    'C:\\Python313',
+    'C:\\Python312',
+    'C:\\Python311',
+  ]
+  for (const root of roots) {
+    try {
+      for (const d of fs.readdirSync(root)) {
+        const exe = path.join(root, d, 'python.exe')
+        if (fs.existsSync(exe)) add(exe)
+      }
+    } catch {}
+  }
+  return out
+}
+
+/** 挑一个能 import PIL 的 python。按 panel.json 的 mtime 缓存，改配置立刻生效。 */
+const pickPython = () => {
+  let stamp = 'none'
+  try {
+    stamp = String(fs.statSync(CFG_FILE).mtimeMs)
+  } catch {}
+  if (PY_CACHE.pick && PY_CACHE.stamp === stamp) return PY_CACHE.pick
+
+  const tried = []
+  for (const c of pythonCandidates()) {
+    const label = c.cmd + (c.args.length ? ' ' + c.args.join(' ') : '')
+    const ok = pyHasPillow(c.cmd, c.args)
+    tried.push(`${label} ${ok ? '✓' : '✗ 没有 Pillow'}`)
+    if (ok) {
+      PY_CACHE.stamp = stamp
+      PY_CACHE.pick = { ok: true, cmd: c.cmd, args: c.args, tried }
+      return PY_CACHE.pick
+    }
+  }
+  PY_CACHE.stamp = stamp
+  PY_CACHE.pick = {
+    ok: false,
+    cmd: '',
+    args: [],
+    tried,
+    error:
+      '找不到装了 Pillow 的 python，画面起不来（native/render.py 需要 PIL）。试过：\n' +
+      tried.map((t) => '  ' + t).join('\n') +
+      '\n在能用的那个 python 上装一次：<python> -m pip install Pillow',
+  }
+  return PY_CACHE.pick
+}
+
 /** 读日志最后几行 —— 进程秒退时把真原因捞出来，别只回一句"起不来" */
 const tailOf = (file, bytes = 8192) => {
   try {
@@ -390,10 +480,13 @@ async function overlayStart() {
   const pids = readPids()
   if (alive(pids.overlayPid)) return { ok: true, already: true, message: '画面窗口已经开着了' }
 
-  const python = String(cfg().python || 'python')
+  /* 🔴 必须是能 import PIL 的那个 —— 见 pickPython() 上面那段注释 */
+  const pyPick = pickPython()
+  if (!pyPick.ok) return { ok: false, error: pyPick.error }
+
   let spawned
   try {
-    spawned = spawnDetached(python, [py], { tag: 'overlay' })
+    spawned = spawnDetached(pyPick.cmd, [...pyPick.args, py], { tag: 'overlay' })
   } catch (e) {
     return { ok: false, error: `起不来：${e?.message ?? e}` }
   }
@@ -412,6 +505,7 @@ async function overlayStart() {
   return {
     ok: true,
     pid: spawned.pid,
+    python: pyPick.cmd,
     message: '画面窗口开了（1920×1080，去直播伴侣里抓「zuige大肥鱼直播画面」）',
   }
 }
@@ -508,6 +602,10 @@ async function status() {
       room: String((running && h.rid) || cfg().room || ''),
       mode: String(cfg().mode || 'flash'),
       python: String(cfg().python || 'python'),
+      /* 探测结果只读缓存，不在这里现跑 —— 这是 2 秒轮询的接口，
+       * 现跑 spawnSync 会把页面拖死。没探测过就是 null（还没点过开画面）。 */
+      pythonOk: PY_CACHE.pick ? PY_CACHE.pick.ok : null,
+      pythonUsed: PY_CACHE.pick && PY_CACHE.pick.ok ? PY_CACHE.pick.cmd : '',
       chatGap: gapSec(),
     },
     recent: parseBridgeLog(tailOf(path.join(RUN, 'bridge.log'), 128 * 1024), 14),
