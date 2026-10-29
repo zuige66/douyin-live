@@ -371,13 +371,25 @@ class Engine:
             "-t", str(secs),
             "-pix_fmt", "rgb24", "-f", "rawvideo", "-",
         ]
-        self._proc = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            stdin=subprocess.DEVNULL,
-            creationflags=0x08000000,
-        )
+        # 🔴 Popen 必须自己兜住：FFMPEG 是**模块导入那一刻**解析出来的路径，
+        #    进程跑起来之后这个 exe 被删掉（pip uninstall imageio-ffmpeg、
+        #    或者清理 site-packages），路径就指向空气了 —— 抛的是
+        #    FileNotFoundError: [WinError 2]，屏幕上只剩这么一行谁也看不懂的东西。
+        #    2026-10-29 就是栽在这里：画面照常渲染，只有视频全放不出来。
+        try:
+            self._proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL,
+                creationflags=0x08000000,
+            )
+        except FileNotFoundError:
+            self.error = "ffmpeg 不见了（被卸载/删除了），重启画面就好"
+            return
+        except OSError as e:
+            self.error = f"ffmpeg 起不来：{e}"
+            return
         self._next_at = time.time()
 
     # -------------------------------------------------------------- 每帧要图

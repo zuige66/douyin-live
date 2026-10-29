@@ -163,20 +163,48 @@ const spawnDetached = (cmd, args, { tag, env } = {}) => {
 
 const PY_CACHE = { stamp: null, pick: null }
 
-const pyHasPillow = (cmd, args = []) => {
+/* 🔴 为什么不能只 `import PIL`（2026-10-29 踩过）：
+ *    site-packages/PIL 只剩下 _imaging*.pyd、.py 全被删掉时，`import PIL`
+ *    会当成 namespace package **成功返回**（PIL.__file__ 是 None、dir() 空），
+ *    于是被判定「有 Pillow」选中，画面起来就在 render.py 第 24 行
+ *    `from PIL import Image` 秒退。判据必须是「真的能拿到 Image」。
+ *
+ * 🔴 顺带查 ffmpeg：没有它画面照样能起（静态图能画），但**所有视频素材
+ *    都放不出来**，屏幕上只有一句「素材放不出来」。这不是起不来的原因，
+ *    所以不当拒绝条件，但要记下来给诊断页看 —— 否则又是一个「看着正常」的坑。
+ */
+const pyProbe = (cmd, args = []) => {
+  const code = [
+    'r = []',
+    'try:',
+    '    from PIL import Image, ImageDraw, ImageFilter, ImageFont',
+    '    r.append("pil=1")',
+    'except Exception:',
+    '    r.append("pil=0")',
+    'try:',
+    '    import os, imageio_ffmpeg',
+    '    p = imageio_ffmpeg.get_ffmpeg_exe()',
+    '    r.append("ff=1" if (p and os.path.exists(p)) else "ff=0")',
+    'except Exception:',
+    '    r.append("ff=0")',
+    'print(";".join(r))',
+  ].join('\n')
   try {
-    const r = spawnSync(cmd, [...args, '-c', 'import PIL'], {
+    const res = spawnSync(cmd, [...args, '-c', code], {
       encoding: 'utf8',
       timeout: 8000,
       windowsHide: true,
     })
-    return r.status === 0
+    if (res.status !== 0) return { pillow: false, ffmpeg: false, raw: (res.stderr || '').trim() }
+    const out = String(res.stdout || '')
+    return { pillow: /pil=1/.test(out), ffmpeg: /ff=1/.test(out), raw: out.trim() }
   } catch {
-    return false
+    return { pillow: false, ffmpeg: false, raw: '' }
   }
 }
 
-/** 候选：配置里那个 → PATH 里的 python / python3 → py -3 → 常见安装位置（扫目录，不写死版本） */
+
+/** 候选：配置里那个 → 项目 .venv → PATH 里的 python / python3 → py -3 → 常见安装位置（扫目录，不写死版本） */
 const pythonCandidates = () => {
   const out = []
   const add = (cmd, args = []) => {
@@ -186,6 +214,11 @@ const pythonCandidates = () => {
     out.push({ cmd: c, args })
   }
   add(cfg().python)
+  /* 项目自己的 venv：open-overlay.cmd 早就把它排在第一位了，这里是同样的理由 ——
+   * 它是这台机器上唯一「Pillow + imageio-ffmpeg 都齐」的解释器。
+   * 2026-10-29 那次「素材放不出来」就是因为这里没排它，
+   * 结果选中了 .workbuddy-ai 里那个 PIL 只剩 .pyd 的解释器。 */
+  add(path.join(DIR, '.venv', 'Scripts', 'python.exe'))
   add('python')
   add('python3')
   add('py', ['-3'])
@@ -207,7 +240,7 @@ const pythonCandidates = () => {
   return out
 }
 
-/** 挑一个能 import PIL 的 python。按 panel.json 的 mtime 缓存，改配置立刻生效。 */
+/** 挑一个真能用的 python。按 panel.json 的 mtime 缓存，改配置立刻生效。 */
 const pickPython = () => {
   let stamp = 'none'
   try {
@@ -218,13 +251,26 @@ const pickPython = () => {
   const tried = []
   for (const c of pythonCandidates()) {
     const label = c.cmd + (c.args.length ? ' ' + c.args.join(' ') : '')
-    const ok = pyHasPillow(c.cmd, c.args)
-    tried.push(`${label} ${ok ? '✓' : '✗ 没有 Pillow'}`)
-    if (ok) {
-      PY_CACHE.stamp = stamp
-      PY_CACHE.pick = { ok: true, cmd: c.cmd, args: c.args, tried }
-      return PY_CACHE.pick
+    const pr = pyProbe(c.cmd, c.args)
+    if (!pr.pillow) {
+      tried.push(`${label} ✗ 没有可用的 Pillow`)
+      continue
     }
+    tried.push(`${label} ✓${pr.ffmpeg ? '' : '（⚠ 没有 ffmpeg，视频素材放不出来）'}`)
+    PY_CACHE.stamp = stamp
+    PY_CACHE.pick = {
+      ok: true,
+      cmd: c.cmd,
+      args: c.args,
+      ffmpeg: pr.ffmpeg,
+      tried,
+      /* 缺 ffmpeg 不拦，但要说出来 —— 不然「画面正常、视频全放不出来」又是一场排查 */
+      warn: pr.ffmpeg
+        ? ''
+        : `这个 python 没有可用的 ffmpeg（imageio-ffmpeg），视频/GIF 素材会显示「素材放不出来」。\n` +
+          `补一次：${label} -m pip install imageio-ffmpeg`,
+    }
+    return PY_CACHE.pick
   }
   PY_CACHE.stamp = stamp
   PY_CACHE.pick = {
@@ -233,7 +279,7 @@ const pickPython = () => {
     args: [],
     tried,
     error:
-      '找不到装了 Pillow 的 python，画面起不来（native/render.py 需要 PIL）。试过：\n' +
+      '找不到能用的 python，画面起不来（native/render.py 需要 Pillow 的 Image）。试过：\n' +
       tried.map((t) => '  ' + t).join('\n') +
       '\n在能用的那个 python 上装一次：<python> -m pip install Pillow',
   }
@@ -762,6 +808,9 @@ async function status() {
        * 现跑 spawnSync 会把页面拖死。没探测过就是 null（还没点过开画面）。 */
       pythonOk: PY_CACHE.pick ? PY_CACHE.pick.ok : null,
       pythonUsed: PY_CACHE.pick && PY_CACHE.pick.ok ? PY_CACHE.pick.cmd : '',
+      /* 视频素材能不能放，全看这个。false = 画面能起、但所有 mp4 都会显示「素材放不出来」 */
+      pythonFfmpeg: PY_CACHE.pick && PY_CACHE.pick.ok ? !!PY_CACHE.pick.ffmpeg : null,
+      pythonWarn: PY_CACHE.pick && PY_CACHE.pick.ok ? PY_CACHE.pick.warn || '' : '',
       chatGap: gapSec(),
     },
     /* 音乐播放器（player/musicd.mjs）—— 页面上的「音乐」卡片读这个 */
