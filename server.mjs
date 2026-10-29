@@ -709,7 +709,20 @@ server.listen(PORT, '127.0.0.1', () => {
 /* 端口被占的时候 node 只会打一行 EADDRINUSE，很容易看漏 —— 说明白点 */
 server.on('error', (e) => {
   if (e && e.code === 'EADDRINUSE') {
-    console.error(`\n端口 ${PORT} 被占了 —— 可能已经有一个控制台在跑。`)
+    /* 双击两次 start.cmd 是最常见的情况，别用报错吓人：
+     * 直接把浏览器指到已经跑着的那个控制台，然后安静退出。 */
+    console.error(`\n端口 ${PORT} 上已经有一个控制台在跑了。`)
+    if (process.argv.includes('--open')) {
+      try {
+        spawn('cmd', ['/c', 'start', '', `http://127.0.0.1:${PORT}/`], {
+          detached: true,
+          stdio: 'ignore',
+          windowsHide: true,
+        }).unref()
+      } catch {}
+      console.error('已经帮你打开那一个了，这个窗口可以关掉。\n')
+      process.exit(0)
+    }
     console.error(`换端口：set ZY_CTL_PORT=18083 && node server.mjs\n`)
     process.exit(1)
   }
