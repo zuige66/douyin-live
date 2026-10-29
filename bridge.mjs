@@ -2196,7 +2196,11 @@ async function boxState() {
     now: np,
     pending: Number(r.pending) || 0,
     queue: realQ,
-    qIndex: Number.isFinite(Number(np && np.index)) ? Number(np.index) : -1,
+    /* 🔴 np 可能是 null（播放器没在放）。写成 `np && np.index` 不行：
+     * null && x 得到 null，而 Number(null) === 0 被当成有限数，
+     * 下一句 Number(np.index) 直接 TypeError，桥**根本起不来**。
+     * 必须先判 np.index 存在再转数字。 */
+    qIndex: np && np.index != null && Number.isFinite(Number(np.index)) ? Number(np.index) : -1,
   }
   return box
 }
