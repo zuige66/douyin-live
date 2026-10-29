@@ -1961,7 +1961,7 @@ async function boxBase() {
 }
 
 /** 插件现状。alive=false 表示 DSH 开着但音乐界面没打开。 */
-let box = { ok: false, alive: false, why: '还没连上', at: 0, now: null, pending: 0 }
+let box = { ok: false, alive: false, why: '还没连上', at: 0, now: null, pending: 0, queue: [], qIndex: -1 }
 /** 音乐从哪儿来：'box' = 插件（DSH 里放），'qq' = 本机 QQ 音乐 */
 let musicSrc = 'box'
 /* 插件从什么时候开始连不上（0 = 现在连着）。用来做「心跳抖动宽限」，
@@ -2077,6 +2077,55 @@ function boxQueueSettle(nowTitle, nowId) {
   const now = Date.now()
   const title = String(nowTitle || '')
   const id = String(nowId || '')
+
+  /* 🔴 有真实队列就以它为准（2026-10-29）。这条是根治：
+   * 播放器现在每 2 秒把**整条队列**报上来，桥不用再靠歌名猜「排了哪几首」。
+   *
+   * 做法：取「当前曲之后」那一段，按顺序去 boxQueue 里取同名条目 ——
+   * 取到的沿用原来的 hot 标记和时间戳（点歌台靠 hot 分「谁点的」、靠 at 算等了多久）；
+   * 取不到的是热榜垫的 / 桥重启后不认识的老歌，补一条按热榜记（这样不会
+   * 冒充成观众点的挂在点歌台上）。
+   * 反过来：队里有、播放器里没有的，说明已经被跳过或早唱完了 —— 直接丢掉。
+   *
+   * 以前没有这段，全靠「标题变了」推演，一旦播放器那边被跳过/重排，
+   * 账就永远对不回来，表现就是「点歌台显示的和实际放的不一样」。 */
+  if (box.queue.length && box.qIndex >= 0) {
+    const pool = boxQueue.slice()
+    const used = new Set()
+    const next = []
+    const takeIdx = (nm) => {
+      let k = pool.findIndex((x, i) => !used.has(i) && normTitle(x.name) === normTitle(nm))
+      if (k < 0) k = pool.findIndex((x, i) => !used.has(i) && sameTitle(x.name, nm))
+      return k
+    }
+    for (const t of box.queue.slice(box.qIndex + 1)) {
+      const nm = String((t && t.name) || '').trim()
+      if (!nm) continue
+      const k = takeIdx(nm)
+      if (k >= 0) {
+        used.add(k)
+        next.push(pool[k])
+      } else {
+        next.push({ name: nm, at: now, hot: true, assumed: true })
+      }
+    }
+    /* 刚点进去的那几首要护一下（2026-10-29）。
+     * 命令发出去到浏览器下一次轮询（最多 2 秒）之间，真实队列里还看不到它；
+     * 这时候直接按真实队列重建，会把刚点的歌当场删掉 —— 点歌台闪一下就没，
+     * 而那首歌 2 秒后其实正常放上了。8 秒内的条目一律保留（按原顺序补在后面）。
+     * ⚠️ 但**正在放的这首要排除**：它已经在 qIndex 上，不属于「接下来」，
+     *    不排掉的话点歌台会多出一行正在唱的歌（实测踩过）。 */
+    for (const x of pool) {
+      if (now - x.at >= 8000) continue
+      if (title && sameTitle(x.name, title)) continue
+      if (next.some((y) => normTitle(y.name) === normTitle(x.name))) continue
+      next.push(x)
+    }
+    boxQueue = next
+    queue.list = boxQueueNames().slice(0, QUEUE_MAX)
+    return before !== boxQueueNames().join('|')
+  }
+
   let hit = -1
   if (title || id) {
     /* 从后往前找：同一首在队里出现两次时，以最后一次为准（前面的肯定已经放过） */
@@ -2134,13 +2183,20 @@ async function boxState() {
     box = { ...box, ok: false, alive: false, why: r.why || '问不到', at: Date.now() }
     return box
   }
+  /* 播放器里的**真实队列**（2026-10-29 起浏览器每次上报都带）。
+   * 以前桥只能自己记账 + 靠歌名对账，一旦播放器那边被跳过/重排，
+   * 账就永远歪着 —— 这就是「点歌台显示的跟实际播放的不一样」。 */
+  const np = r.nowPlaying || null
+  const realQ = Array.isArray(np && np.queue) ? np.queue : []
   box = {
     ok: true,
     alive: !!r.clientAlive,
     why: r.clientAlive ? '' : '播放器界面没开（DSH 里把音乐打开）',
     at: Date.now(),
-    now: r.nowPlaying || null,
+    now: np,
     pending: Number(r.pending) || 0,
+    queue: realQ,
+    qIndex: Number.isFinite(Number(np && np.index)) ? Number(np.index) : -1,
   }
   return box
 }
@@ -2185,8 +2241,11 @@ function boxToMusic() {
   /* 点歌队列对账。**每次轮询都要跑**，不能只在换歌时跑 ——
    * 一首歌能放四五分钟，而「等太久就算被跳过」这条是跟时间赛跑的：
    * 只在换歌时跑的话，卡住的那几分钟里 hotNeed() 一直以为还有歌，
-   * 热榜就一直不补。n 最多 20 项，1.5 秒一次的开销可以忽略。 */
-  if (music.title) boxQueueSettle(music.title, music.trackId)
+   * 热榜就一直不补。n 最多 20 项，1.5 秒一次的开销可以忽略。
+   *
+   * 2026-10-29：有真实队列时**没在放也要跑** —— 播放器停着但队里还排着歌，
+   * 正是最需要把账摆正的时候（以前 `if (music.title)` 一挡就什么都不做）。 */
+  if (music.title || box.queue.length) boxQueueSettle(music.title, music.trackId)
   boxLastPlaying = music.playing
   checkStuck()
 }
