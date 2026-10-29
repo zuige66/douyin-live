@@ -2138,6 +2138,20 @@ function boxQueueSettle(nowTitle, nowId) {
   }
   if (hit >= 0) boxQueue = boxQueue.slice(hit + 1)
   else if (title) boxQueue = boxQueue.filter((x) => now - x.at < QUEUE_STALE_MS)
+  /* 🔴 播放器空着的时候，账本里超过 12 秒的条目一律丢掉（2026-10-29 加）。
+   *
+   * 场景：点歌命令发出去了、桥也记了账，但播放器那边没落住（服务重启 /
+   * 页面取走命令后丢了 / 音源失败被自己跳过）。播放器空了，账本还留着，
+   * 于是 hotNeed() 看到「还有观众点的歌没放完」→ **热榜永远让路** →
+   * 没人再点歌就一直静着，而且自己永远好不了（今天 14:14 就是这个状态，
+   * 最后靠观众点了首歌才拉起来）。
+   *
+   * 12 秒是给「命令发出 → 浏览器下一次轮询（2 秒）→ 上报」留的余量；
+   * 只在页面真的连着（box.alive）时才丢，页面关着的时候命令还压在
+   * 播放器服务里，账不能提前清掉。 */
+  else if (box.alive && !box.now && !box.queue.length) {
+    boxQueue = boxQueue.filter((x) => now - x.at < 12000)
+  }
   boxQueue = boxQueue.filter((x) => now - x.at < QUEUE_MAX_WAIT)
   queue.list = boxQueueNames().slice(0, QUEUE_MAX)
   return before !== boxQueueNames().join('|')
