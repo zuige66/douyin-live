@@ -34,6 +34,10 @@ const S = {
   durationSec: 0,
   volume: 0.7,
   clientAt: 0,
+  /* 浏览器允不允许真出声（自动播放策略）。
+   * 跟 clientAt 分开记：页面开着 ≠ 能出声，
+   * 混在一起会变成「一切正常但没声音」。 */
+  clientUnlocked: false,
   commands: [],
   lastError: '',
   endedAt: 0,
@@ -61,6 +65,7 @@ function nowPlaying() {
 function snapshot() {
   return {
     clientAlive: alive(),
+    clientUnlocked: Boolean(S.clientUnlocked),
     nowPlaying: nowPlaying(),
     pending: S.commands.length,
     volume: S.volume,
@@ -286,7 +291,16 @@ const server = http.createServer(async (req, res) => {
     /* ── 播放页用的接口 ─────────────────────────────────────────── */
     if (p === '/client/poll') {
       /* 页面来取命令：取走并清空。同时把 volume / 当前曲目一起带回去，
-       * 页面刷新后不用额外请求就能接上。 */
+       * 页面刷新后不用额外请求就能接上。
+       *
+       * 🔴 这里必须打 clientAt 心跳（2026-10-29 修）。
+       *    原来只有 /client/report 打心跳，而面板「没在放歌就不报进度」——
+       *    于是**空闲时 clientAt 永远是 0**，桥判定「播放器界面没开」，
+       *    观众点歌直接回「播放器关着呢」。页面明明开着也没用。
+       *    poll 是每 1 秒无条件发的，用它当心跳才对得上「界面在不在」。 */
+      S.clientAt = Date.now()
+      const q = url.searchParams
+      if (q.has('unlocked')) S.clientUnlocked = q.get('unlocked') === '1'
       const cmds = S.commands.splice(0, S.commands.length)
       return json(res, 200, { commands: cmds, volume: S.volume, nowPlaying: nowPlaying() })
     }
@@ -294,6 +308,7 @@ const server = http.createServer(async (req, res) => {
     if (p === '/client/report' && req.method === 'POST') {
       const b = await readBody(req)
       S.clientAt = Date.now()
+      if (b.playing) S.clientUnlocked = true
       if (b.trackId && S.current && String(b.trackId) === String(S.current.id)) {
         S.positionSec = Number(b.positionSec) || 0
         S.durationSec = Number(b.durationSec) || S.durationSec

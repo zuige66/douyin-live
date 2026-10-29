@@ -412,15 +412,21 @@ function renderMusic(m) {
     return
   }
   $('#mSvc').innerHTML = '<span style="color:var(--primary)">在跑</span>'
+  /* clientUnlocked 是后加的字段：控制台还是旧进程时它是 undefined，
+   * 这时候别硬说「还没解锁」—— 只报确定的那部分。 */
+  const unk = typeof m.clientUnlocked !== 'boolean'
   $('#mClient').innerHTML = m.clientAlive
-    ? '<span style="color:var(--primary)">开着</span>'
+    ? unk || m.clientUnlocked
+      ? '<span style="color:var(--primary)">开着</span>'
+      : '<span style="color:var(--warn)">开着·还没解锁</span>'
     : '<span style="color:var(--warn)">没开</span>'
   const n = m.now
   $('#mNow').textContent = n && n.name ? `${n.name} · ${(n.artists || []).join('/')}` : '—'
   $('#mQueue').textContent = m.queue && m.queue.length ? `${m.queue.length} 首` : '空'
 
   const bits = []
-  if (!m.clientAlive) bits.push('播放页没开，现在没有声音 —— 点「打开播放页」，进去点一次启动。')
+  if (!m.clientAlive) bits.push('控制台这一页没连着播放器 —— 刷新一下本页就行（声音要在本页出）。')
+  else if (!unk && !m.clientUnlocked) bits.push('浏览器还没允许出声，点一下「▶ 启动播放」，点过一次就记住了。')
   if (m.auth && m.auth.ok === false) bits.push(m.auth.why || '没找到网易云登录态')
   if (m.lastError) bits.push('最近一次错误：' + m.lastError)
   $('#mHint').textContent = bits.join(' ')
@@ -553,7 +559,9 @@ async function auTick() {
   if (auPolling) return
   auPolling = true
   try {
-    const r = await mApi('/client/poll')
+    /* unlocked 一起带上：服务端靠它区分「页面开着」和「能出声」。
+     * 只发 poll 不发 report 也能维持心跳 —— 空闲时也必须在。 */
+    const r = await mApi('/client/poll?unlocked=' + (musicUnlocked ? '1' : '0'))
     await auApply(r.commands)
     if (typeof r.volume === 'number') au.volume = r.volume
   } catch {

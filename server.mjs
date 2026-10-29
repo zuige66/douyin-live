@@ -301,6 +301,9 @@ async function musicState() {
     return {
       up: true,
       clientAlive: Boolean(j.clientAlive),
+      /* 页面开着 ≠ 浏览器肯出声（自动播放策略）。分开报，
+       * 不然「一切正常但没声音」只能靠人猜。 */
+      clientUnlocked: Boolean(j.clientUnlocked),
       now: j.nowPlaying || null,
       pending: Number(j.pending) || 0,
       queue: Array.isArray(j.queue) ? j.queue.slice(0, 5) : [],
