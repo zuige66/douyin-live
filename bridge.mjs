@@ -1931,14 +1931,21 @@ async function boxBase() {
     boxApiAt = Date.now()
     return boxApi
   }
-  /* 先看父进程（DSH 起的桥，ppid 就是宿主，最快最准）；
-   * 父进程不是 DSH 的时候（手动 start.cmd、或者别的什么拉起它）再按进程名找。
-   * 只认父进程的话，手动起的桥永远「连不上 DSH」，点歌会莫名其妙回落到 QQ 音乐。 */
-  const cands = await scanListeners([process.ppid])
-  if (!cands.length) {
-    const pids = await pidsMatching(/deepseek|dsh/i)
-    for (const p of await scanListeners(pids)) if (!cands.includes(p)) cands.push(p)
-  }
+  /* 🔴 2026-10-29：这里以前是
+   *      const cands = await scanListeners([process.ppid])
+   *      if (!cands.length) { ...按进程名找 DSH... }
+   *   —— 把「ppid 有没有端口」当成了「ppid 是不是 DSH」。
+   *
+   *  桥一旦不是由 DSH 直接拉起（实测：被 WorkBuddy 的 server.mjs 拉起，
+   *  ppid 只监听 18082），cands 就非空，按进程名兜底那段**永远不执行**，
+   *  于是扫不到 DSH（监听 5217 / 3444 / 3443 / 8326），一直回落到
+   *  127.0.0.1:8140 —— 症状是「连不上 DSH（没开？）」：点歌全废、
+   *  音源回落 qq、热榜停摆。而 curl 直连 5217 一切正常，极难排查。
+   *
+   *  所以两个来源**无条件合并**，一次 netstat 全拿到，不再用「有没有端口」猜。
+   *  父进程排前面：DSH 直接起桥时它最快命中，不用等后面那几个探针。 */
+  const pids = [process.ppid, ...(await pidsMatching(/deepseek|dsh/i))]
+  const cands = await scanListeners(pids)
   for (const p of cands) {
     if (await looksLikeDsh(p)) {
       const next = `http://127.0.0.1:${p}/api/dsh-music`
