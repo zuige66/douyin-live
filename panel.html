@@ -479,6 +479,7 @@ au.volume = 0.7
 let auTrack = ''
 let auSongId = ''
 let auPolling = false
+let auResumed = false
 let musicUnlocked = false
 try {
   musicUnlocked = localStorage.getItem('zy-music-unlocked') === '1'
@@ -564,6 +565,18 @@ async function auTick() {
     const r = await mApi('/client/poll?unlocked=' + (musicUnlocked ? '1' : '0'))
     await auApply(r.commands)
     if (typeof r.volume === 'number') au.volume = r.volume
+    /* 刷新页面后接上正在放的那首：不接的话账本以为在放、耳朵里没声，
+     * 看起来就像「点歌成功但没声音」。只试一次，失败交给服务端切歌。 */
+    const np = r.nowPlaying
+    if (!auTrack && !auResumed && musicUnlocked && np && np.trackId) {
+      auResumed = true
+      await auPlayTrack({ id: np.trackId, songId: np.trackId })
+      if (np.positionSec > 2) {
+        try {
+          au.currentTime = Number(np.positionSec) || 0
+        } catch {}
+      }
+    }
   } catch {
     /* 播放器服务没起来时不要刷屏报错，音乐卡片那边会说 */
   } finally {
