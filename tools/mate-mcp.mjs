@@ -159,14 +159,18 @@ async function callTool(name, args = {}) {
     const before = await call('/state').catch(() => null)
     const r = await call(name === 'live_start' ? '/live/start' : '/live/stop', 'POST')
     if (!r.ok) {
-      const tried = (r.tried || []).map((t) => `  · ${JSON.stringify(t.name)} -> ${t.how || '点不动'}`).join('\n')
+      const tried = (r.tried || [])
+        .map((t) => (typeof t === 'string' ? `  · 试过名字 ${t}` : `  · ${JSON.stringify(t.name)} -> ${t.how || '点不动'}`))
+        .join('\n')
       return {
         content: [
           {
             type: 'text',
             text: `${kind}失败：${r.reason || '未知原因'}\n${
               r.picked ? `最像的控件：${JSON.stringify(r.picked.name)} ${JSON.stringify(r.picked.rect)}` : ''
-            }${tried ? '\n试过的：\n' + tried : ''}\n可以让我跑 mate_probe 看看真实按钮名。`,
+            }${tried ? '\n试过的：\n' + tried : ''}${
+              String(r.reason || '').includes('没在开播') ? '' : '\n可以让我跑 mate_probe 看看真实按钮名。'
+            }`,
           },
         ],
         isError: true,
