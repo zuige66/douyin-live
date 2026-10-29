@@ -23,7 +23,7 @@ const ROOT = path.dirname(HERE)
 const TOKEN_FILE = path.join(ROOT, '.run', 'mate-token')
 const CONF_FILE = path.join(ROOT, 'cache', 'mate.json')
 
-const TIMEOUT = 90000 // 导一次 UIA 树 + 关播二次确认，最慢能到 20~30 秒
+const TIMEOUT = 150000 // 导 UIA 树 + 关播二次确认 + 冷启动直播伴侣（最多等 90 秒窗口）
 
 function conf() {
   try {
@@ -42,8 +42,10 @@ function token() {
 }
 
 function base() {
-  const port = Number(conf().port) || 18085
-  return `http://127.0.0.1:${port}`
+  const c = conf()
+  const host = c.host || '127.0.0.1'
+  const port = Number(c.port) || 18085
+  return `http://${host}:${port}`
 }
 
 const HINT = '控制代理没起来。请双击仓库根目录的 start-mate-agent.cmd（会弹 UAC），保持那个黑窗口开着，再试一次。'
@@ -108,12 +110,16 @@ const TOOLS = [
   },
   {
     name: 'live_start',
-    description: '让直播伴侣开始直播（等同点界面上的「开始直播」）。走 UIA 默认动作，不需要鼠标。',
+    description:
+      '让直播伴侣开始直播。如果直播伴侣没开着，会先把它拉起来再开播（远程场景不用手点）。走 UIA 默认动作，不需要鼠标。',
     inputSchema: { type: 'object', properties: {}, additionalProperties: false },
   },
   {
     name: 'live_stop',
-    description: '让直播伴侣结束直播（等同点界面上的「结束直播」）。走 UIA 默认动作，不需要鼠标。',
+    description:
+      '让直播伴侣结束直播（会自动点掉「确认要结束当前直播吗？」）。' +
+      '⚠️ 这是不可撤销的对外动作：只在用户明确要求下播时调用，调用前先 mate_status 确认确实在播。' +
+      '不要把「顺便试一下」当成理由——会真的断掉正在进行的直播。',
     inputSchema: { type: 'object', properties: {}, additionalProperties: false },
   },
   {
@@ -156,7 +162,23 @@ async function callTool(name, args = {}) {
 
   if (name === 'live_start' || name === 'live_stop') {
     const kind = name === 'live_start' ? '开播' : '关播'
-    const before = await call('/state').catch(() => null)
+    let before = await call('/state').catch(() => null)
+
+    // 远程场景：人不在电脑前，直播伴侣可能根本没开。开播时顺手拉起来。
+    let launched = ''
+    if (name === 'live_start' && before && before.running === false) {
+      const L = await call('/launch', 'POST').catch((e) => ({ ok: false, reason: e.message }))
+      if (!L.ok) {
+        return {
+          content: [{ type: 'text', text: `开播前要先把直播伴侣拉起来，但没成功：${L.reason}` }],
+          isError: true,
+        }
+      }
+      launched = L.already ? '直播伴侣本来就开着。' : '直播伴侣是刚拉起来的（等了窗口）。'
+      await new Promise((s) => setTimeout(s, 2500))
+      before = await call('/state').catch(() => null)
+    }
+
     const r = await call(name === 'live_start' ? '/live/start' : '/live/stop', 'POST')
     if (!r.ok) {
       const tried = (r.tried || [])
@@ -166,7 +188,7 @@ async function callTool(name, args = {}) {
         content: [
           {
             type: 'text',
-            text: `${kind}失败：${r.reason || '未知原因'}\n${
+            text: `${launched ? launched + '\n' : ''}${kind}失败：${r.reason || '未知原因'}\n${
               r.picked ? `最像的控件：${JSON.stringify(r.picked.name)} ${JSON.stringify(r.picked.rect)}` : ''
             }${tried ? '\n试过的：\n' + tried : ''}${
               String(r.reason || '').includes('没在开播') ? '' : '\n可以让我跑 mate_probe 看看真实按钮名。'
@@ -178,7 +200,9 @@ async function callTool(name, args = {}) {
     }
     await new Promise((s) => setTimeout(s, 1500))
     const after = await call('/state').catch(() => null)
-    const bits = [`${kind}指令已执行（UIA ${r.how}，控件「${r.picked?.name || '?'}」）。`]
+    const bits = []
+    if (launched) bits.push(launched)
+    bits.push(`${kind}指令已执行（UIA ${r.how}，控件「${r.picked?.name || '?'}」）。`)
     if (kind === '关播') {
       bits.push(
         r.confirm && r.confirm !== '没弹确认框（可能已经直接停了）'
