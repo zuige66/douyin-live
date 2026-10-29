@@ -1,7 +1,17 @@
 # prompts/ —— 人设、知识库、皮套
 
-这个目录里的东西**不进公开仓库**（`dafeiyu-live.md` 已在 `.gitignore` 里）。
-clone 下来是空的，要自己补。
+这个目录里**真实的内容不进公开仓库**，只留模板。clone 下来你看到的是：
+
+```
+prompts/
+├── README.md          ← 就是你正在看的这份
+├── kb/example.md      ← 知识库模板
+└── skins/example.md   ← 皮套人设模板
+```
+
+被 `.gitignore` 挡住的（本地写、本地用，别提交）：
+`dafeiyu-live.md`（主角色卡）、`kb/*.md`（除了 example）、`skins/*.md`（除了 example）。
+**缺了这些也能跑** —— 每一处都有兜底，只是人会很薄，下面分别说。
 
 ## dafeiyu-live.md（主角色卡）
 
