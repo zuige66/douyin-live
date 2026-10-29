@@ -102,9 +102,10 @@ def task_info():
     ⚠️ `schtasks /create` 返回成功之后，Task Scheduler 服务有几十毫秒到几秒
     才把新任务挂上，这期间 GetTask 会报「找不到文件」。所以这里重试几次，
     不然会把「建成功了」误判成「没建成」（踩过一次，白让主人多点了一次 UAC）。
+    实测 5 秒不够，有机器要十几秒，所以放到 20 次（10 秒）。
     """
     last_err = None
-    for attempt in range(10):
+    for attempt in range(20):
         try:
             import comtypes
             import comtypes.client
@@ -212,7 +213,15 @@ def install() -> int:
 
     found, info = task_info()
     if not found:
-        log("[ERROR] 任务没建成功。上面 schtasks 的输出就是原因。")
+        # 分开说：rc!=0 才是真的失败；rc==0 却查不到，九成是服务刷新延迟。
+        # 之前这里一律报「任务没建成功」，而上面 schtasks 明明写着「成功创建」，
+        # 自相矛盾的报错会让人以为白点了 UAC，白折腾一轮。
+        if rc != 0:
+            log("[ERROR] 注册失败（rc=%d）。原因看上面 schtasks 的输出。" % rc)
+        else:
+            log("[WARN] schtasks 说建成功了，但 10 秒内查不到这条任务。")
+            log("       多半是 Task Scheduler 服务还没刷新完，不是没建成。")
+            log("       过一会儿跑这个确认：python tools/install_mate_task.py --status")
         return 1
     log("✓ 任务已注册：%s" % json.dumps(info, ensure_ascii=False, default=str))
     if info.get("runLevel") != 1:
