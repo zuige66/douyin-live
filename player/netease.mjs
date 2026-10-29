@@ -239,6 +239,26 @@ export async function search(keywords, limit = 10, offset = 0) {
   return songs.map(mapTrack).filter(Boolean)
 }
 
+/**
+ * 榜单 / 歌单曲目（2026-10-29 加）。
+ *
+ * 为什么必须有：桥的「热榜垫歌」调的是 `/chart?id=<歌单>`，
+ * 之前 musicd 没这个路由 → 404 → 桥把 404 翻译成「插件没装」，
+ * 于是**空闲时永远不补歌**：没人点歌就一直静着，
+ * 面板上写着「播放器空着 30 秒，正在补歌（插件没装）」，补了半小时也没补上。
+ *
+ * 默认 3778678 = 网易云热歌榜。
+ */
+export async function chart(playlistId = '3778678', limit = 50) {
+  const id = String(playlistId || '').replace(/\D/g, '')
+  if (!id) return []
+  const r = await request('/api/v6/playlist/detail', { id, n: 1000, s: 8 })
+  const list = r?.playlist?.tracks || []
+  if (!list.length) return []
+  const n = Math.max(1, Math.min(200, Number(limit) || 50))
+  return list.slice(0, n).map(mapTrack).filter(Boolean)
+}
+
 /** 音质档位 → level 参数。高音质拿不到就逐级降，别一上来就失败。 */
 const LEVEL_FALLBACK = {
   jymaster: ['hires', 'lossless', 'exhigh', 'standard'],

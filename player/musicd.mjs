@@ -17,7 +17,7 @@
  */
 import http from 'node:http'
 import fs from 'node:fs'
-import { search, songUrl, userAccount, cookieSource, lyric } from './netease.mjs'
+import { search, songUrl, userAccount, cookieSource, lyric, chart } from './netease.mjs'
 
 const PORT = Number(process.env.ZY_MUSIC_PORT || 18083)
 const HOST = '127.0.0.1'
@@ -59,6 +59,12 @@ function nowPlaying() {
     positionSec: Number(S.positionSec) || 0,
     durationSec: Number(S.durationSec) || 0,
     playing: Boolean(S.playing),
+    /* 真实待播队列（2026-10-29 加）。桥的 boxState() 读的是 nowPlaying.queue，
+     * 以前这里没给 → 桥永远看到空队列 → 点歌台显示的和实际放的对不上。
+     * 注意语义：**不含当前这首**，跟桥的 boxQueue 一致。 */
+    queue: S.queue.slice(0, 30).map((t) => ({
+      id: t.id, name: t.name, artists: t.artists, durationMs: t.durationMs,
+    })),
   }
 }
 
@@ -164,6 +170,19 @@ function applyCommand(cmd) {
       push({ type: 'volume', value: S.volume })
       return { ok: true, volume: S.volume }
     }
+    /* 清空当前 + 队列，真停下来（2026-10-29 加）。
+     * 以前只有 advance() 在队列放空时自己 push 一条 stop，
+     * 外部想让音乐停（切歌源、紧急静音）没有办法，只能关整个播放器服务。 */
+    case 'stop': {
+      S.current = null
+      S.queue = []
+      S.playing = false
+      S.positionSec = 0
+      S.durationSec = 0
+      push({ type: 'stop' })
+      log('  ■ 停止播放（清空队列）')
+      return { ok: true }
+    }
     default:
       return { ok: false, why: `不认识的命令 ${type}` }
   }
@@ -251,12 +270,40 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, { tracks, keyword: kw })
     }
 
+    /* 榜单 —— 桥的「热榜垫歌」用这个接口补歌（空闲时自己放）。
+     * 缺了它，没人的时候就永远静着。 */
+    if (p === '/chart') {
+      const id = url.searchParams.get('id') || '3778678'
+      const limit = Number(url.searchParams.get('limit')) || 50
+      try {
+        const tracks = await chart(id, limit)
+        if (!tracks.length) {
+          return json(res, 200, { ok: false, why: '榜单拉不到（登录态过期？试试重新登录网易云）', tracks: [] })
+        }
+        return json(res, 200, { ok: true, id, tracks })
+      } catch (e) {
+        return json(res, 200, { ok: false, why: '榜单请求出错：' + String((e && e.message) || e).slice(0, 120), tracks: [] })
+      }
+    }
+
     if (p === '/url') {
       const id = url.searchParams.get('id') || ''
       const quality = url.searchParams.get('quality') || 'exhigh'
       const r = await songUrl(id, quality)
       if (!r.url) S.lastError = r.why || '取不到直链'
-      return json(res, 200, r)
+      /* 🔴 必须同时给两种形状（2026-10-29 修）：
+       * 桥读的是 dsh-music-huazai 的 `{ok, result:{url, trial}}`，
+       * 我们原来只回扁平的 `{url, trial}` → 桥那边 `u.result` 恒 undefined
+       * → 一律判「取不到音源」。表现就是：
+       *   · 观众点歌「晴天」「颜色」全回「找到是找到了，但这首放不出来」
+       *   · 热榜垫歌一首也垫不上（预检永远失败）
+       * 而直接 curl /url 看是有 url 的，所以特别容易误判成「网络问题」。
+       * 扁平那层留着，别的地方已经在用了。 */
+      return json(res, 200, {
+        ok: Boolean(r.url),
+        ...r,
+        result: { url: r.url || '', level: r.level || '', trial: Boolean(r.trial), code: r.code },
+      })
     }
 
     if (p === '/lyric') {
