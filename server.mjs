@@ -276,7 +276,10 @@ async function musicEnsure() {
   }
   for (let i = 0; i < 20; i++) {
     await new Promise((r) => setTimeout(r, 200))
-    if (await musicAlive()) return { ok: true, pid: spawned.pid, message: '播放器服务起来了' }
+    if (await musicAlive()) {
+      writePids({ musicPid: spawned.pid })
+      return { ok: true, pid: spawned.pid, message: '播放器服务起来了' }
+    }
     if (!alive(spawned.pid)) break
   }
   const tail = tailOf(spawned.logFile)
@@ -591,6 +594,75 @@ async function overlayStart() {
   }
 }
 
+/** 只停画面，不动桥 —— 「重启画面」用，直播中也能安全点。 */
+function overlayStop() {
+  const pids = readPids()
+  const killed = []
+  if (alive(pids.overlayPid)) {
+    killed.push(`pid=${pids.overlayPid}`)
+    killTree(pids.overlayPid)
+  }
+  /* 不在 pids 里的（手工开的、别处起的）按窗口标题补一刀。
+   * ⚠️ taskkill 的 WINDOWTITLE 不支持通配符，只能两个全名各来一次。
+   * ⚠️ 别改成按 IMAGENAME 杀 python.exe —— 会把机器上所有 python 一起带走。 */
+  for (const t of ['zuige大肥鱼直播画面', '大肥鱼直播画面']) {
+    try {
+      spawnSync('taskkill', ['/F', '/FI', `WINDOWTITLE eq ${t}`], { windowsHide: true })
+    } catch {}
+  }
+  writePids({ overlayPid: 0 })
+  return killed
+}
+
+/**
+ * 重启画面 = 停 + 起。
+ * 🔴 中间必须等桥那边的 overlayAgeMs 变旧，否则 overlayStart 会走
+ *    「画面已经在拉数据了」的短路分支直接返回，看着成功其实没重启。
+ */
+async function overlayRestart() {
+  const killed = overlayStop()
+  for (let i = 0; i < 20; i++) {
+    await new Promise((r) => setTimeout(r, 200))
+    const h = await probe()
+    if (!h || typeof h.overlayAgeMs !== 'number' || h.overlayAgeMs > 3000) break
+  }
+  const r = await overlayStart()
+  return { ...r, stopped: killed.length ? killed.join('、') : '（本来就没开）' }
+}
+
+/** 重启播放器服务。队列会丢，但队列本来就是桥在下发，桥会重新垫热榜。 */
+async function musicRestart() {
+  const pids = readPids()
+  const killed = []
+  if (alive(pids.musicPid)) {
+    killed.push(`pid=${pids.musicPid}`)
+    killTree(pids.musicPid)
+  }
+  const onPort = pidOnPort(MUSIC_PORT)
+  if (onPort && onPort !== pids.musicPid) {
+    killed.push(`pid=${onPort}`)
+    killTree(onPort)
+  }
+  writePids({ musicPid: 0 })
+  await new Promise((r) => setTimeout(r, 600))
+  const r = await musicEnsure()
+  return { ...r, stopped: killed.length ? killed.join('、') : '（本来就没跑）' }
+}
+
+/** 一键全开：音乐 → 桥（桥起来时会自己带上播放器地址）→ 画面 */
+async function startAll(o = {}) {
+  const m = await musicEnsure()
+  const b = await start({ ...o, withOverlay: o.withOverlay !== false })
+  return {
+    ok: b.ok,
+    music: m,
+    bridge: b,
+    message: b.ok
+      ? `全开了：${m.ok ? '播放器在跑' : '播放器没起来'}；${b.message}`
+      : `桥没起来：${b.error}`,
+  }
+}
+
 /** 重启 = 停 + 起。桥在跑时换新代码只能走这条路。
  *  重启不按停音乐（keepMusic），换代码不该顺手静音一段。 */
 async function restart(o = {}) {
@@ -839,7 +911,17 @@ const server = http.createServer(async (req, res) => {
     return
   }
   if (p === '/ctl/overlay' && req.method === 'POST') {
-    json(res, 200, await overlayStart())
+    const b = await readBody(req)
+    json(res, 200, b.action === 'restart' ? await overlayRestart() : await overlayStart())
+    return
+  }
+  if (p === '/ctl/music' && req.method === 'POST') {
+    const b = await readBody(req)
+    json(res, 200, b.action === 'restart' ? await musicRestart() : await musicEnsure())
+    return
+  }
+  if (p === '/ctl/all' && req.method === 'POST') {
+    json(res, 200, await startAll(await readBody(req)))
     return
   }
   if (p === '/ctl/cfg' && req.method === 'POST') {

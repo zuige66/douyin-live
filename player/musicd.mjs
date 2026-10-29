@@ -208,6 +208,19 @@ const server = http.createServer(async (req, res) => {
   const p = url.pathname.replace(/\/+$/, '') || '/'
 
   try {
+    /* 🔴 CORS 预检：控制台（:18082）里的 <audio> 逻辑要跨源调这里的 POST，
+     * 带 content-type: application/json 就会先发 OPTIONS。
+     * 不处理的话命令和进度上报全部发不出去，症状是「点了没反应、也不报错」。 */
+    if (req.method === 'OPTIONS') {
+      res.writeHead(204, {
+        'access-control-allow-origin': '*',
+        'access-control-allow-methods': 'GET,POST,OPTIONS',
+        'access-control-allow-headers': 'content-type',
+        'access-control-max-age': '86400',
+      })
+      return res.end()
+    }
+
     /* 播放页由这里直接发 —— 单独起 musicd 也能测，不用等控制台接进来 */
     if (req.method === 'GET' && (p === '/player' || p === '/player.html')) {
       try {

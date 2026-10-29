@@ -80,6 +80,11 @@
   .btn.danger:hover:not(:disabled){background:#4d1a17}
   .btn.sm{padding:9px 16px;font-size:13px}
 
+  /* 分开控制：每行一个组件 + 启动/重启 + 右边小字状态 */
+  .ctlgroup{display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap}
+  .ctlname{width:66px;flex:0 0 auto;font-size:13px;color:var(--on-variant)}
+  .ctlstate{font-size:12px;color:var(--muted);margin-left:2px}
+
   .links{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}
   .link{display:block;background:var(--surface-2);border-radius:18px;padding:16px;
         text-decoration:none;color:var(--on-surface)}
@@ -145,14 +150,31 @@
       </select>
     </div>
     <div class="row wrap">
-      <button class="btn primary" id="bStart">开播</button>
-      <button class="btn" id="bRestart">重启桥</button>
-      <button class="btn" id="bOverlay">只开画面</button>
+      <button class="btn primary" id="bAll">一键全开</button>
       <button class="btn danger" id="bStop">全停</button>
     </div>
+    <div class="sub" style="margin:16px 0 8px">分开控制（各自独立，点一个不影响别的）：</div>
+    <div class="ctlgroup">
+      <span class="ctlname">弹幕桥</span>
+      <button class="btn sm" id="bBridgeStart">启动</button>
+      <button class="btn sm" id="bBridgeRestart">重启</button>
+      <span class="ctlstate" id="sBridgeState">—</span>
+    </div>
+    <div class="ctlgroup">
+      <span class="ctlname">画面</span>
+      <button class="btn sm" id="bOverlayStart">启动</button>
+      <button class="btn sm" id="bOverlayRestart">重启</button>
+      <span class="ctlstate" id="sOverlayState">—</span>
+    </div>
+    <div class="ctlgroup">
+      <span class="ctlname">音乐</span>
+      <button class="btn sm" id="bMusicStart">启动</button>
+      <button class="btn sm" id="bMusicRestart">重启</button>
+      <span class="ctlstate" id="sMusicState">—</span>
+    </div>
     <div class="sub" style="margin:16px 0 0">
-      桥在跑的时候「开播」是灰的；想换新代码用「重启桥」。
-      重启会断掉当前监听，直播中别点。
+      ⚠️ <b>重启弹幕桥会断掉当前监听</b>（约 30 秒），直播中别点 —— 换新代码才需要它。<br>
+      重启画面和重启音乐都不会影响弹幕，直播中随便点。
     </div>
   </div>
 
@@ -172,7 +194,8 @@
       <div class="stat"><div class="k">队列</div><div class="v" id="mQueue">—</div></div>
     </div>
     <div class="row" style="margin-top:12px">
-      <a class="btn sm" id="mOpen" href="http://127.0.0.1:18083/player.html" target="_blank" rel="noopener">打开播放页</a>
+      <button class="btn primary sm" id="bMusicPlay">▶ 启动播放</button>
+      <a class="btn sm" id="mOpen" href="http://127.0.0.1:18083/player.html" target="_blank" rel="noopener">独立播放页</a>
     </div>
     <div class="sub" id="mHint" style="margin:10px 0 0"></div>
   </div>
@@ -242,19 +265,33 @@ async function api(path, { method = 'GET', body, timeout = 20000 } = {}) {
 
 /* ── 按钮 busy 管理 ────────────────────────────────────────────── */
 let busy = ''
-const BUTTONS = ['bStart', 'bRestart', 'bOverlay', 'bStop']
+const BTN_LABELS = {
+  bAll: '一键全开',
+  bStop: '全停',
+  bBridgeStart: '启动',
+  bBridgeRestart: '重启',
+  bOverlayStart: '启动',
+  bOverlayRestart: '重启',
+  bMusicStart: '启动',
+  bMusicRestart: '重启',
+}
+const BUTTONS = Object.keys(BTN_LABELS)
+
 function setBusy(key, label) {
   busy = key
-  /* 忙的时候四个按钮全禁 —— 允许「启动」和「停止」同时进行只会打架 */
-  for (const id of BUTTONS) $('#' + id).disabled = Boolean(key)
+  /* 忙的时候全部禁掉 —— 允许「启动」和「停止」同时进行只会打架 */
+  for (const id of BUTTONS) {
+    const el = $('#' + id)
+    if (el) el.disabled = Boolean(key)
+  }
   if (key) {
     const b = $('#' + key)
     if (b) b.textContent = label || '处理中…'
   } else {
-    $('bStart').textContent = '开播'
-    $('bRestart').textContent = '重启桥'
-    $('bOverlay').textContent = '只开画面'
-    $('bStop').textContent = '全停'
+    for (const id of BUTTONS) {
+      const el = $('#' + id)
+      if (el) el.textContent = BTN_LABELS[id]
+    }
   }
 }
 
@@ -331,14 +368,26 @@ function render(s) {
   $('#sChat').innerHTML = b.running ? `${b.chat} / ${b.gift}` : '—'
   $('#sReplied').textContent = b.running ? b.replied : '—'
 
-  /* 桥在跑的时候「开播」没意义，灰掉 */
+  /* 各组按自己的状态灰按钮。文案固定「启动/重启」，状态放右边小字 ——
+   * 以前把状态塞进按钮文字（"已经在跑了"），一刷新就分不清哪个是按钮哪个是状态。 */
+  const m = s.music || { up: false }
   if (!busy) {
-    $('#bStart').disabled = b.running
-    $('#bStart').textContent = b.running ? '已经在跑了' : '开播'
-    $('#bRestart').disabled = !b.running
-    $('#bStop').disabled = !b.running
-    $('#bOverlay').disabled = o.live
+    $('#bBridgeStart').disabled = b.running
+    $('#bBridgeRestart').disabled = !b.running
+    $('#bOverlayStart').disabled = Boolean(o.live)
+    $('#bOverlayRestart').disabled = !o.live
+    $('#bMusicStart').disabled = Boolean(m.up)
+    $('#bMusicRestart').disabled = !m.up
+    $('#bAll').disabled = Boolean(b.running && o.live && m.up)
+    $('#bStop').disabled = Boolean(!b.running && !o.live && !m.up)
   }
+  $('#sBridgeState').textContent = b.running ? `在跑 ${fmtUp(b.upSec)}`.trim() : '没跑'
+  $('#sOverlayState').textContent = o.live ? '在拉数据' : o.pid ? '进程在，没数据' : '没开'
+  $('#sMusicState').textContent = m.up
+    ? m.clientAlive
+      ? '在放'
+      : '服务在跑，播放页没开'
+    : '没跑'
 
   /* 房间号：只在用户没在改的时候回填，否则会把他正在打的字冲掉 */
   const room = $('#room')
@@ -404,6 +453,162 @@ async function refresh() {
   render(s)
 }
 
+/* ══════════════════════════════════════════════════════════════════
+ * 内嵌音乐播放器
+ *
+ * 为什么放这儿而不是单独一个播放页：实测单独开一个页面很容易被关掉或忘了开，
+ * 桥 25 秒就判定「播放器界面没开」，然后回落本机 QQ 音乐 —— 观众那边就是静音。
+ * 控制台本来就要一直开着，把 <audio> 放这里最不容易断。
+ *
+ * 🔴 轮询是无条件的（不管有没有点过启动）：桥靠 /client/poll 的心跳判断
+ *    「播放器界面在不在」，不 poll 就会被判定为没开。
+ * 🔴 出声必须由用户点一次「启动播放」—— 浏览器的自动播放策略。
+ *    点过之后 localStorage 记住，刷新页面也尽量自动接上。
+ * ══════════════════════════════════════════════════════════════════ */
+const MUSIC_BASE = 'http://127.0.0.1:18083'
+const au = new Audio()
+au.preload = 'auto'
+au.volume = 0.7
+
+let auTrack = ''
+let auSongId = ''
+let auPolling = false
+let musicUnlocked = false
+try {
+  musicUnlocked = localStorage.getItem('zy-music-unlocked') === '1'
+} catch {}
+
+async function mApi(path, opt) {
+  const r = await fetch(MUSIC_BASE + path, opt)
+  if (!r.ok) throw new Error('HTTP ' + r.status)
+  return r.json()
+}
+const mPost = (path, body) =>
+  mApi(path, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body || {}),
+  })
+
+function paintBoot() {
+  const b = $('#bMusicPlay')
+  if (!b) return
+  b.textContent = musicUnlocked ? '▶ 已经在放了' : '▶ 启动播放'
+  b.disabled = musicUnlocked
+}
+
+async function auPlayTrack(track) {
+  auTrack = String(track.id || '')
+  auSongId = String(track.songId || auTrack.replace(/\D/g, ''))
+  let u = null
+  try {
+    u = await mApi('/url?id=' + encodeURIComponent(auSongId) + '&quality=exhigh')
+  } catch (e) {
+    mPost('/client/error', { why: '取直链失败：' + e.message }).catch(() => {})
+  }
+  if (!u || !u.url) {
+    mPost('/client/error', { why: (u && u.why) || '取不到直链' }).catch(() => {})
+    /* 取不到就报播完，让服务端切下一首，别卡死 */
+    setTimeout(() => mPost('/client/ended', { trackId: auTrack }).then(auApply).catch(() => {}), 800)
+    return
+  }
+  au.src = u.url
+  try {
+    await au.play()
+    musicUnlocked = true
+    try {
+      localStorage.setItem('zy-music-unlocked', '1')
+    } catch {}
+    paintBoot()
+  } catch {
+    /* 被自动播放策略拦了：按钮放回来，别假装在放 */
+    musicUnlocked = false
+    paintBoot()
+    toast('浏览器拦了自动播放，点「启动播放」一下', 'warn')
+  }
+}
+
+async function auApply(list) {
+  for (const c of list || []) {
+    try {
+      if (c.type === 'play') await auPlayTrack(c.track)
+      else if (c.type === 'pause') au.pause()
+      else if (c.type === 'resume') {
+        try {
+          await au.play()
+        } catch {}
+      } else if (c.type === 'volume') {
+        au.volume = Math.min(1, Math.max(0, Number(c.value) || 0))
+      } else if (c.type === 'stop') {
+        au.pause()
+        au.removeAttribute('src')
+        auTrack = ''
+        auSongId = ''
+      }
+    } catch {}
+  }
+}
+
+async function auTick() {
+  if (auPolling) return
+  auPolling = true
+  try {
+    const r = await mApi('/client/poll')
+    await auApply(r.commands)
+    if (typeof r.volume === 'number') au.volume = r.volume
+  } catch {
+    /* 播放器服务没起来时不要刷屏报错，音乐卡片那边会说 */
+  } finally {
+    auPolling = false
+  }
+}
+
+/* 每 1 秒取命令、每 2 秒报真实进度（服务端的 nowPlaying 以这个为准） */
+setInterval(auTick, 1000)
+setInterval(() => {
+  if (!auTrack) return
+  mPost('/client/report', {
+    trackId: auTrack,
+    positionSec: au.currentTime || 0,
+    durationSec: au.duration || 0,
+    playing: !au.paused,
+  }).catch(() => {})
+}, 2000)
+
+au.addEventListener('ended', async () => {
+  try {
+    const r = await mPost('/client/ended', { trackId: auTrack })
+    await auApply(r.commands)
+  } catch {}
+})
+
+au.addEventListener('error', () => {
+  if (!auTrack) return
+  mPost('/client/error', { why: 'audio 播放出错' }).catch(() => {})
+  setTimeout(async () => {
+    try {
+      const r = await mPost('/client/ended', { trackId: auTrack })
+      await auApply(r.commands)
+    } catch {}
+  }, 600)
+})
+
+$('#bMusicPlay').onclick = async () => {
+  musicUnlocked = true
+  try {
+    localStorage.setItem('zy-music-unlocked', '1')
+  } catch {}
+  paintBoot()
+  try {
+    await au.play()
+  } catch {}
+  auTick()
+}
+
+/* 刷新后如果之前解锁过，先试着直接接上；被拦就等用户点 */
+if (musicUnlocked) setTimeout(() => au.play().catch(() => {}), 1200)
+paintBoot()
+
 /* ── 操作 ──────────────────────────────────────────────────────── */
 async function act(key, label, path, body) {
   if (busy) return
@@ -427,25 +632,32 @@ async function act(key, label, path, body) {
   }
 }
 
-$('#bStart').onclick = () => {
-  const room = $('#room').value.trim()
-  const mode = $('#mode').value
-  act('bStart', '启动中…', '/ctl/start', { room, mode, withOverlay: true })
-}
+const roomNow = () => $('#room').value.trim()
+const modeNow = () => $('#mode').value
 
-$('#bRestart').onclick = () => {
-  if (!confirm('重启会断开当前弹幕监听，直播中会漏消息。确定要重启吗？')) return
-  const room = $('#room').value.trim()
-  const mode = $('#mode').value
-  act('bRestart', '重启中…', '/ctl/restart', { room, mode })
-}
-
-$('#bOverlay').onclick = () => act('bOverlay', '开着…', '/ctl/overlay', {})
+$('#bAll').onclick = () =>
+  act('bAll', '全开中…', '/ctl/all', { room: roomNow(), mode: modeNow(), withOverlay: true })
 
 $('#bStop').onclick = () => {
   if (!confirm('全停会关掉弹幕桥和画面窗口，直播就断了。确定吗？')) return
   act('bStop', '停止中…', '/ctl/stop', {})
 }
+
+$('#bBridgeStart').onclick = () =>
+  act('bBridgeStart', '启动中…', '/ctl/start', { room: roomNow(), mode: modeNow(), withOverlay: true })
+
+$('#bBridgeRestart').onclick = () => {
+  if (!confirm('重启桥会断开当前弹幕监听约 30 秒，直播中会漏消息。确定吗？')) return
+  act('bBridgeRestart', '重启中…', '/ctl/restart', { room: roomNow(), mode: modeNow() })
+}
+
+/* 画面和音乐的重启都不动桥，直播中随便点 */
+$('#bOverlayStart').onclick = () => act('bOverlayStart', '开着…', '/ctl/overlay', {})
+$('#bOverlayRestart').onclick = () =>
+  act('bOverlayRestart', '重启中…', '/ctl/overlay', { action: 'restart' })
+$('#bMusicStart').onclick = () => act('bMusicStart', '启动中…', '/ctl/music', {})
+$('#bMusicRestart').onclick = () =>
+  act('bMusicRestart', '重启中…', '/ctl/music', { action: 'restart' })
 
 /* 房间号 / 模型改了要落盘 —— 不然下次开播又得重填 */
 $('#room').oninput = () => { $('#room').dataset.dirty = '1' }
