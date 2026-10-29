@@ -52,6 +52,9 @@ CARD = (46, 38, 63, 255)      # surfaceContainer：卡片实色，全不透明
 FAINT = (202, 196, 208, 128)  # 次要信息：onSurfaceVariant 半透明
 HAIR = (92, 79, 120, 255)     # outlineVariant 偏紫：卡片 1px 描边（实色）
 ON_PRI = (56, 30, 114, 255)   # 画在 primary 底色上的字（浅色主题下会变白，见 _PALETTE）
+HR = (255, 255, 255, 20)      # 卡片内分隔线（2026-10-28 从写死的白色提出来）
+TIPBG = (208, 188, 255, 20)   # 卡片内小底填充（点歌格式块已删，留着以后用）
+SHADOW = None                 # 柔影颜色；None = 不画（深色主题保持原样）
 
 # 2026-10-27 晚提亮：主人说「整个画面都是挺暗的」。
 # 原来 BG(7,9,12) 几乎是纯黑、正文 233、次要文字 142 —— 在抖音直播伴侣里
@@ -126,7 +129,7 @@ MON_RATIO = 389.0 / 594.0
 
 
 # 两套配色（2026-10-28 加）：layout.json 里 "theme": "dark" | "light"。
-# 为什么要有 light：主人换的这张广工蓝底是浅色的，深紫卡片压上去像贴纸，
+# 为什么要有 light：主人换的这张浅色底图偏冷，深紫卡片压上去像贴纸，
 # 浅紫标语（#D0BCFF）在浅蓝上几乎看不见。深色主题是原来的默认，一个字没动。
 _PALETTE = {
     "dark": {
@@ -138,16 +141,27 @@ _PALETTE = {
         "CARD": (46, 38, 63, 255),      # surfaceContainer
         "HAIR": (92, 79, 120, 255),     # outlineVariant
         "ON_PRI": (56, 30, 114, 255),   # 画在 primary 底色上的字
+        "HR": (255, 255, 255, 20),      # 卡片内分隔线（原来写死在 build_base 里）
+        "TIPBG": (208, 188, 255, 20),   # 卡片内小底填充（当前没有使用者）
+        "SHADOW": None,                 # 深色主题不加柔影：原样不动
     },
     "light": {
         "INK": (27, 27, 31, 255),
         "DIM": (68, 70, 79, 255),
         "FAINT": (68, 70, 79, 190),     # 浅底上 140 太淡，右下角那两行看不清
-        "PRI": (79, 55, 139, 255),
-        "TER": (125, 82, 96, 255),
-        "CARD": (255, 255, 255, 255),
-        "HAIR": (202, 196, 208, 255),
+        # 2026-10-28 晚：强调色从 M3 紫改成「背景红」#B0274A。
+        # 主人换的这张底图是粉红调，紫是它的对比色，压上去像两套设计语言；
+        # 换成同一色系的深玫红之后，标语 / 点歌高亮 / 字幕标签 / 状态点全统一。
+        "PRI": (176, 39, 74, 255),
+        "TER": (150, 58, 84, 255),
+        # 玻璃卡片：白 + 20% 透。白卡压在粉白渐变上几乎同亮度，不透一点就是贴纸
+        # （2026-10-28 晚主人反馈「跟现在的页面很不搭配」就是这个原因）。
+        "CARD": (255, 255, 255, 204),
+        "HAIR": (255, 255, 255, 240),   # 玻璃边缘用亮白描边，比灰描边更像一片反光
         "ON_PRI": (255, 255, 255, 255),
+        "HR": (27, 27, 31, 30),
+        "TIPBG": (176, 39, 74, 22),      # 同上，浅色主题版的玫红小底
+        "SHADOW": (128, 34, 66, 54),    # 玫红偏暖的柔影，把卡片从背景上托起来
     },
 }
 
@@ -158,7 +172,7 @@ def _layout_default():
     return {
         "version": 1,
         "theme": "dark",
-        "bg": {"type": "image", "image": "assets/bg-gdut.png",
+        "bg": {"type": "image", "image": "assets/bg.png",
                "color": "#17131F", "dim": 0.0},
         "items": {
             "stats":     {"x": 64,   "y": 54,   "w": 452, "visible": True},
@@ -180,9 +194,9 @@ def comp_h(name, x, y, w):
     """组件的「自适应高度」。编辑器里也按这套公式画框（改这里要同步 editor.html）。
     ⚠️ 只有 danmaku 跟 y 有关（自底向上排），其余只跟宽度有关或干脆固定。"""
     if name == "stats":
-        return 216                      # 32 + 36 + 3×46 + 10
+        return stats_h()
     if name == "songs":
-        return 478                      # 32+36+114+3×58+78+44（有歌手时）
+        return songs_h()
     if name == "banner":
         return 64
     if name == "character":
@@ -194,6 +208,49 @@ def comp_h(name, x, y, w):
     if name == "subtitle":
         return 86
     return 100
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# 卡片排版（2026-10-28 晚重做）
+#
+# 为什么要重做：原来字号有 8 档（21/22/24/25/27/28/29/34），标题 25 比正文 27 还小，
+# 数字 27 不加粗、还分三种颜色 —— 观众两米外根本看不出哪个是重点。而且高度是
+# 拍出来的（32+36+3×46+10），最后一行距卡片底边只剩 7px，顶上一律 30px，
+# 上下不对称，看着像字贴边了。
+#
+# 现在：所有尺寸从下面这几个常量推，字号压到 4 档（30 标题 / 48 数字 / 34 歌名 /
+# 21~24 辅助），数字靠"大"当主角而不是靠颜色。**改版式只改这几行。**
+# ══════════════════════════════════════════════════════════════════════════
+CARD_PAD = 28          # 卡片内边距（四边同一套，上下才对称）
+CARD_TITLE = 30        # 卡片标题字号
+CARD_TITLE_LH = 42     # 标题行高
+STATS_NUM = 48         # 本场数据的数字
+STATS_NUM_LH = 64
+STATS_LABEL = 23       # 数字底下的标签
+STATS_LABEL_LH = 30
+SONGS_NP_H = 56        # 当前歌名一行（46）+ 到细线的间距（10）
+SONGS_ITEM_H = 58      # 队列每行
+SONGS_DIV_H = 14       # 细线到第一首之间
+
+
+def stats_geom():
+    """本场数据卡的三个 y（相对卡片顶边）和总高度。绘制与测高共用同一套数。"""
+    ty = CARD_PAD
+    ny = ty + CARD_TITLE_LH + 22
+    ly = ny + STATS_NUM_LH
+    return ty, ny, ly, ly + STATS_LABEL_LH + CARD_PAD
+
+
+def stats_h():
+    return stats_geom()[3]
+
+
+def songs_h(np_h=SONGS_NP_H, items=3):
+    """点歌台高度。2026-10-28 22:2x 砍掉歌手行和「点歌格式」块之后：
+    28（上）+ 42（卡名）+ 14 + 当前歌名 56 + 细线 14 + 3×58 + 28（下）= 356。
+    编辑器画框按"3 首"的最坏情况算，跟以前一样。"""
+    return (CARD_PAD * 2 + CARD_TITLE_LH + 14 + np_h
+            + SONGS_DIV_H + max(items, 1) * SONGS_ITEM_H)
 
 
 _LAYOUT = None
@@ -408,7 +465,7 @@ def apply_layout():
     global SCR_X, SCR_Y, SCR_W, SCR_H, NECK_Y, FOOT_Y, CAP_Y
     global DM_RIGHT, DM_MAXW, DM_BOTTOM
     global SUB_X, SUB_Y, SUB_W, SUB_H, SUB_BOTTOM
-    global INK, DIM, FAINT, PRI, TER, CARD, HAIR, ON_PRI
+    global INK, DIM, FAINT, PRI, TER, CARD, HAIR, ON_PRI, HR, TIPBG, SHADOW
     global VIS, _LAY_BOX
 
     L = layout()
@@ -419,6 +476,7 @@ def apply_layout():
     INK = pal["INK"]; DIM = pal["DIM"]; FAINT = pal["FAINT"]
     PRI = pal["PRI"]; TER = pal["TER"]; CARD = pal["CARD"]
     HAIR = pal["HAIR"]; ON_PRI = pal["ON_PRI"]
+    HR = pal["HR"]; TIPBG = pal["TIPBG"]; SHADOW = pal["SHADOW"]
 
     def g(name, dx, dy, dw):
         c = it.get(name) or {}
@@ -719,19 +777,22 @@ def rr_patch(w, h, r, fill, outline=None, width=1):
 _SHADOW = {}
 
 
-def shadow_patch(w, h, r, blur=9, alpha=120):
-    """气泡底下的一层柔影。
+def shadow_patch(w, h, r, blur=9, alpha=120, color=(0, 0, 0)):
+    """气泡 / 卡片底下的一层柔影。
 
     去掉白描边之后，气泡和深色背景之间会糊成一片 —— 靠这层影把它托起来，
     比描边干净得多（描边在视频转码后最容易出锯齿）。
+
+    2026-10-28 晚加 color：浅色主题里纯黑影压在粉底上会发脏，
+    换成偏玫红的 (128,34,66,54) 才像"卡片在光下的影子"。
     """
-    key = (w, h, r, blur, alpha)
+    key = (w, h, r, blur, alpha, color)
     p = _SHADOW.get(key)
     if p is None:
         pad = blur * 2
         big = Image.new("RGBA", (w + pad * 2, h + pad * 2), (0, 0, 0, 0))
         ImageDraw.Draw(big).rounded_rectangle(
-            (pad, pad, pad + w - 1, pad + h - 1), radius=r, fill=(0, 0, 0, alpha)
+            (pad, pad, pad + w - 1, pad + h - 1), radius=r, fill=color[:3] + (alpha,)
         )
         p = big.filter(ImageFilter.GaussianBlur(blur * 0.55))
         if len(_SHADOW) > 200:
@@ -786,85 +847,97 @@ def build_base(st):
     def T(x, y, s, size, color, bold=False, anchor="la"):
         ld.text((x * SS, y * SS), s, font=font(size, bold), fill=color, anchor=anchor)
 
-    if VIS.get("stats", True):
-        # ---- 左上：本场数据（原来上面还有一张主播牌，2026-10-27 晚按主人要求删掉）----
-        rows = [("收到弹幕", TER), ("收到礼物", None), ("已回复", TER)]
-        c1h = 32 + 36 + len(rows) * 46 + 10
+    def tw(s, size, bold=False):
+        """量字宽（1x 像素）。ld 上的字体是 SS 倍，所以结果要除回去。"""
+        return ld.textlength(s, font=font(size, bold)) / SS
+
+    def card(x, y, w, h, r=22):
+        """卡片底：柔影（只在配了 SHADOW 的主题里画）+ 玻璃底 + 1px 亮描边。
+
+        ⚠️ 必须画在 lay 这个 RGBA 层上 —— RGB 图上 fill 带 alpha 会被丢掉，
+           卡片就又变回一块死白（同 draw_computer 开头那段说明）。
+        """
+        if SHADOW:
+            p, pad = shadow_patch(int(w) + 8, int(h) + 8, r, blur=26,
+                                  alpha=SHADOW[3], color=SHADOW[:3])
+            blit(lay, p, x - 4 - pad, y - 4 - pad)
         ld.rounded_rectangle(
-            (CARD_X * SS, CARD_Y * SS, (CARD_X + CARD_W) * SS, (CARD_Y + c1h) * SS),
-            radius=24 * SS, fill=CARD, outline=HAIR, width=SS,
+            (x * SS, y * SS, (x + w) * SS, (y + h) * SS),
+            radius=r * SS, fill=CARD, outline=HAIR, width=SS,
         )
-        px, py = CARD_X + 30, CARD_Y + 30
-        T(px, py, "本场数据", 25, DIM)
-        T(CARD_X + CARD_W - 30, py, "实时", 22, FAINT, anchor="ra")
-        ry = py + 60
-        for label, _ in rows:
-            T(px, ry, label, 27, DIM)
-            ry += 46
+
+    if VIS.get("stats", True):
+        # ---- 本场数据（2026-10-28 晚：纵列三行 → 横排三格）----
+        # 原来 594 宽的卡里"左标签 + 右数字"中间空着 400px，纵列还让卡很高、
+        # 最后一行贴着卡底。横排三格把宽度用满，卡也矮了一截。
+        c1h = stats_h()
+        card(CARD_X, CARD_Y, CARD_W, c1h)
+        ty, _ny, ly, _h = stats_geom()
+        px = CARD_X + CARD_PAD
+        T(px, CARD_Y + ty, "本场数据", CARD_TITLE, INK, bold=True)
+        # 右侧：一颗红点 + 「直播中」。原来这里是孤零零 22 号的「实时」，
+        # 跟标题同排却谁也不挨着，看着像没画完。
+        lbl = "直播中"
+        lx = CARD_X + CARD_W - CARD_PAD
+        T(lx, CARD_Y + ty + 8, lbl, 21, DIM, anchor="ra")
+        dx = lx - tw(lbl, 21) - 12
+        cy = CARD_Y + ty + 8 + 11
+        ld.ellipse(((dx - 8) * SS, (cy - 4) * SS, dx * SS, (cy + 4) * SS), fill=PRI)
+        # 三格的标签是静态的，数字在 compose() 里画（会变）
+        # 两边都**居中对齐到格心**：左对齐时 1,284 和 37 会挤成"1,284 37"一组
+        # （卡片拖窄到 397 时实测），居中之后每格自带等量留白，互不粘连。
+        cell = (CARD_W - CARD_PAD * 2) / 3
+        for i, label in enumerate(("收到弹幕", "收到礼物", "已回复")):
+            cxm = CARD_X + CARD_PAD + int(round(cell * (i + 0.5)))
+            T(cxm, CARD_Y + ly, label, STATS_LABEL, DIM, anchor="ma")
 
     if VIS.get("songs", True):
         # 点歌台自己一套坐标：2026-10-28 起它能被编辑器单独拖动，
         # 不再跟「本场数据」卡绑在一起（原来 c2y 是从 CARD_Y 推的）。
         SX, SY, SW = SONG_X, SONG_Y, SONG_W
-        px = SX + 30
+        px = SX + CARD_PAD
         songs = st.get("songs") or []
         # 正在播的歌。**热榜不显示**（2026-10-28 主人要求）：
-        # 「热歌不用显示出来，后台播放就行」—— 所以 hot=true 时整块"正在播放"都不占位，
-        # 观众看到的永远只有「谁点的歌」。
+        # 「热歌不用显示出来，后台播放就行」—— 所以 hot=true 时整块都不占位。
+        #
+        # 2026-10-28 22:2x 主人要求砍掉三样：「正在播放」那行小标签（连圆点和音柱）、
+        # 歌手名、底部「点歌格式」整块。砍完这块只剩：
+        #     卡名 → 当前歌名 → 细线 → 排队 3 首
+        # 歌名不加任何前缀，它本身就是"正在播的那首"，观众一眼就懂；
+        # 点歌格式那句回到只由她的嘴说（reply.mjs 的 SONG_TIP 一个字没动）。
         mus = st.get("music") or None
         if (mus or {}).get("hot"):
             mus = None
-        np_title = fit_text((mus or {}).get("title"), SW - 76, 28, bold=True)
-        np_by = fit_text((mus or {}).get("artist"), SW - 76, 21)
-        np_playing = bool((mus or {}).get("playing"))
-        np_h = (114 if np_by else 88) if np_title else 0
+        np_title = fit_text((mus or {}).get("title"), SW - CARD_PAD * 2, 34, bold=True)
+        # np_h = 歌名一行 46 + 到细线的 10；没歌名就整块不占位
+        np_h = SONGS_NP_H if np_title else 0
 
         c2y = SY
-        # +78 是底部那两行「点歌格式 / 点歌，歌名，歌手（可不填）」，见下面 draw 部分。
-        #   （2026-10-27 晚：主人说这两行「太小太暗看不清」，字号 20/23 → 22/28，
-        #    颜色 FAINT/DIM → DIM/INK，所以这里的高度预算从 62 抬到 78。）
-        # 最后那个 +32 是底部留白 —— 原来 +18 时提示行的字几乎贴着卡片下边缘（实测只剩 5px）。
-        c2h = 32 + 36 + np_h + max(len(songs), 1) * 58 + 78 + 44
-        ld.rounded_rectangle(
-            (SX * SS, c2y * SS, (SX + SW) * SS, (c2y + c2h) * SS),
-            radius=24 * SS, fill=CARD, outline=HAIR, width=SS,
-        )
-        T(px, c2y + 30, "点歌台", 25, DIM)
+        c2h = songs_h(np_h, len(songs))
+        card(SX, c2y, SW, c2h)
+        T(px, c2y + CARD_PAD, "点歌台", CARD_TITLE, INK, bold=True)
         q_total = int(((st.get("queue") or {}).get("total")) or 0)
         if q_total > 1:
-            T(SX + SW - 30, c2y + 30, f"歌单 {q_total} 首", 22, FAINT, anchor="ra")
-        sy = c2y + 88
+            T(SX + SW - CARD_PAD, c2y + CARD_PAD + 8, f"{q_total} 首排队",
+              21, DIM, anchor="ra")
+        sy = c2y + CARD_PAD + CARD_TITLE_LH + 14
 
         if np_title:
-            # 「正在播放」一条。音柱只在真在放的时候亮，暂停时压成一条灰线，
-            # 不然观众会以为卡住了。
-            # ⚠️ 别用 ♪ / ♫ 这类符号：思源黑体里没有，会渲染成豆腐块（实测过）。
-            #    小圆点自己画，一定不会缺字。
-            ld.ellipse(((px + 3) * SS, (sy + 9) * SS, (px + 13) * SS, (sy + 19) * SS), fill=PRI)
-            T(px + 24, sy + 2, "正在播放", 21, FAINT)
-            for j, hh in enumerate((10, 18, 13, 20) if np_playing else (5, 5, 5, 5)):
-                bx = SX + SW - 30 - (4 - j) * 9
-                ld.rounded_rectangle(
-                    (bx * SS, (sy + 24 - hh) * SS, (bx + 5) * SS, (sy + 24) * SS),
-                    radius=3 * SS, fill=PRI if np_playing else FAINT,
-                )
-            T(px, sy + 30, np_title, 28, INK, bold=True)
-            if np_by:
-                T(px, sy + 68, np_by, 21, DIM)
-            # 和下面的排队列表隔一条线，不然「艺人名」和「第 1 首」会粘在一起
-            ld.rectangle(
-                (px * SS, (sy + np_h - 16) * SS, (px + SW - 60) * SS, (sy + np_h - 15) * SS),
-                fill=(255, 255, 255, 20),
-            )
+            T(px, sy, np_title, 34, INK, bold=True)
             sy += np_h
+
+        # 当前歌和排队之间一条细线。🔴 颜色走 HR：以前写死 (255,255,255,20)，
+        # 浅色主题的白卡上等于没画（「康扎西曲达」和第一首会粘在一起）。
+        ld.rectangle((px * SS, sy * SS, (SX + SW - CARD_PAD) * SS, (sy + 1) * SS), fill=HR)
+        sy += 14
 
         if not songs:
             # 2026-10-28：列表现在**只放观众点的歌**，热榜不进画面。
             # 所以空列表是正常状态（没人点歌），不是"读不到"。
-            T(px, sy + 6, "还没人点歌，随便放着呢", 24, FAINT)
-            # 🔴 sy 必须往前挪一格（2026-10-27）：c2h 里按 max(len(songs),1)*58 算高度，
-            #    这里不挪的话，下面「点歌格式」那两行会**盖在**这句话上（实测叠字）。
-            sy += 58
+            T(px, sy + 6, "还没人点歌，随便放着呢", 24, DIM)
+            # 🔴 sy 必须往前挪一格：高度按 max(len(songs),1)*58 算，
+            #    这里不挪的话，卡片会比内容矮一截。
+            sy += SONGS_ITEM_H
         # 只显示接下来的 3 首，而且**不带歌手** ——
         # 观众只关心「下一首是不是我点的」，歌手名把一行撑满反而看不清歌名。
         for i, song in enumerate(songs[:3]):
@@ -872,25 +945,13 @@ def build_base(st):
                 title = str(song[0]) if song else ""
             else:
                 title = str(song)
-            title = fit_text(title, SW - 76 - 40 - 20, 29, bold=(i == 0))
+            title = fit_text(title, SW - CARD_PAD * 2 - 40 - 16, 28, bold=(i == 0))
             hot = i == 0
-            T(px, sy + 4, str(i + 1), 24, PRI if hot else FAINT)
-            T(px + 40, sy, title, 29, PRI if hot else INK, bold=hot)
-            # 第一首用 teal 标出来是「下一首」，但不画音柱 ——
-            # 音柱是「正在放」的符号，上面「正在播放」那块已经有了，
-            # 这里再画一根，观众会以为列表第一首就是当前歌。
-            sy += 58
-
-        # ---- 点歌规范（2026-10-27 主人要求「页面上也做一个提示」）----
-        # 卡片高度已经把这一行算进去了（c2h 里的 +TIP_H）。
-        # 文字从桥的 /state.json 拿（songTip），桥那边又从 reply.mjs 的 SONG_TIP 拿 ——
-        # 改格式只改一处，屏幕跟着变，不会出现「屏上写 A、她嘴上说 B」。
-        tip = str(st.get("songTip") or "点歌，歌名，歌手（可不填）")
-        # 2026-10-27 晚：主人截图反馈「太小太暗了，不好看清楚」。
-        # 20/FAINT(白 44% 透明) 在两米外看直播基本是糊的 —— 观众真要照着打字，
-        # 这一行就是唯一的说明书。抬到 22/28，颜色提到 DIM / INK。
-        T(px, sy + 8, "点歌格式", 22, DIM)
-        T(px, sy + 38, fit_text(tip, SW - 60, 28), 28, INK)
+            T(px, sy + 6, str(i + 1), 24, PRI if hot else FAINT)
+            T(px + 40, sy, title, 28, PRI if hot else INK, bold=hot)
+            # 第一首用强调色标出来是「下一首」，但不画音柱 ——
+            # 音柱是「正在放」的符号，再画一根观众会以为列表第一首就是当前歌。
+            sy += SONGS_ITEM_H
 
     # ---- 顶部标语（2026-10-27 晚主人指定位置）----
     # 「刷礼物有惊喜」原来在右栏待机时当小字（24 号）用，藏在显示器上方，观众看不见。
@@ -1463,15 +1524,27 @@ def compose(st):
     f = lambda s, b=False: font(s, b, ss=False)
 
     # ---- 本场数据（数字会变） ----
+    # 2026-10-28 晚：跟静态层同一套坐标（stats_geom + 三等分），数字 48 加粗，
+    # 靠"大"当主角；千分位分隔符，四位数以上也读得快。
+    #
+    # 🔴 字号必须按格宽现算：卡片宽度在编辑器里能拖（实测主人拖到过 397），
+    #    397 时每格只有 113px，1,284 在 48 号下有 134px —— 直接压到隔壁格上。
+    #    三个数字用**同一个字号**（取最宽的那个来试），不能各缩各的，那看着像出错。
     if VIS.get("stats", True):
-        ry = CARD_Y + 30 + 60
-        for val, col in (
-            (st.get("chat", 0), PRI),
-            (st.get("gift", 0), TER),
-            (st.get("replied", 0), INK),
-        ):
-            d.text((CARD_X + CARD_W - 30, ry), str(val), font=f(27), fill=col, anchor="ra")
-            ry += 46
+        _ty, ny, _ly, _h = stats_geom()
+        cell = (CARD_W - CARD_PAD * 2) / 3
+        vals = []
+        for v in (st.get("chat", 0), st.get("gift", 0), st.get("replied", 0)):
+            try:
+                vals.append(f"{int(v or 0):,}")
+            except (TypeError, ValueError):
+                vals.append(str(v))
+        size = STATS_NUM
+        while size > 26 and max(f(size, True).getlength(v) for v in vals) > cell - 24:
+            size -= 2
+        for i, txt in enumerate(vals):
+            cxm = CARD_X + CARD_PAD + int(round(cell * (i + 0.5)))
+            d.text((cxm, CARD_Y + ny), txt, font=f(size, True), fill=INK, anchor="ma")
 
     # ---- 右下角实时信息 ----
     sec = int(st.get("sec", 0) or 0)
@@ -1496,21 +1569,24 @@ def compose(st):
     # ---- 底部字幕 ----
     sub = st.get("subtitle")
     if sub and VIS.get("subtitle", True):
-        tag, fs_ = "说话", f(21)
-        tw = d.textlength(tag, font=fs_)
-        body_w = d.textlength(str(sub), font=f(34))
+        # 2026-10-28 晚：主人要求去掉左边那颗「说话」小标签，并跟右上角两张卡同样处理
+        # （玻璃底 + 柔影 + 背景红系）。原来那颗圆角紫底白字占了开头 70 多像素，
+        # 观众看的是话，不是标签；去掉之后整条只留一句话、居中排。
+        fnt = f(34)
+        body = fit_text(str(sub), SUB_W - 88, 34)
+        body_w = d.textlength(body, font=fnt)
         # 按内容收窄：定宽 900 时短句右边会空一大片，看着像没画完。
-        # 上限仍是 SUB_W（34px 字号下约 21 个汉字，超了本来就该截断），下限 520 免得短句挤成一条。
-        bw2 = int(max(520, min(SUB_W, 30 + tw + 46 + body_w + 30))) // 4 * 4
-        # 2026-10-28：字幕条位置由 layout.json 决定，收窄后仍然在框内居中
+        bw2 = int(max(420, min(SUB_W, body_w + 88))) // 4 * 4
         sx = SUB_X + (SUB_W - bw2) // 2
         sy2 = SUB_Y
-        # 纯色版不再垫投影（2026-10-27 晚）：卡片和字幕条都是实色，
-        # 底部再加一圈柔边只会让边缘发虚，M3E 的平面语言里也没有投影这一层。
-        blit(img, rr_patch(bw2, SUB_H, 24, CARD), sx, sy2)
-        blit(img, rr_patch(int(tw) + 28, 34, 9, PRI), sx + 30, sy2 + 26)
-        d.text((sx + 44, sy2 + 32), tag, font=fs_, fill=ON_PRI)
-        d.text((sx + 30 + tw + 46, sy2 + 22), str(sub), font=f(34), fill=INK)
+        if SHADOW:
+            p, pad = shadow_patch(bw2 + 12, SUB_H + 12, 22, blur=26,
+                                  alpha=SHADOW[3], color=SHADOW[:3])
+            blit(img, p, sx - 6 - pad, sy2 - 6 - pad)
+        blit(img, rr_patch(bw2, SUB_H, 22, CARD,
+                           outline=(HAIR if SHADOW else None), width=1), sx, sy2)
+        # 垂直居中用 mm 锚点算，别再手填 22/32 那种拍出来的偏移
+        d.text((sx + bw2 // 2, sy2 + SUB_H // 2), body, font=fnt, fill=INK, anchor="mm")
 
     return img
 

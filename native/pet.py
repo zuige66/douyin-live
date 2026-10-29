@@ -97,7 +97,7 @@ CLIP_OF_MOOD = (
 # 兜底也得是同一只人 —— 不然直播里会突然从红发换成蓝发。
 STILL_OF_DIR = {"pet": "dafeiyu.png", "pet2": "pet2-still.png"}
 # 界面上怎么称呼这两套（设置页的「形象」页直接用）
-LABEL_OF_DIR = {"pet": "蓝发女仆（旧素材）", "pet2": "红发广工（R2）"}
+LABEL_OF_DIR = {"pet": "蓝发女仆（旧素材）", "pet2": "红发女仆（R2）"}
 
 
 def name():

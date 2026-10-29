@@ -832,7 +832,7 @@ const readBody = (req) =>
 
 function serveStatic(res, pathname) {
   let rel = decodeURIComponent(pathname)
-  if (rel === '/' || rel === '') rel = '/panel.html'
+  if (rel === '/' || rel === '') rel = '/index.html'
   /* 没有后缀就补 .html —— /settings 也能开 */
   if (!path.extname(rel)) rel += '.html'
 
@@ -845,6 +845,15 @@ function serveStatic(res, pathname) {
 
   /* 只发「页面和页面要用的资源」。点开头的目录（.run / .git / .workbuddy-ai）
    * 一律挡掉 —— 里面是日志、pid、登录态。 */
+  /* 🔴 「文件不存在就交给桥」必须在后缀白名单**前面**。
+   *    桥会现算 /state.json 这种动态路径（歌单队列、当前曲目都靠它），
+   *    而 .json 不在白名单里 —— 以前先按后缀拦，返回 403 纯文本，
+   *    页面 r.json() 解析到 "403 这个文件不给" 就报
+   *    「Unexpected non-whitespace character after JSON at position 4」。
+   *    挪到后面判断不影响原来的保护：磁盘上真有的 llm.json / cookies.txt
+   *    仍然走下面那道，照样 403。 */
+  if (!fs.existsSync(fp) || !fs.statSync(fp).isFile()) return false
+
   const segs = rel.split(/[\\/]/).filter(Boolean)
   const ext = path.extname(fp).toLowerCase()
   const base = path.basename(fp).toLowerCase()
@@ -853,8 +862,6 @@ function serveStatic(res, pathname) {
     res.end('403 这个文件不给')
     return true
   }
-
-  if (!fs.existsSync(fp) || !fs.statSync(fp).isFile()) return false
 
   const type = MIME[path.extname(fp).toLowerCase()] || 'application/octet-stream'
   res.writeHead(200, { 'content-type': type, 'cache-control': 'no-cache' })

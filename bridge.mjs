@@ -25,6 +25,7 @@ import { fileURLToPath } from 'node:url'
 import {
   makeReply, replyMode, probeLLM, llmConfigured, cacheStats, llmHealth,
   isSongRequest, songAsk, isSongHelp, SONG_TIP, personaInfo,
+  kbInfo, kbSet, kbPick, skinInfo,
   isVideoRequest,
   isSkipRequest,
   setReplyMode, replyModeText,
@@ -5053,6 +5054,48 @@ async function dyRoute(p, u, req) {
   }
 
   /* ══════════════════════════════════════════════════════════════════
+   * 知识库（2026-10-27 加）
+   *   GET  /kb                                  所有文件 / 块 / 开关
+   *   POST /kb            {enabled}             总开关
+   *   POST /kb            {file,on,maxBlocks,maxChars}   单份文件
+   *   POST /kb            {block:"myschool/就业",on}  单块隔离
+   *   POST /kb/test       {text}                这条弹幕会捞到哪几块
+   *
+   * 知识不是塞进 system 的 —— 那样她会照着念，像招生咨询。
+   * 这里只负责读写 cache/kb.json，取用逻辑在 reply.mjs 的 kbPick()。
+   * ══════════════════════════════════════════════════════════════════ */
+  if (p === '/kb') {
+    if (req.method === 'POST') {
+      const b = await readJson(req)
+      const patch = {}
+      if ('enabled' in b) patch.enabled = !!b.enabled
+      if (b.file) {
+        patch.file = String(b.file).replace(/[^\w.-]/g, '').slice(0, 40)
+        if ('on' in b) patch.on = !!b.on
+        if ('maxBlocks' in b) patch.maxBlocks = b.maxBlocks
+        if ('maxChars' in b) patch.maxChars = b.maxChars
+      }
+      if (b.block) {
+        patch.block = String(b.block).slice(0, 80)
+        patch.on = !!b.on
+      }
+      const info = kbSet(patch)
+      log(`  [kb] 设置已改（${JSON.stringify(patch)}）`)
+      return { ok: true, ...info }
+    }
+    return { ok: true, ...kbInfo() }
+  }
+
+  if (p === '/kb/test' && req.method === 'POST') {
+    const b = await readJson(req)
+    const text = String(b.text || '').slice(0, 60)
+    if (!text) return { ok: false, error: '要说点什么' }
+    const got = kbPick(text)
+    const hit = [...got.matchAll(/【(.+?)】/g)].map((m) => m[1])
+    return { ok: true, hit, len: got.length, injected: got }
+  }
+
+  /* ══════════════════════════════════════════════════════════════════
    * 用户记忆（2026-10-27 加）
    *   GET  /user/list?q=&limit=   列档案（按最近活跃排序）
    *   GET  /user/get?uid=         单个档案（含最近送礼记录）
@@ -5449,8 +5492,11 @@ async function dyRoute(p, u, req) {
    */
   if (p === '/pet' && req.method === 'GET') {
     const g = readPetGeom()
+    /* skin 一起带上（2026-10-28）：面板换皮套时要顺手告诉人「人设也跟着换了」，
+     * 不然主人不知道提示词已经切过，下次还会以为她记错自己颜色。 */
+    const skin = skinInfo()
     if (g && Array.isArray(g.list) && g.list.length) {
-      return { ok: true, cur: g.cur || '', list: g.list, at: g.at || 0 }
+      return { ok: true, cur: g.cur || '', list: g.list, at: g.at || 0, skin }
     }
     /* 没有 geom 文件（画面进程没起过）也要能列出来，否则设置页一片空 */
     try {
@@ -5458,7 +5504,7 @@ async function dyRoute(p, u, req) {
       const list = fs.readdirSync(dir)
         .filter((f) => /^pet\d*$/.test(f) && fs.statSync(path.join(dir, f)).isDirectory())
         .map((f) => ({ name: f, label: f, ratio: null, clips: [], frames: 0, still: '' }))
-      return { ok: true, cur: '', list, at: 0, stale: true }
+      return { ok: true, cur: '', list, at: 0, stale: true, skin }
     } catch (e) {
       return { ok: false, error: '读不到素材目录：' + String((e && e.message) || e).slice(0, 160) }
     }
@@ -5586,7 +5632,7 @@ const server = http.createServer(async (req, res) => {
    *    （/music/auth、/music/login/qq…）当时写进了 dyRoute，但**前缀没挂到
    *    这里**，于是它们一直是 404 —— 面板那张卡点「扫码登录」当然没反应。
    *    实测：curl /music/auth → `404 D:\Workplace\zhibo\music\auth`。 */
-  if (p.startsWith('/dy/') || p.startsWith('/gift/') || p.startsWith('/user/') || p.startsWith('/persona') || p.startsWith('/music/') || (p.startsWith('/media') && p !== '/media') || p === '/room' || p.startsWith('/room/') || p.startsWith('/reply/') || p.startsWith('/layout') || p === '/pet') {
+  if (p.startsWith('/dy/') || p.startsWith('/gift/') || p.startsWith('/user/') || p.startsWith('/persona') || p === '/kb' || p.startsWith('/kb/') || p.startsWith('/music/') || (p.startsWith('/media') && p !== '/media') || p === '/room' || p.startsWith('/room/') || p.startsWith('/reply/') || p.startsWith('/layout') || p === '/pet') {
     res.setHeader('access-control-allow-origin', '*')
     /* CORS 预检（2026-10-28 加）。
      * editor.html 如果是从别的源打开的（双击本地文件 = Origin: null），

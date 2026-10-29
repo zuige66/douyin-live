@@ -28,7 +28,13 @@ const CONF_FILE = path.join(DIR, 'llm.json')
 
 const pick = (arr) => arr[Math.floor(Math.random() * arr.length)]
 
-function clip(s, n = MAX_LEN) {
+/** 被截掉（按标点断句 + 硬切）的次数，自检和面板看得到 */
+let clipStat = { soft: 0, hard: 0 }
+
+/* 断句的句读。中文标点 + 空格，不含「…」（它本身常常是被切出来的）。 */
+const BREAK_RE = /[，。！？、；：,.!?;:；～~ ]/
+
+export function clip(s, n = MAX_LEN) {
   s = String(s || '').replace(/\s+/g, ' ').trim()
   /* 去掉孤立代理字符（2026-10-27）。
    * 模型偶尔吐半个 emoji，`slice` 也可能正好从 emoji 中间劈开 ——
@@ -37,11 +43,40 @@ function clip(s, n = MAX_LEN) {
    * tts.py 常驻进程当场退出 → 桥退回一次性 spawn → 屏幕上闪黑窗。 */
   s = s.replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/g, '').replace(/(^|[^\uD800-\uDBFF])([\uDC00-\uDFFF])/g, '$1')
   if (s.length <= n) return s
-  // 截断点别落在代理对中间
+
+  /* 2026-10-28 改：**先按句读断，不要硬切**。
+   * 实测「详细解释一下为什么这所学校不是双一流」回的是
+   *   「不是双一流，但控制科学是A-，广东就这一家」
+   * 硬切 19 字 →「不是双一流，但控制科学是A-，广东就这…」
+   * 词被劈开，TTS 念出来是半句话，观众根本听不懂。
+   * 现在在 n 以内找最后一个句读，从那儿断 —— 宁可少说半句，也别说半个词。
+   *
+   * 下限取 n 的 4 成（试过 6 成，太严 —— 「今天的天气真的很好呢，我刚刚还出去
+   * 晒了会儿太阳」，句读在第 10 字、低于 12 的下限，结果退回硬切，反而更糟）。
+   * 但也不能完全没有下限，否则「我，」也算断句，一句正常的话被砍成三个字。 */
+  const head = s.slice(0, n)
+  const floorAt = Math.floor(n * 0.4)
+  for (let i = head.length - 1; i >= floorAt; i--) {
+    if (!BREAK_RE.test(head[i])) continue
+    const got = s.slice(0, i).replace(/[，。！？、；：,.!?;:～~ ]+$/, '')
+    if (got.length < 6) break // 断完只剩几个字就不如不断
+    clipStat.soft++
+    console.log(`  [clip] 超 ${n} 字，按句读断到 ${got.length} 字：${s.slice(0, 24)}…`)
+    return got
+  }
+
+  // 实在没有句读（一整串没标点）才硬切，截断点别落在代理对中间
   let cut = n - 1
   const c = s.charCodeAt(cut - 1)
   if (c >= 0xd800 && c <= 0xdbff) cut--
+  clipStat.hard++
+  console.log(`  [clip] 超 ${n} 字且没句读，硬切：${s.slice(0, 24)}…`)
   return s.slice(0, cut) + '…'
+}
+
+/** 面板 / 自检：被截断过几次 */
+export function clipStats() {
+  return { ...clipStat }
 }
 
 /* ------------------------------------------------------------------ 拆意图 */
@@ -771,6 +806,90 @@ const FALLBACK_SYSTEM = `你是直播间的虚拟主播「zuige大肥鱼」，�
 const PERSONA_FILE = path.join(DIR, 'prompts', 'dafeiyu-live.md')
 const PERSONA_CFG = path.join(DIR, 'cache', 'persona.json')
 
+/* ------------------------------------------------------- 皮套（2026-10-28）
+ * 换皮套 = 换一身衣服。但「她长什么样」原来写死在主卡里，于是红发皮套下
+ * 她张口就说自己是蓝头发 —— 主人 2026-10-28 就是这么被抓到的。
+ *
+ * 做法：外观 / 自称 / 这一身对应的身份，从主卡抽出来放 prompts/skins/<pet>.md，
+ * 按**当前皮套**注入。加新皮套只要丢一个 md 进那个目录，主卡一个字不用改。
+ *
+ * 🔴 接在 system 末尾（性格段前面）：切皮套只失效尾巴，前面几节照旧命中缓存。
+ *    所以主卡里**不许再写死颜色和服装**，否则又变成两处真相。
+ */
+const SKIN_DIR = path.join(DIR, 'prompts', 'skins')
+const LAYOUT_FILE = path.join(DIR, 'cache', 'layout.json')
+const PET_GEOM_FILE = path.join(DIR, 'cache', 'pet-geom.json')
+let petCache = { at: 0, pet: '' }
+let skinCache = { pet: '', mtime: -1, text: '' }
+
+/**
+ * 现在穿的是哪套。
+ * layout.json 是桥写、画面进程读的**唯一**真相（POST /pet 就改它）；
+ * pet-geom.json 是画面进程量的，兜底用 —— 画面还没起过的时候才有意义。
+ */
+export function currentPet() {
+  /* 手动指定优先：`ZY_PET=pet node reply.mjs …`。
+   * 两个用处 —— 试另一套皮套的人设不用真去换画面；
+   * 画面进程没起、layout.json 又坏了的时候也能救场。 */
+  if (process.env.ZY_PET) return process.env.ZY_PET
+  const now = Date.now()
+  if (now - petCache.at < 2000 && petCache.pet) return petCache.pet
+  let pet = ''
+  try {
+    pet = (JSON.parse(fs.readFileSync(LAYOUT_FILE, 'utf8')).items || {}).character?.pet || ''
+  } catch {
+    // 没有版式文件就往下兜
+  }
+  if (!pet) {
+    try {
+      pet = JSON.parse(fs.readFileSync(PET_GEOM_FILE, 'utf8')).cur || ''
+    } catch {
+      // 两处都读不到 = 用主卡默认那套
+    }
+  }
+  petCache = { at: now, pet }
+  return pet
+}
+
+function loadSkin(pet) {
+  if (!pet) return ''
+  try {
+    const f = path.join(SKIN_DIR, `${pet}.md`)
+    const st = fs.statSync(f)
+    if (skinCache.pet === pet && skinCache.mtime === st.mtimeMs) return skinCache.text
+    const raw = fs.readFileSync(f, 'utf8').replace(/^\s*<!--[\s\S]*?-->/, '').trim()
+    skinCache = { pet, mtime: st.mtimeMs, text: raw }
+    return raw
+  } catch {
+    // 没给这套皮套写人设 = 只按主卡说话，不算错
+    return ''
+  }
+}
+
+function skinBlock() {
+  const pet = currentPet()
+  const t = loadSkin(pet)
+  if (t) return `## 你现在这副样子\n\n${t}`
+  /* 这套皮套没写 md（或者两处都读不到 pet）也**必须**有这一段：
+   * 主卡那句「看下方那段」才不会指空，而且这里硬性禁掉编颜色 ——
+   * 实测没有这段时，问「你头发什么颜色」她会自己编一个「黑色」。 */
+  return `## 你现在这副样子\n\n这套皮套${pet ? `（${pet}）` : ''}还没写人设。被问长什么样、头发什么颜色，
+就说「今天穿的女仆装」，别提具体颜色，也别编 —— 说到颜色一定是错的。`
+}
+
+/** 面板用：现在这套皮套有没有人设、都有哪些 */
+export function skinInfo() {
+  const pet = currentPet()
+  const text = loadSkin(pet)
+  let files = []
+  try {
+    files = fs.readdirSync(SKIN_DIR).filter((f) => f.toLowerCase().endsWith('.md')).map((f) => f.replace(/\.md$/i, ''))
+  } catch {
+    // 没目录就是没做皮套人设
+  }
+  return { pet, has: !!text, chars: text.length, files, text }
+}
+
 /* 人设卡按 mtime 缓存：每条弹幕都 statSync 一次（<0.1ms），改了文件下一条就生效。
  * 这就是优化方案里欠了很久的「人设热重载」—— 以前改完必须重起桥。 */
 let baseCache = { mtime: -1, text: '' }
@@ -904,7 +1023,7 @@ function personaSamples() {
 
 /** 当前完整的 system。内容不变时字符串完全一样，缓存照样命中。 */
 function getSystem() {
-  return `${loadPersona()}\n\n${personaBlock()}`
+  return `${loadPersona()}\n\n${skinBlock()}\n\n${personaBlock()}`
 }
 
 /** 面板用：当前性格 + 三套定义 + 覆盖项 */
@@ -956,6 +1075,192 @@ function profileLine(p) {
   return `\n（这个人：${bits.join('，')}。别说这些数字，用话自然带出来，别像念档案。）`
 }
 
+/* ------------------------------------------------------- 知识库（2026-10-28）
+ * 主人要「加知识储备」，第一份是她自己的学校（就是 prompts/kb/ 里那份）。
+ *
+ * 🔴 为什么不塞进人设卡：这段两千多字，塞进 system 会压过「一句话 20 字」
+ *    和「软软的小鲸鱼」—— 她会开始像招生简章。而且这只是第一份，
+ *    以后加三份五份，system 就变成资料库了。
+ *
+ * 现在的做法：`prompts/kb/*.md` 里每个 `## ` 块带一行 `<!-- kw: 词1,词2 -->`，
+ * 弹幕踩到词才把**那一块**拼进这一条的 user 行，最多两块 / 700 字。
+ * 不命中就完全不出现，日常零成本，也不动前缀缓存。
+ *
+ * 隔离（主人说的「必要的时候可以隔离」）三层，全在 `cache/kb.json`：
+ *   enabled:false           → 全部知识闭嘴
+ *   files.myschool.on:false     → 只关这一份
+ *   blockOff:["myschool/就业"]  → 只关某一块
+ */
+const KB_DIR = path.join(DIR, 'prompts', 'kb')
+const KB_CFG = path.join(DIR, 'cache', 'kb.json')
+const KB_TTL = 3000 // 3 秒内不重复扫目录；直播中改 kb.json 也能很快生效
+
+let kbCache = { at: 0, cfg: {}, blocks: [] }
+
+function loadKb() {
+  const now = Date.now()
+  if (now - kbCache.at < KB_TTL) return kbCache
+  const cfg = readJsonSafe(KB_CFG) || {}
+  const blocks = []
+  let files = []
+  try {
+    files = fs.readdirSync(KB_DIR).filter((f) => f.toLowerCase().endsWith('.md'))
+  } catch {
+    // 目录不存在 = 没有知识，正常说话
+  }
+  /* 开关一律不下沉到读取层 —— 全读进来再打标记。
+   * 早先是「关掉就 continue」，结果关完一块面板里就再也找不到了，
+   * 想打开回来只能去改 json。谁是关的、为什么关，都在 kbPick 里判。 */
+  for (const f of files) {
+    const key = f.replace(/\.md$/i, '')
+    const fc = (cfg.files || {})[key] || {}
+    const fileOn = fc.on !== false
+    let raw = ''
+    try {
+      raw = fs.readFileSync(path.join(KB_DIR, f), 'utf8')
+    } catch {
+      continue
+    }
+    // 按 "## " 切块；第 0 段是文件标题和说明，不要
+    for (const part of raw.split(/^## /m).slice(1)) {
+      const nl = part.indexOf('\n')
+      const title = (nl >= 0 ? part.slice(0, nl) : part).trim()
+      let body = nl >= 0 ? part.slice(nl + 1) : ''
+      const kwm = body.match(/<!--\s*kw\s*:\s*([\s\S]*?)-->/)
+      const kws = kwm ? kwm[1].split(/[,，]/).map((s) => s.trim()).filter(Boolean) : []
+      body = body.replace(/<!--[\s\S]*?-->/g, '').replace(/\s+/g, ' ').trim()
+      if (!title || !body || !kws.length) continue
+      const off = (cfg.blockOff || []).includes(`${key}/${title}`)
+      blocks.push({ key, title, kws, body, off, fileOn, tests: kws.map(kwTester) })
+    }
+  }
+  kbCache = { at: now, cfg, blocks }
+  return kbCache
+}
+
+/**
+ * 一个触发词怎么算命中。
+ *
+ * 2026-10-28 修：原来一律 `text.includes(kw)`，于是**英文缩写只有小写能命中** ——
+ * 弹幕打「ABC是什么」捞不到「abc」那一块，问「ABC是什么」她真就回不知道。
+ * 现在：
+ *   · 纯 ASCII 的（ESI / GPA）→ 大小写不敏感 + 词边界
+ *     （不加边界的话 `man` 会在 `many`、`human` 里乱命中）
+ *   · 含中文的（11路 / 500强）→ 还是 includes，中文没有大小写也没有词边界
+ */
+function kwTester(k) {
+  if (/[^\x00-\x7F]/.test(k)) return (t) => t.includes(k)
+  const esc = k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const re = new RegExp(`(^|[^a-z0-9])${esc}([^a-z0-9]|$)`, 'i')
+  return (t, lower) => re.test(lower || t.toLowerCase())
+}
+
+/**
+ * 这条弹幕踩到了哪些知识。绝大多数弹幕返回空串 —— 空串是常态。
+ * 命中词多的排前面，超过字数上限就丢后面的。
+ */
+export function kbPick(text) {
+  const t = String(text || '')
+  if (!t) return ''
+  const tl = t.toLowerCase()
+  const { cfg, blocks } = loadKb()
+  if (cfg.enabled === false || !blocks.length) return ''
+  const hits = blocks
+    .filter((b) => b.fileOn && !b.off)
+    .map((b) => ({ b, score: (b.tests || []).filter((f) => f(t, tl)).length }))
+    .filter((x) => x.score > 0)
+    .sort((a, b) => b.score - a.score)
+  if (!hits.length) return ''
+  const fc = (cfg.files || {})[hits[0].b.key] || {}
+  const maxBlocks = Math.max(1, Math.min(4, Number(fc.maxBlocks) || 2))
+  const maxChars = Math.max(200, Math.min(2000, Number(fc.maxChars) || 700))
+  const out = []
+  let len = 0
+  for (const { b } of hits) {
+    if (out.length >= maxBlocks) break
+    const piece = `【${b.title}】${b.body}`
+    if (out.length && len + piece.length > maxChars) break
+    out.push(piece)
+    len += piece.length
+  }
+  if (!out.length) return ''
+  /* 末尾这句叮嘱是必需的：实测光给事实，模型会照着念完整段，
+   * 直播间里就成了招生咨询，一分钟二十字根本说不完。 */
+  return `\n（你知道这些，聊到就说一两句，别背资料、别念数字：\n${out.join('\n')}）`
+}
+
+/** 面板 / 自检用：现在加载了哪些块、触发词是什么 */
+export function kbInfo() {
+  const { cfg, blocks } = loadKb()
+  let onDisk = []
+  try {
+    onDisk = fs.readdirSync(KB_DIR).filter((f) => /\.md$/i.test(f)).map((f) => f.replace(/\.md$/i, ''))
+  } catch {
+    // 没目录就是没知识
+  }
+  return {
+    enabled: cfg.enabled !== false,
+    /* 文件级设置要按磁盘上的真实文件列，不能按加载结果列 ——
+     * 关掉的那份在 blocks 里根本不出现，面板就丢了它的开关。 */
+    files: onDisk.map((key) => {
+      const fc = (cfg.files || {})[key] || {}
+      return {
+        key,
+        on: fc.on !== false,
+        maxBlocks: Math.max(1, Math.min(4, Number(fc.maxBlocks) || 2)),
+        maxChars: Math.max(200, Math.min(2000, Number(fc.maxChars) || 700)),
+      }
+    }),
+    blocks: blocks.map((b) => ({
+      file: b.key,
+      title: b.title,
+      kws: b.kws,
+      chars: b.body.length,
+      off: !!b.off,
+      /* 所属资料被整份关掉时也是「现在不生效」，面板要能区分这两种关法 */
+      fileOn: b.fileOn !== false,
+    })),
+  }
+}
+
+/**
+ * 面板改知识库设置。patch 只带要改的那几项：
+ *   { enabled }                          总开关
+ *   { file, on, maxBlocks, maxChars }    单份文件
+ *   { block, on }                        block 形如 "myschool/就业"
+ * 写盘后把 kbCache 清掉，下一条弹幕立刻用新设置，不用等那 3 秒 TTL。
+ */
+export function kbSet(patch = {}) {
+  const cur = readJsonSafe(KB_CFG) || {}
+  const j = {
+    enabled: cur.enabled !== false,
+    files: { ...(cur.files || {}) },
+    blockOff: [...(cur.blockOff || [])],
+  }
+  if ('enabled' in patch) j.enabled = !!patch.enabled
+  if (patch.file) {
+    const fc = { ...(j.files[patch.file] || {}) }
+    if ('on' in patch) fc.on = !!patch.on
+    if ('maxBlocks' in patch) fc.maxBlocks = Math.max(1, Math.min(4, Number(patch.maxBlocks) || 2))
+    if ('maxChars' in patch) fc.maxChars = Math.max(200, Math.min(2000, Number(patch.maxChars) || 700))
+    j.files[patch.file] = fc
+  }
+  if (patch.block) {
+    const off = new Set(j.blockOff)
+    if (patch.on) off.delete(patch.block)
+    else off.add(patch.block)
+    j.blockOff = [...off]
+  }
+  try {
+    fs.mkdirSync(path.dirname(KB_CFG), { recursive: true })
+    fs.writeFileSync(KB_CFG, JSON.stringify(j, null, 2), 'utf8')
+  } catch (e) {
+    console.log('  [kb] 存盘失败：', e?.message || e)
+  }
+  kbCache = { at: 0, cfg: {}, blocks: [] }
+  return kbInfo()
+}
+
 /**
  * 这一条该让模型回什么。
  *
@@ -987,6 +1292,8 @@ function offArtist(song) {
 
 function userLine(kind, user, text, song = null, profile = null, video = null) {
   const who = profileLine(profile)
+  // 知识：只有弹幕踩到触发词才有内容，绝大多数时候是空串
+  const kb = kbPick(text)
   if (kind === 'gift') return `${user} 送了礼物：${text}。感谢他。${who}`
   if (kind === 'welcome') return `${user} 刚进直播间。欢迎一句，别太热情，也别问问题。${who}`
   if (kind === 'chitchat')
@@ -999,7 +1306,7 @@ function userLine(kind, user, text, song = null, profile = null, video = null) {
       : video.why === '正在放'
         ? '屏幕上正放着一段，还没播完'
         : `系统这次没能放，原因：${video.why || '没有素材'}`
-    return `${user} 说：${text}。${fact}。按这个事实回一句，别说反。${who}`
+    return `${user} 说：${text}。${fact}。按这个事实回一句，别说反。${who}${kb}`
   }
   /* 点歌：桥已经**真的**去操作播放器了，成没成只有它知道。
    * 不把结果写进来，模型就会自己编「好嘞，这就放《X》」—— 观众等一晚上也等不到，
@@ -1018,9 +1325,9 @@ function userLine(kind, user, text, song = null, profile = null, video = null) {
         ? `系统已经把《${song.title || song.name}》加进播放列表了（排在当前这首后面，还没开始放）${whoSang}${trial}`
         : `系统已经切到《${song.title || song.name}》开始放了${whoSang}${trial}`
       : `系统去搜了但没成，原因：${song.why || '搜不到这首歌'}`
-    return `${user} 说：${text}。${fact}。按这个事实回一句，别说反，也别承诺做不到的事。${who}`
+    return `${user} 说：${text}。${fact}。按这个事实回一句，别说反，也别承诺做不到的事。${who}${kb}`
   }
-  return `${user} 说：${text}。回他一句。${who}`
+  return `${user} 说：${text}。回他一句。${who}${kb}`
 }
 
 /**
@@ -1345,6 +1652,28 @@ if (process.argv[1] && process.argv[1].endsWith('reply.mjs')) {
       )
       process.exit(0)
     })
+  } else if (args[0] === '--kb') {
+    // 看知识库：node reply.mjs --kb            → 列所有块和触发词
+    //           node reply.mjs --kb 学校堵车吗   → 这条弹幕会捞到哪几块
+    const info = kbInfo()
+    console.log(`知识库：${info.enabled ? '开' : '关'}，${info.blocks.length} 块`)
+    const t = args.slice(1).join(' ').trim()
+    if (!t) {
+      for (const b of info.blocks) {
+        console.log(`  · ${b.file}/${b.title}  (${b.chars} 字)  kw: ${b.kws.join('、')}`)
+      }
+    } else {
+      const got = kbPick(t)
+      console.log(`弹幕：${t}`)
+      if (!got) console.log('  → 没踩到知识，user 行不加料（这是常态）')
+      else {
+        const titles = [...got.matchAll(/【(.+?)】/g)].map((m) => m[1])
+        console.log(`  → 命中 ${titles.length} 块：${titles.join('、')}，共 ${got.length} 字`)
+        console.log('-----')
+        console.log(got.trim())
+      }
+    }
+    process.exit(0)
   } else if (args[0] === '--probe' || args[0] === '--models') {
     console.log('模式：', MODE)
     console.log('配置：', describe())
