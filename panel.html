@@ -7,108 +7,108 @@
 <!--
   这个页面由 server.mjs 直接发，**不经过桥**。
   所以桥没跑的时候它照样能打开 —— 打开以后点「开播」就能把桥拉起来。
-  这是它跟 settings.html 最大的区别：settings.html 是桥发的，桥死了它也打不开。
+    这是它跟 settings.html 最大的区别：settings.html 是桥发的，桥死了它也打不开。
 -->
+<link rel="stylesheet" href="/ui/theme.css">
 <style>
-  /* Material 3 Expressive · dark · teal —— 跟 settings.html / music.html 同一套变量。
-     规矩照旧：只用纯色，任何地方都不许出现渐变。 */
-  :root{
-    --surface:#0f1417;
-    --surface-1:#171d21;
-    --surface-2:#1d2429;
-    --surface-3:#262f35;
-    --surface-4:#313a41;
-    --on-surface:#dfe3e6;
-    --on-variant:#b3bcc1;
-    --primary:#7fddc4;
-    --on-primary:#00382c;
-    --primary-c:#005143;
-    --on-primary-c:#9bfbdf;
-    --warn:#f5c06b;
-    --warn-c:#4a3410;
-    --danger:#f2b8b5;
-    --danger-c:#3f1412;
-    --muted:#6d777d;
-  }
+  /* 配色和圆角全在 /ui/theme.css（2026-10-29 从深色 M3 换成浅色后台风）。
+     这里只放这一页自己的布局。规矩照旧：只用纯色，任何地方都不许出现渐变。 */
   *{box-sizing:border-box;margin:0;padding:0}
   body{
-    background:var(--surface);color:var(--on-surface);
-    font:15px/1.45 "Google Sans",-apple-system,"Segoe UI","Microsoft YaHei",system-ui,sans-serif;
-    padding:24px 20px 60px;-webkit-font-smoothing:antialiased;
+    background:var(--bg);color:var(--on-surface);
+    font:14px/1.55 "Google Sans",-apple-system,"Segoe UI","Microsoft YaHei",system-ui,sans-serif;
+    padding:16px 20px 48px;-webkit-font-smoothing:antialiased;
   }
-  .wrap{width:100%;max-width:760px;margin:0 auto}
+  .wrap{width:100%;max-width:900px;margin:0 auto}
 
-  .head{display:flex;align-items:center;gap:10px;padding:0 8px;margin-bottom:18px}
-  .dot{width:10px;height:10px;border-radius:50%;background:var(--muted);flex:none}
+  .head{display:flex;align-items:center;gap:9px;padding:0 2px;margin-bottom:14px}
+  .dot{width:7px;height:7px;border-radius:50%;background:#c9cfda;flex:none}
   .dot.on{background:var(--primary)}
   .dot.warn{background:var(--warn)}
   .dot.bad{background:var(--danger)}
-  .name{font-size:20px;font-weight:600;letter-spacing:-.2px;flex:1}
-  .chip{font-size:13px;font-weight:600;padding:6px 14px;border-radius:999px;
-        background:var(--surface-3);color:var(--on-variant);white-space:nowrap}
+  .name{font-size:16px;font-weight:600;letter-spacing:-.1px;flex:1}
+  .chip{display:inline-flex;align-items:center;height:22px;padding:0 8px;border-radius:var(--r-tag);
+        font-size:12px;font-weight:500;background:var(--surface-3);color:var(--on-variant);white-space:nowrap}
   .chip.live{background:var(--primary-c);color:var(--on-primary-c)}
   .chip.warn{background:var(--warn-c);color:var(--warn)}
   .chip.bad{background:var(--danger-c);color:var(--danger)}
 
-  .card{background:var(--surface-1);border-radius:28px;padding:24px;margin-bottom:18px}
-  .card h2{font-size:16px;font-weight:600;margin-bottom:4px}
-  .card .sub{font-size:13px;color:var(--muted);margin-bottom:18px;line-height:1.6}
+  .card{background:var(--surface-1);border:1px solid var(--border);border-radius:var(--r-card);
+        padding:16px 18px;margin-bottom:12px}
+  .card h2{font-size:14px;font-weight:600;margin-bottom:6px}
+  .card .sub{font-size:13px;color:var(--on-variant);margin-bottom:14px;line-height:1.6}
+  /* 没话说的时候别留一块空白（比如音乐卡里的 mHint 平时是空的） */
+  .card .sub:empty{display:none}
 
-  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px}
-  .stat{background:var(--surface-2);border-radius:18px;padding:14px 16px}
-  .stat .k{font-size:12px;color:var(--muted);margin-bottom:6px}
-  .stat .v{font-size:19px;font-weight:600;letter-spacing:-.2px}
-  .stat .v small{font-size:12px;font-weight:400;color:var(--muted);margin-left:4px}
+  /* 状态：两列紧凑列表，不再是六个浮起来的小卡片。
+     值紧跟标签左对齐 —— 用 space-between 会被拉到列尾，中间空一大片。 */
+  .stats{display:grid;grid-template-columns:1fr 1fr;gap:0 32px}
+  .st{display:flex;align-items:baseline;gap:10px;
+      padding:9px 0;border-bottom:1px solid var(--border);font-size:13px}
+  .st .k{color:var(--on-variant);width:84px;flex:none}
+  .st .v{font-weight:600;font-variant-numeric:tabular-nums}
+  .st .v small{font-size:12px;font-weight:400;color:var(--muted);margin-left:4px}
+  @media (max-width:640px){.stats{grid-template-columns:1fr}}
 
-  .row{display:flex;gap:10px;align-items:center}
+  /* 「正在放」：单独一块，左边一道绿条。
+     比一行键值更该被看见，又不至于引入新组件。 */
+  .np{display:flex;align-items:baseline;gap:10px;background:var(--surface-2);
+      border:1px solid var(--border);border-left:2px solid var(--primary);
+      border-radius:var(--r-btn);padding:11px 14px}
+  .np-k{font-size:12px;color:var(--muted);flex:none}
+  .np-v{font-size:15px;font-weight:600;flex:1;min-width:0;overflow:hidden;
+        text-overflow:ellipsis;white-space:nowrap}
+  .np-q{font-size:12px;color:var(--on-variant);flex:none}
+
+  /* 页头那个「日志 →」：收发和桥日志搬去日志页了，这里留一条路 */
+  .golink{font-size:12px;font-weight:500;color:var(--on-variant);text-decoration:none;
+          padding:5px 9px;border-radius:var(--r-btn);border:1px solid var(--border);flex:none}
+  .golink:hover{color:var(--primary);border-color:var(--primary)}
+
+  .row{display:flex;gap:8px;align-items:center}
   .row.wrap{flex-wrap:wrap}
 
   input[type=text],select{
-    background:var(--surface-2);border:1px solid var(--surface-4);color:var(--on-surface);
-    border-radius:14px;padding:11px 14px;font:inherit;font-size:14px;width:100%;outline:none;
+    background:var(--surface-1);border:1px solid var(--border-2);color:var(--on-surface);
+    border-radius:var(--r-btn);padding:0 11px;height:32px;font:inherit;font-size:13px;
+    width:100%;outline:none;transition:border-color .12s;
   }
-  input:focus,select:focus{border-color:var(--primary)}
+  input[type=text]:hover,select:hover{border-color:var(--primary)}
+  input:focus,select:focus{border-color:var(--primary);box-shadow:0 0 0 2px var(--primary-c)}
 
-  .btn{font:inherit;font-size:14px;font-weight:600;padding:12px 22px;border-radius:999px;
-       border:none;cursor:pointer;background:var(--surface-3);color:var(--on-surface);
-       white-space:nowrap;transition:background .12s}
-  .btn:hover:not(:disabled){background:var(--surface-4)}
+  .btn{font:inherit;font-size:13px;font-weight:500;height:32px;padding:0 13px;
+       border-radius:var(--r-btn);border:1px solid var(--border-2);cursor:pointer;
+       background:var(--surface-1);color:var(--on-surface);white-space:nowrap;
+       transition:border-color .12s,background .12s}
+  .btn:hover:not(:disabled){border-color:var(--primary);color:var(--primary-h)}
   .btn:disabled{opacity:.45;cursor:not-allowed}
-  .btn.primary{background:var(--primary-c);color:var(--on-primary-c)}
-  .btn.primary:hover:not(:disabled){background:#006b58}
-  .btn.danger{background:var(--danger-c);color:var(--danger)}
-  .btn.danger:hover:not(:disabled){background:#4d1a17}
-  .btn.sm{padding:9px 16px;font-size:13px}
+  .btn.primary{background:var(--primary);border-color:var(--primary);color:var(--on-primary)}
+  .btn.primary:hover:not(:disabled){background:var(--primary-h);border-color:var(--primary-h);color:var(--on-primary)}
+  .btn.danger{background:var(--danger-c);border-color:var(--danger-c);color:var(--danger)}
+  .btn.danger:hover:not(:disabled){background:#fbe0e5;border-color:var(--danger);color:var(--danger)}
+  .btn.sm{height:28px;padding:0 10px}
 
-  /* 分开控制：每行一个组件 + 启动/重启 + 右边小字状态 */
-  .ctlgroup{display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap}
-  .ctlname{width:66px;flex:0 0 auto;font-size:13px;color:var(--on-variant)}
-  .ctlstate{font-size:12px;color:var(--muted);margin-left:2px}
+  /* 两个按钮拼成一组：只有外侧有圆角，像 Naive UI 的 ButtonGroup */
+  .btngrp{display:inline-flex}
+  .btngrp .btn{border-radius:0}
+  .btngrp .btn:first-child{border-radius:var(--r-btn) 0 0 var(--r-btn)}
+  .btngrp .btn:last-child{border-radius:0 var(--r-btn) var(--r-btn) 0;margin-left:-1px}
 
-  .links{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}
-  .link{display:block;background:var(--surface-2);border-radius:18px;padding:16px;
-        text-decoration:none;color:var(--on-surface)}
-  .link:hover{background:var(--surface-3)}
-  .link b{display:block;font-size:14px;font-weight:600;margin-bottom:3px}
-  .link span{font-size:12px;color:var(--muted)}
+  /* 分开控制：一行一组 —— 名称 | 按钮组 | 状态标签 */
+  .ctlrow{display:grid;grid-template-columns:80px auto 1fr;align-items:center;
+          gap:12px;padding:10px 0;border-bottom:1px solid var(--border)}
+  .ctlrow:last-child{border-bottom:none;padding-bottom:0}
+  .ctlrow .ctlname{font-size:13px;color:var(--on-variant)}
+  .ctlstate{margin-left:auto}
+  @media (max-width:640px){
+    .ctlrow{grid-template-columns:1fr auto}
+    .ctlstate{grid-column:1 / -1;margin-left:0;justify-self:start}
+  }
 
-  .feed{display:flex;flex-direction:column;gap:2px;max-height:320px;overflow:auto}
-  .line{display:flex;gap:10px;padding:7px 4px;font-size:13px;border-radius:10px}
-  .line:hover{background:var(--surface-2)}
-  .line .t{color:var(--muted);font-variant-numeric:tabular-nums;flex:none;font-size:12px;padding-top:1px}
-  .line .m{flex:1;word-break:break-word}
-  .line.say .m{color:var(--primary)}
-  .line.gift .m{color:var(--warn)}
-
-  .empty{color:var(--muted);font-size:13px;padding:14px 4px}
-
-  pre.log{background:var(--surface-2);border-radius:16px;padding:14px;font-size:12px;
-          line-height:1.65;max-height:340px;overflow:auto;white-space:pre-wrap;
-          word-break:break-all;color:var(--on-variant);font-family:ui-monospace,Consolas,monospace}
-
-  #toast{position:sticky;top:12px;z-index:9;margin-bottom:12px}
-  #toast div{background:var(--surface-3);border-radius:16px;padding:12px 18px;font-size:14px;
-             margin-bottom:8px;border-left:3px solid var(--primary)}
+  #toast{position:sticky;top:10px;z-index:9;margin-bottom:10px}
+  #toast div{background:var(--surface-1);border:1px solid var(--border);border-left:3px solid var(--primary);
+             border-radius:var(--r-card);padding:10px 14px;font-size:13px;margin-bottom:8px;
+             box-shadow:0 2px 8px rgba(16,24,40,.08)}
   #toast div.bad{border-left-color:var(--danger);color:var(--danger)}
   #toast div.warn{border-left-color:var(--warn);color:var(--warn)}
 </style>
@@ -119,6 +119,7 @@
     <span class="dot" id="dot"></span>
     <div class="name">直播控制台</div>
     <span class="chip" id="chip">读状态…</span>
+    <a class="golink" href="/logs.html" title="收发 / 桥日志 / 素材播放">日志 →</a>
   </div>
 
   <div id="toast"></div>
@@ -126,13 +127,13 @@
   <div class="card">
     <h2>现在什么情况</h2>
     <div class="sub" id="sub">正在读桥的状态…</div>
-    <div class="grid">
-      <div class="stat"><div class="k">桥</div><div class="v" id="sBridge">—</div></div>
-      <div class="stat"><div class="k">画面</div><div class="v" id="sOverlay">—</div></div>
-      <div class="stat"><div class="k">房间</div><div class="v" id="sRoom">—</div></div>
-      <div class="stat"><div class="k">在线</div><div class="v" id="sOnline">—</div></div>
-      <div class="stat"><div class="k">弹幕 / 礼物</div><div class="v" id="sChat">—</div></div>
-      <div class="stat"><div class="k">已回复</div><div class="v" id="sReplied">—</div></div>
+    <div class="stats">
+      <div class="st"><span class="k">桥</span><span class="v" id="sBridge">—</span></div>
+      <div class="st"><span class="k">画面</span><span class="v" id="sOverlay">—</span></div>
+      <div class="st"><span class="k">房间</span><span class="v" id="sRoom">—</span></div>
+      <div class="st"><span class="k">在线</span><span class="v" id="sOnline">—</span></div>
+      <div class="st"><span class="k">弹幕 / 礼物</span><span class="v" id="sChat">—</span></div>
+      <div class="st"><span class="k">已回复</span><span class="v" id="sReplied">—</span></div>
     </div>
   </div>
 
@@ -153,24 +154,30 @@
       <button class="btn primary" id="bAll">一键全开</button>
       <button class="btn danger" id="bStop">全停</button>
     </div>
-    <div class="sub" style="margin:16px 0 8px">分开控制（各自独立，点一个不影响别的）：</div>
-    <div class="ctlgroup">
+    <div class="sub" style="margin:14px 0 4px">分开控制（各自独立，点一个不影响别的）：</div>
+    <div class="ctlrow">
       <span class="ctlname">弹幕桥</span>
-      <button class="btn sm" id="bBridgeStart">启动</button>
-      <button class="btn sm" id="bBridgeRestart">重启</button>
-      <span class="ctlstate" id="sBridgeState">—</span>
+      <span class="btngrp">
+        <button class="btn sm" id="bBridgeStart">启动</button>
+        <button class="btn sm" id="bBridgeRestart">重启</button>
+      </span>
+      <span class="tag ctlstate" id="sBridgeState">—</span>
     </div>
-    <div class="ctlgroup">
+    <div class="ctlrow">
       <span class="ctlname">画面</span>
-      <button class="btn sm" id="bOverlayStart">启动</button>
-      <button class="btn sm" id="bOverlayRestart">重启</button>
-      <span class="ctlstate" id="sOverlayState">—</span>
+      <span class="btngrp">
+        <button class="btn sm" id="bOverlayStart">启动</button>
+        <button class="btn sm" id="bOverlayRestart">重启</button>
+      </span>
+      <span class="tag ctlstate" id="sOverlayState">—</span>
     </div>
-    <div class="ctlgroup">
+    <div class="ctlrow">
       <span class="ctlname">音乐</span>
-      <button class="btn sm" id="bMusicStart">启动</button>
-      <button class="btn sm" id="bMusicRestart">重启</button>
-      <span class="ctlstate" id="sMusicState">—</span>
+      <span class="btngrp">
+        <button class="btn sm" id="bMusicStart">启动</button>
+        <button class="btn sm" id="bMusicRestart">重启</button>
+      </span>
+      <span class="tag ctlstate" id="sMusicState">—</span>
     </div>
     <div class="sub" style="margin:16px 0 0">
       ⚠️ <b>重启弹幕桥会断掉当前监听</b>（约 30 秒），直播中别点 —— 换新代码才需要它。<br>
@@ -179,45 +186,28 @@
   </div>
 
   <div class="card">
-    <h2>最近收发</h2>
-    <div class="sub">后台起的桥没有黑窗口，这里就是「她到底说没说话」的唯一窗口。</div>
-    <div class="feed" id="feed"><div class="empty">还没有记录 —— 桥起来以后这里会一行行滚。</div></div>
-  </div>
-
-  <div class="card">
     <h2>音乐</h2>
-    <div class="sub">播放器服务跟着控制台一起起，<b>不再依赖 DSH</b>。声音由「播放页」出，那个页面要一直开着（最小化可以，关掉就没声）。</div>
-    <div class="grid">
-      <div class="stat"><div class="k">播放器服务</div><div class="v" id="mSvc">查中…</div></div>
-      <div class="stat"><div class="k">播放页</div><div class="v" id="mClient">—</div></div>
-      <div class="stat"><div class="k">正在放</div><div class="v" id="mNow">—</div></div>
-      <div class="stat"><div class="k">队列</div><div class="v" id="mQueue">—</div></div>
+    <div class="sub">播放器服务跟着控制台一起起，<b>不再依赖 DSH</b>。声音由顶栏那个「开启声音」负责 —— 那是外壳，切到别的页也不会断，只有关掉整个标签页才没声。</div>
+
+    <!-- 正在放：单独一块，比一行键值更该被看见。
+         以前这四行用的是 .grid / .stat，那两个类名在这页**根本没有样式**，
+         所以渲染成了「标签一行、值一行」的竖排 —— 2026-10-29 修。 -->
+    <div class="np">
+      <div class="np-k">正在放</div>
+      <div class="np-v" id="mNow">—</div>
+      <div class="np-q"><span id="mQueue">—</span></div>
     </div>
-    <div class="row" style="margin-top:12px">
-      <button class="btn primary sm" id="bMusicPlay">▶ 启动播放</button>
-      <a class="btn sm" id="mOpen" href="http://127.0.0.1:18083/player.html" target="_blank" rel="noopener">独立播放页</a>
+
+    <div class="stats" style="margin-top:12px">
+      <div class="st"><span class="k">播放器服务</span><span class="v" id="mSvc">查中…</span></div>
+      <div class="st"><span class="k">播放页</span><span class="v" id="mClient">—</span></div>
+    </div>
+
+    <div class="row wrap" style="margin-top:14px">
+      <a class="btn sm" id="mOpen" href="http://127.0.0.1:18083/player.html" target="_blank" rel="noopener">备用播放页 ↗</a>
+      <span class="sub" style="margin:0">后台开不了的时候才用它</span>
     </div>
     <div class="sub" id="mHint" style="margin:10px 0 0"></div>
-  </div>
-
-  <div class="card">
-    <h2>去别的页</h2>
-    <div class="sub">这些页都是桥发的，但请求会经过这个控制台转给桥 —— 不用记端口。</div>
-    <div class="links">
-      <a class="link" href="/settings.html"><b>设置</b><span>账号 / 回复 / 礼物 / 声音 / 人格 / 记忆</span></a>
-      <a class="link" href="/editor.html"><b>画面版式</b><span>拖位置、调宽度，1 秒生效</span></a>
-      <a class="link" href="/music.html"><b>点歌台</b><span>队列、音源、当前在放什么</span></a>
-      <a class="link" href="/home.html"><b>首页</b><span>旧的入口页</span></a>
-    </div>
-  </div>
-
-  <div class="card">
-    <h2>桥日志</h2>
-    <div class="sub">出问题先看这个。文件在 <code>.run/bridge.log</code>。</div>
-    <div class="row" style="margin-bottom:12px">
-      <button class="btn sm" id="bLog">读最近 200 行</button>
-    </div>
-    <pre class="log" id="log" style="display:none"></pre>
   </div>
 </div>
 
@@ -263,6 +253,14 @@ async function api(path, { method = 'GET', body, timeout = 20000 } = {}) {
   }
 }
 
+/** 状态标签：文字和颜色一起设 —— 只改文字会出现「没跑」显示成绿色这种错 */
+function setTag(sel, text, kind) {
+  const el = $(sel)
+  if (!el) return
+  el.textContent = text
+  el.className = 'tag ctlstate' + (kind ? ' ' + kind : '')
+}
+
 /* ── 按钮 busy 管理 ────────────────────────────────────────────── */
 let busy = ''
 const BTN_LABELS = {
@@ -303,7 +301,7 @@ function beginBusy(key, label) {
   busyTimer = setTimeout(() => {
     if (busy === key) {
       setBusy('')
-      toast('这个操作卡住了（40 秒没结果）—— 去看下面的桥日志', 'bad')
+      toast('这个操作卡住了（40 秒没结果）—— 去看「日志」页的桥日志', 'bad')
     }
   }, 40000)
 }
@@ -381,13 +379,12 @@ function render(s) {
     $('#bAll').disabled = Boolean(b.running && o.live && m.up)
     $('#bStop').disabled = Boolean(!b.running && !o.live && !m.up)
   }
-  $('#sBridgeState').textContent = b.running ? `在跑 ${fmtUp(b.upSec)}`.trim() : '没跑'
-  $('#sOverlayState').textContent = o.live ? '在拉数据' : o.pid ? '进程在，没数据' : '没开'
-  $('#sMusicState').textContent = m.up
-    ? m.clientAlive
-      ? '在放'
-      : '服务在跑，播放页没开'
-    : '没跑'
+  setTag('#sBridgeState', b.running ? `在跑 ${fmtUp(b.upSec)}`.trim() : '没跑', b.running ? 'on' : '')
+  setTag('#sOverlayState', o.live ? '在拉数据' : o.pid ? '进程在，没数据' : '没开',
+    o.live ? 'on' : o.pid ? 'warn' : '')
+  setTag('#sMusicState',
+    m.up ? (m.clientAlive ? '在放' : '服务在跑，播放页没开') : '没跑',
+    m.up ? (m.clientAlive ? 'on' : 'warn') : '')
 
   /* 房间号：只在用户没在改的时候回填，否则会把他正在打的字冲掉 */
   const room = $('#room')
@@ -398,7 +395,6 @@ function render(s) {
   if (document.activeElement !== mode && s.cfg.mode) mode.value = s.cfg.mode
 
   renderMusic(s.music || { up: false })
-  renderFeed(s.recent || [])
 }
 
 /** 音乐卡片。数据全来自 /ctl/status 的 music 字段，不额外发请求。 */
@@ -425,29 +421,11 @@ function renderMusic(m) {
   $('#mQueue').textContent = m.queue && m.queue.length ? `${m.queue.length} 首` : '空'
 
   const bits = []
-  if (!m.clientAlive) bits.push('控制台这一页没连着播放器 —— 刷新一下本页就行（声音要在本页出）。')
-  else if (!unk && !m.clientUnlocked) bits.push('浏览器还没允许出声，点一下「▶ 启动播放」，点过一次就记住了。')
+  if (!m.clientAlive) bits.push('控制台这一页没连着播放器 —— 刷新一下控制台首页就行（声音是从顶栏出的）。')
+  else if (!unk && !m.clientUnlocked) bits.push('浏览器还没允许出声，点一下顶栏那个「开启声音」，点过一次就记住了。')
   if (m.auth && m.auth.ok === false) bits.push(m.auth.why || '没找到网易云登录态')
   if (m.lastError) bits.push('最近一次错误：' + m.lastError)
   $('#mHint').textContent = bits.join(' ')
-}
-
-function renderFeed(list) {
-  const feed = $('#feed')
-  if (!list.length) {
-    feed.innerHTML = '<div class="empty">还没有记录 —— 桥起来以后这里会一行行滚。</div>'
-    return
-  }
-  const nearBottom = feed.scrollHeight - feed.scrollTop - feed.clientHeight < 40
-  feed.innerHTML = list
-    .map((x) => {
-      const cls = x.kind === 'say' ? 'say' : x.kind === 'gift' ? 'gift' : ''
-      const tag = x.kind === 'say' ? '她' : x.kind === 'gift' ? '礼' : '收'
-      const esc = String(x.text).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]))
-      return `<div class="line ${cls}"><span class="t">${x.at}</span><span class="m">${tag} ${esc}</span></div>`
-    })
-    .join('')
-  if (nearBottom) feed.scrollTop = feed.scrollHeight
 }
 
 async function refresh() {
@@ -459,176 +437,15 @@ async function refresh() {
   render(s)
 }
 
-/* ══════════════════════════════════════════════════════════════════
- * 内嵌音乐播放器
+/* ────────────────────────────────────────────────────────────────────
+ * 音乐播放器搬走了 —— 现在在 index.html（外壳）里。
  *
- * 为什么放这儿而不是单独一个播放页：实测单独开一个页面很容易被关掉或忘了开，
- * 桥 25 秒就判定「播放器界面没开」，然后回落本机 QQ 音乐 —— 观众那边就是静音。
- * 控制台本来就要一直开着，把 <audio> 放这里最不容易断。
- *
- * 🔴 轮询是无条件的（不管有没有点过启动）：桥靠 /client/poll 的心跳判断
- *    「播放器界面在不在」，不 poll 就会被判定为没开。
- * 🔴 出声必须由用户点一次「启动播放」—— 浏览器的自动播放策略。
- *    点过之后 localStorage 记住，刷新页面也尽量自动接上。
- * ══════════════════════════════════════════════════════════════════ */
-const MUSIC_BASE = 'http://127.0.0.1:18083'
-const au = new Audio()
-au.preload = 'auto'
-au.volume = 0.7
+ * 原因：桥靠 /client/poll 的心跳判断「播放器界面在不在」，25 秒没心跳就回落
+ * 本机 QQ 音乐，观众那边就是静音。外壳一直可见，而这一页装在 iframe 里会被
+ * 切走卸载，所以 <audio> 只能住在外壳。
+ * 这一页只负责显示音乐状态；出声和心跳都归外壳，顶部那个「开启声音」在外壳上。
+ * ──────────────────────────────────────────────────────────────────── */
 
-let auTrack = ''
-let auSongId = ''
-let auPolling = false
-let auResumed = false
-let musicUnlocked = false
-try {
-  musicUnlocked = localStorage.getItem('zy-music-unlocked') === '1'
-} catch {}
-
-async function mApi(path, opt) {
-  const r = await fetch(MUSIC_BASE + path, opt)
-  if (!r.ok) throw new Error('HTTP ' + r.status)
-  return r.json()
-}
-const mPost = (path, body) =>
-  mApi(path, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(body || {}),
-  })
-
-function paintBoot() {
-  const b = $('#bMusicPlay')
-  if (!b) return
-  b.textContent = musicUnlocked ? '▶ 已经在放了' : '▶ 启动播放'
-  b.disabled = musicUnlocked
-}
-
-async function auPlayTrack(track) {
-  auTrack = String(track.id || '')
-  auSongId = String(track.songId || auTrack.replace(/\D/g, ''))
-  let u = null
-  try {
-    u = await mApi('/url?id=' + encodeURIComponent(auSongId) + '&quality=exhigh')
-  } catch (e) {
-    mPost('/client/error', { why: '取直链失败：' + e.message }).catch(() => {})
-  }
-  if (!u || !u.url) {
-    mPost('/client/error', { why: (u && u.why) || '取不到直链' }).catch(() => {})
-    /* 取不到就报播完，让服务端切下一首，别卡死 */
-    setTimeout(() => mPost('/client/ended', { trackId: auTrack }).then(auApply).catch(() => {}), 800)
-    return
-  }
-  au.src = u.url
-  try {
-    await au.play()
-    musicUnlocked = true
-    try {
-      localStorage.setItem('zy-music-unlocked', '1')
-    } catch {}
-    paintBoot()
-  } catch {
-    /* 被自动播放策略拦了：按钮放回来，别假装在放 */
-    musicUnlocked = false
-    paintBoot()
-    toast('浏览器拦了自动播放，点「启动播放」一下', 'warn')
-  }
-}
-
-async function auApply(list) {
-  for (const c of list || []) {
-    try {
-      if (c.type === 'play') await auPlayTrack(c.track)
-      else if (c.type === 'pause') au.pause()
-      else if (c.type === 'resume') {
-        try {
-          await au.play()
-        } catch {}
-      } else if (c.type === 'volume') {
-        au.volume = Math.min(1, Math.max(0, Number(c.value) || 0))
-      } else if (c.type === 'stop') {
-        au.pause()
-        au.removeAttribute('src')
-        auTrack = ''
-        auSongId = ''
-      }
-    } catch {}
-  }
-}
-
-async function auTick() {
-  if (auPolling) return
-  auPolling = true
-  try {
-    /* unlocked 一起带上：服务端靠它区分「页面开着」和「能出声」。
-     * 只发 poll 不发 report 也能维持心跳 —— 空闲时也必须在。 */
-    const r = await mApi('/client/poll?unlocked=' + (musicUnlocked ? '1' : '0'))
-    await auApply(r.commands)
-    if (typeof r.volume === 'number') au.volume = r.volume
-    /* 刷新页面后接上正在放的那首：不接的话账本以为在放、耳朵里没声，
-     * 看起来就像「点歌成功但没声音」。只试一次，失败交给服务端切歌。 */
-    const np = r.nowPlaying
-    if (!auTrack && !auResumed && musicUnlocked && np && np.trackId) {
-      auResumed = true
-      await auPlayTrack({ id: np.trackId, songId: np.trackId })
-      if (np.positionSec > 2) {
-        try {
-          au.currentTime = Number(np.positionSec) || 0
-        } catch {}
-      }
-    }
-  } catch {
-    /* 播放器服务没起来时不要刷屏报错，音乐卡片那边会说 */
-  } finally {
-    auPolling = false
-  }
-}
-
-/* 每 1 秒取命令、每 2 秒报真实进度（服务端的 nowPlaying 以这个为准） */
-setInterval(auTick, 1000)
-setInterval(() => {
-  if (!auTrack) return
-  mPost('/client/report', {
-    trackId: auTrack,
-    positionSec: au.currentTime || 0,
-    durationSec: au.duration || 0,
-    playing: !au.paused,
-  }).catch(() => {})
-}, 2000)
-
-au.addEventListener('ended', async () => {
-  try {
-    const r = await mPost('/client/ended', { trackId: auTrack })
-    await auApply(r.commands)
-  } catch {}
-})
-
-au.addEventListener('error', () => {
-  if (!auTrack) return
-  mPost('/client/error', { why: 'audio 播放出错' }).catch(() => {})
-  setTimeout(async () => {
-    try {
-      const r = await mPost('/client/ended', { trackId: auTrack })
-      await auApply(r.commands)
-    } catch {}
-  }, 600)
-})
-
-$('#bMusicPlay').onclick = async () => {
-  musicUnlocked = true
-  try {
-    localStorage.setItem('zy-music-unlocked', '1')
-  } catch {}
-  paintBoot()
-  try {
-    await au.play()
-  } catch {}
-  auTick()
-}
-
-/* 刷新后如果之前解锁过，先试着直接接上；被拦就等用户点 */
-if (musicUnlocked) setTimeout(() => au.play().catch(() => {}), 1200)
-paintBoot()
 
 /* ── 操作 ──────────────────────────────────────────────────────── */
 async function act(key, label, path, body) {
@@ -687,18 +504,6 @@ $('#mode').onchange = async () => {
   if (!r.ok) toast('模型选择没存上：' + (r.error || ''), 'bad')
 }
 
-$('#bLog').onclick = async () => {
-  const pre = $('#log')
-  pre.style.display = 'block'
-  pre.textContent = '读取中…'
-  const r = await api('/ctl/log?n=200', { timeout: 12000 })
-  if (!r.ok) {
-    pre.textContent = '读不到日志：' + (r.error || '未知原因')
-    return
-  }
-  pre.textContent = (r.lines || []).join('\n') || '（日志是空的 —— 桥还没起过）'
-  pre.scrollTop = pre.scrollHeight
-}
 
 /* 3 秒一轮。比 2 秒稳：桥不在时 /healthz 有 1.5 秒超时，2 秒会堆积。 */
 refresh()

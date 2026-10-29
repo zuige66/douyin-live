@@ -1,0 +1,391 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>大肥鱼 · 日志</title>
+<link rel="stylesheet" href="/ui/theme.css">
+<!--
+  日志页（2026-10-29 从 panel.html 拆出来的）。
+
+  为什么拆：控制台一页原来塞了「现在什么情况 / 开播 / 最近收发 / 音乐 / 桥日志」五块，
+  收发和日志这两块是一直往下滚的，跟上面的按钮抢眼睛 —— 直播当中最常看的
+  「她刚才到底说没说话」反而要往下滚才看得到。
+
+  三个页签：
+    最近收发  ← /ctl/status 的 recent（她说的 + 收到的礼物）
+    桥日志    ← /ctl/log       （.run/bridge.log 的尾巴，出问题先看这个）
+    素材播放  ← /media/box 的 log（哪段视频什么时候播的、谁送的）
+
+  自动刷新只在当前页签里跑：三个一起轮询没必要，还会把桥的日志接口刷爆。
+-->
+<style>
+  .wrap{width:100%;max-width:1080px;margin:0 auto;padding:22px 26px 40px}
+
+  .head{display:flex;align-items:center;gap:9px;margin-bottom:16px}
+  .dot{width:7px;height:7px;border-radius:50%;background:#c9cfda;flex:none}
+  .dot.on{background:var(--primary)}
+  .dot.bad{background:var(--danger)}
+  .name{font-size:16px;font-weight:600;letter-spacing:-.1px;flex:1}
+  .chip{display:inline-flex;align-items:center;height:22px;padding:0 8px;border-radius:var(--r-tag);
+        font-size:12px;font-weight:500;background:var(--surface-3);color:var(--on-variant);white-space:nowrap}
+
+  /* 页签：跟设置页同一套下划线，不摆胶囊 */
+  .tabs{display:flex;gap:0;margin-bottom:16px;border-bottom:1px solid var(--border)}
+  .tab{font:inherit;font-size:13px;font-weight:500;padding:9px 12px;border-radius:0;cursor:pointer;
+       background:none;color:var(--on-variant);border:none;
+       border-bottom:2px solid transparent;margin-bottom:-1px;transition:color .12s}
+  .tab:hover{color:var(--on-surface)}
+  .tab.on{color:var(--primary);border-bottom-color:var(--primary);font-weight:600}
+
+  .card{background:var(--surface-1);border:1px solid var(--border);
+        border-radius:var(--r-card);padding:16px 18px;margin-bottom:12px}
+  .card h2{font-size:14px;font-weight:600;margin-bottom:6px}
+  .card .sub{font-size:13px;color:var(--on-variant);margin-bottom:14px;line-height:1.6}
+  .card .sub:last-child{margin-bottom:0}
+
+  .hide{display:none}
+  .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+
+  .btn{font:inherit;font-size:13px;font-weight:500;height:30px;padding:0 12px;cursor:pointer;
+       background:var(--surface-1);color:var(--on-surface);border:1px solid var(--border-2);
+       border-radius:var(--r-btn)}
+  .btn:hover{border-color:var(--primary);color:var(--primary)}
+  .btn.sm{height:26px;padding:0 9px;font-size:12px}
+  .btn[disabled]{opacity:.5;cursor:not-allowed}
+  .btn[disabled]:hover{border-color:var(--border-2);color:var(--on-surface)}
+
+  select{font:inherit;font-size:12px;height:26px;padding:0 6px;border-radius:var(--r-btn);
+         border:1px solid var(--border-2);background:var(--surface-1);color:var(--on-surface);outline:none}
+  label.ck{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--on-variant);cursor:pointer}
+  label.ck input{accent-color:var(--primary);margin:0}
+
+  /* ── 收发流 ── */
+  .feed{display:flex;flex-direction:column;max-height:min(62vh,560px);overflow:auto;
+        border:1px solid var(--border);border-radius:var(--r-card)}
+  .line{display:flex;gap:10px;padding:8px 12px;font-size:13px;border-bottom:1px solid var(--border)}
+  .line:last-child{border-bottom:none}
+  .line:hover{background:var(--surface-2)}
+  .line .t{color:var(--muted);font-variant-numeric:tabular-nums;flex:none;font-size:12px;padding-top:1px}
+  .line .tagk{flex:none;height:18px;padding:0 5px;border-radius:var(--r-tag);font-size:11px;
+              line-height:18px;background:var(--surface-3);color:var(--on-variant)}
+  .line .m{flex:1;word-break:break-word}
+  .line.say .m{color:var(--primary-h)}
+  .line.say .tagk{background:var(--primary-c);color:var(--on-primary-c)}
+  .line.gift .m{color:var(--warn)}
+  .line.gift .tagk{background:var(--warn-c);color:#7a5306}
+
+  /* ── 日志文本 ── */
+  pre.log{background:var(--surface-2);border:1px solid var(--border);border-radius:var(--r-card);
+          padding:12px 14px;font-size:12px;line-height:1.7;max-height:min(62vh,560px);overflow:auto;
+          white-space:pre-wrap;word-break:break-all;color:var(--on-variant);margin:0;
+          font-family:ui-monospace,"Cascadia Mono",Consolas,monospace}
+
+  /* ── 素材播放时间轴 ── */
+  .mline{display:flex;gap:10px;align-items:baseline;padding:8px 12px;font-size:13px;
+         border-bottom:1px solid var(--border)}
+  .mline:last-child{border-bottom:none}
+  .mline:hover{background:var(--surface-2)}
+  .mline .t{color:var(--muted);font-variant-numeric:tabular-nums;flex:none;font-size:12px}
+  .mline .k{flex:none;height:18px;padding:0 5px;border-radius:var(--r-tag);font-size:11px;
+            line-height:18px;background:var(--surface-3);color:var(--on-variant)}
+  .mline.play .k{background:var(--primary-c);color:var(--on-primary-c)}
+  .mline.end .k{background:var(--surface-3);color:var(--muted)}
+  .mline.end .m{color:var(--muted)}
+  .mline .m{flex:1;word-break:break-word}
+
+  .empty{color:var(--muted);font-size:13px;padding:16px 12px}
+
+  .kv3{display:grid;grid-template-columns:repeat(3,1fr);gap:0 24px;margin:0 0 14px}
+  .kv3 .k{font-size:12px;color:var(--muted);margin-bottom:2px}
+  .kv3 .v{font-size:13px;font-weight:600;font-variant-numeric:tabular-nums}
+  @media (max-width:640px){.kv3{grid-template-columns:1fr 1fr}}
+
+  #toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%);
+         background:var(--surface-4);color:var(--on-surface);font-size:13px;font-weight:600;
+         padding:10px 18px;border-radius:var(--r-tag);opacity:0;pointer-events:none;transition:opacity .2s}
+  #toast.on{opacity:1}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="head">
+    <span class="dot" id="dot"></span>
+    <div class="name">日志</div>
+    <span class="chip" id="chip">读中…</span>
+  </div>
+
+  <div class="tabs">
+    <button class="tab on" data-tab="feed" data-sect="feed">最近收发</button>
+    <button class="tab" data-tab="bridge" data-sect="bridge">桥日志</button>
+    <button class="tab" data-tab="media" data-sect="media">素材播放</button>
+  </div>
+
+  <!-- ══════════ ① 最近收发 ══════════ -->
+  <section id="tab-feed" data-label="最近收发">
+    <div class="card">
+      <h2>最近收发</h2>
+      <div class="sub">
+        后台起的桥没有黑窗口，这里就是「她到底说没说话」的唯一窗口。
+        每 2 秒取一次，只拉最近一屏。
+      </div>
+      <div class="row" style="margin-bottom:12px">
+        <label class="ck"><input type="checkbox" id="autoFeed" checked> 自动刷新</label>
+        <button class="btn sm" id="bFeed">刷新</button>
+        <span class="sub" style="margin:0 0 0 auto" id="feedMeta"></span>
+      </div>
+      <div class="feed" id="feed"><div class="empty">还没有记录 —— 桥起来以后这里会一行行滚。</div></div>
+    </div>
+  </section>
+
+  <!-- ══════════ ② 桥日志 ══════════ -->
+  <section id="tab-bridge" class="hide" data-label="桥日志">
+    <div class="card">
+      <h2>桥日志</h2>
+      <div class="sub">出问题先看这个。文件在 <code>.run/bridge.log</code>，这里读尾巴。</div>
+      <div class="row" style="margin-bottom:12px">
+        <label class="ck"><input type="checkbox" id="autoBridge"> 自动刷新</label>
+        <select id="logN">
+          <option value="200">最近 200 行</option>
+          <option value="500">最近 500 行</option>
+          <option value="1000">最近 1000 行</option>
+        </select>
+        <button class="btn sm" id="bLog">读一次</button>
+        <span class="sub" style="margin:0 0 0 auto" id="logMeta"></span>
+      </div>
+      <pre class="log" id="log">（点「读一次」把尾巴拉下来）</pre>
+    </div>
+  </section>
+
+  <!-- ══════════ ③ 素材播放 ══════════ -->
+  <section id="tab-media" class="hide" data-label="素材播放">
+    <div class="card">
+      <h2>素材播放</h2>
+      <div class="sub">
+        哪段视频什么时候播的、谁送的、属于哪一档。数据来自 <code>/media/box</code> 的留痕，
+        桥重启会清空 —— 要长期留档得看 <code>.run/bridge.log</code>。
+      </div>
+      <div class="kv3">
+        <div><div class="k">正在播</div><div class="v" id="mCur">—</div></div>
+        <div><div class="k">排队</div><div class="v" id="mQueue">—</div></div>
+        <div><div class="k">素材总数</div><div class="v" id="mCount">—</div></div>
+      </div>
+      <div class="row" style="margin-bottom:12px">
+        <label class="ck"><input type="checkbox" id="autoMedia" checked> 自动刷新</label>
+        <button class="btn sm" id="bMedia">刷新</button>
+        <span class="sub" style="margin:0 0 0 auto" id="mediaMeta"></span>
+      </div>
+      <div class="feed" id="mLog"><div class="empty">还没有播放记录。</div></div>
+    </div>
+  </section>
+</div>
+<div id="toast"></div>
+
+<script>
+const $ = (id) => document.getElementById(id)
+let toastTimer = null
+function toast(msg) {
+  const t = $('toast'); t.textContent = msg; t.classList.add('on')
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove('on'), 1800)
+}
+
+const esc = (s) => String(s == null ? '' : s)
+  .replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))
+
+async function api(path, opt) {
+  const r = await fetch(path, Object.assign({ cache: 'no-store' }, opt || {}))
+  if (!r.ok) throw new Error('HTTP ' + r.status)
+  return r.json()
+}
+
+const hhmmss = (ms) => {
+  const d = new Date(Number(ms) || 0)
+  const p = (n) => String(n).padStart(2, '0')
+  return p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds())
+}
+
+function setDot(kind) {
+  $('dot').className = 'dot' + (kind ? ' ' + kind : '')
+}
+
+/* ── 页签 ───────────────────────────────────────────────────────── */
+const TABS = {
+  feed:   { load: loadFeed,   timer: null, every: 2000 },
+  bridge: { load: loadBridge, timer: null, every: 4000 },
+  media:  { load: loadMedia,  timer: null, every: 3000 },
+}
+let currentTab = 'feed'
+
+function showTab(key) {
+  currentTab = key
+  document.querySelectorAll('.tab').forEach((b) => b.classList.toggle('on', b.dataset.tab === key))
+  document.querySelectorAll('section[id^="tab-"]').forEach((s) => {
+    s.classList.toggle('hide', s.id !== 'tab-' + key)
+  })
+  /* 一次只让一个页签在轮询 —— 三个一起刷没必要，还会把桥的日志接口打爆 */
+  for (const k of Object.keys(TABS)) {
+    clearInterval(TABS[k].timer)
+    TABS[k].timer = null
+  }
+  TABS[key].load()
+  if (autoOn(key)) startAuto(key)
+}
+
+function autoOn(key) {
+  const box = { feed: 'autoFeed', bridge: 'autoBridge', media: 'autoMedia' }[key]
+  return box && $(box) && $(box).checked
+}
+
+function startAuto(key) {
+  clearInterval(TABS[key].timer)
+  TABS[key].timer = setInterval(() => {
+    if (document.hidden) return          /* 页面在后台就别刷了 */
+    TABS[key].load()
+  }, TABS[key].every)
+}
+
+document.querySelectorAll('.tab').forEach((btn) => {
+  btn.onclick = () => showTab(btn.dataset.tab)
+})
+for (const [key, box] of [['feed', 'autoFeed'], ['bridge', 'autoBridge'], ['media', 'autoMedia']]) {
+  $(box).onchange = () => {
+    if (key !== currentTab) return
+    if ($(box).checked) startAuto(key)
+    else { clearInterval(TABS[key].timer); TABS[key].timer = null }
+  }
+}
+$('bFeed').onclick = () => loadFeed()
+$('bLog').onclick = () => loadBridge()
+$('bMedia').onclick = () => loadMedia()
+
+/* ══════════ ① 最近收发 ══════════ */
+let lastFeedKey = ''
+
+async function loadFeed() {
+  const box = $('feed')
+  let s
+  try {
+    s = await api('/ctl/status')
+  } catch (e) {
+    setDot('bad'); $('chip').textContent = '桥没回话'
+    box.innerHTML = '<div class="empty">读不到桥的状态：' + esc(e.message) + '（桥在跑吗？）</div>'
+    return
+  }
+  if (!s || !s.ok) {
+    setDot('bad'); $('chip').textContent = '桥没回话'
+    box.innerHTML = '<div class="empty">读不到桥的状态：' + esc((s && s.error) || '未知原因') + '</div>'
+    return
+  }
+  setDot('on')
+  const b = s.bridge || {}
+  $('chip').textContent = (b.running ? '桥在跑' : '桥没跑') + ' · 房间 ' + (b.rid || '—')
+
+  const list = s.recent || []
+  $('feedMeta').textContent = list.length ? '共 ' + list.length + ' 条' : ''
+  /* 没变化就别重画 —— 每 2 秒重建一次 DOM 会让正在读的那行闪 */
+  const key = list.map((x) => x.at + x.kind + x.text).join('|')
+  if (key === lastFeedKey) return
+  lastFeedKey = key
+
+  if (!list.length) {
+    box.innerHTML = '<div class="empty">还没有记录 —— 桥起来以后这里会一行行滚。</div>'
+    return
+  }
+  const nearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 40
+  box.innerHTML = list
+    .map((x) => {
+      const cls = x.kind === 'say' ? 'say' : x.kind === 'gift' ? 'gift' : ''
+      const tagk = x.kind === 'say' ? '她' : x.kind === 'gift' ? '礼' : '收'
+      return '<div class="line ' + cls + '"><span class="t">' + esc(x.at) + '</span>' +
+        '<span class="tagk">' + tagk + '</span>' +
+        '<span class="m">' + esc(x.text) + '</span></div>'
+    })
+    .join('')
+  if (nearBottom) box.scrollTop = box.scrollHeight
+}
+
+/* ══════════ ② 桥日志 ══════════ */
+async function loadBridge() {
+  const pre = $('log')
+  const n = $('logN').value
+  $('logMeta').textContent = '读中…'
+  try {
+    const r = await api('/ctl/log?n=' + encodeURIComponent(n), { timeout: 12000 })
+    if (!r.ok) {
+      pre.textContent = '读不到日志：' + ((r && r.error) || '未知原因')
+      $('logMeta').textContent = ''
+      setDot('bad')
+      return
+    }
+    const lines = r.lines || []
+    /* 自动刷新时如果没变化就别 scrollTop 到底，不然刚往上翻的人会被拽回来 */
+    const changed = pre.textContent !== (lines.join('\n') || '（日志是空的 —— 桥还没起过）')
+    const nearBottom = pre.scrollHeight - pre.scrollTop - pre.clientHeight < 40
+    pre.textContent = lines.join('\n') || '（日志是空的 —— 桥还没起过）'
+    if (!changed) { $('logMeta').textContent = '共 ' + lines.length + ' 行'; return }
+    if (nearBottom) pre.scrollTop = pre.scrollHeight
+    $('logMeta').textContent = '共 ' + lines.length + ' 行 · ' + hhmmss(Date.now())
+  } catch (e) {
+    pre.textContent = '读不到日志：' + e.message
+    $('logMeta').textContent = ''
+    setDot('bad')
+  }
+}
+
+/* ══════════ ③ 素材播放 ══════════ */
+let lastMediaKey = ''
+
+async function loadMedia() {
+  const box = $('mLog')
+  let d
+  try {
+    d = await api('/media/box')
+  } catch (e) {
+    box.innerHTML = '<div class="empty">读不到素材状态：' + esc(e.message) + '（桥在跑吗？）</div>'
+    $('mediaMeta').textContent = ''
+    return
+  }
+  if (!d || d.ok === false) {
+    box.innerHTML = '<div class="empty">读不到素材状态：' + esc((d && (d.error || d.why)) || '未知原因') + '</div>'
+    return
+  }
+
+  const cur = d.cur
+  $('mCur').textContent = cur ? (cur.name || cur.file || '在播') : '没在播'
+  $('mQueue').textContent = (d.queue && d.queue.length) ? d.queue.length + ' 段' : '空'
+  const c = d.counts || {}
+  const total = Object.keys(c).reduce((a, k) => a + (k === 'others' ? 0 : Number(c[k]) || 0), 0)
+  $('mCount').textContent = total + ' 段' + (c.others ? ' + ' + c.others + ' 其他' : '')
+
+  const log = d.log || []
+  $('mediaMeta').textContent = log.length ? '共 ' + log.length + ' 条' : ''
+  const key = log.map((x) => x.at + x.line).join('|')
+  if (key === lastMediaKey) return
+  lastMediaKey = key
+
+  if (!log.length) {
+    box.innerHTML = '<div class="empty">还没有播放记录。开播后礼物视频、闲时视频都会记在这。</div>'
+    return
+  }
+  const nearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 40
+  box.innerHTML = log
+    .map((x) => {
+      const tone = x.tone === 'play' ? 'play' : x.tone === 'end' ? 'end' : ''
+      const k = x.tone === 'play' ? '播' : x.tone === 'end' ? '止' : '记'
+      return '<div class="mline ' + tone + '"><span class="t">' + hhmmss(x.at) + '</span>' +
+        '<span class="k">' + k + '</span><span class="m">' + esc(x.line) + '</span></div>'
+    })
+    .join('')
+  if (nearBottom) box.scrollTop = box.scrollHeight
+}
+
+/* ── 起来 ── */
+showTab('feed')
+/* 支持 #页签 深链，也方便验收时逐页截图 */
+;(function () {
+  const want = (location.hash || '').replace(/^#/, '')
+  if (want && TABS[want]) showTab(want)
+})()
+</script>
+</body>
+</html>

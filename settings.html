@@ -4,87 +4,91 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>大肥鱼 · 设置</title>
+<link rel="stylesheet" href="/ui/theme.css">
 <style>
-  /* Material 3 Expressive · dark · teal —— 跟 music.html 同一套变量。
-     规矩照旧：只用纯色，任何地方都不许出现渐变。 */
-  :root{
-    --surface:#0f1417;
-    --surface-1:#171d21;
-    --surface-2:#1d2429;
-    --surface-3:#262f35;
-    --surface-4:#313a41;
-    --on-surface:#dfe3e6;
-    --on-variant:#b3bcc1;
-    --primary:#7fddc4;
-    --on-primary:#00382c;
-    --primary-c:#005143;
-    --on-primary-c:#9bfbdf;
-    --warn:#f5c06b;
-    --warn-c:#4a3410;
-    --danger:#f2b8b5;
-    --danger-c:#3f1412;
-    --muted:#6d777d;
-  }
+  /* 配色和圆角全在 /ui/theme.css（2026-10-29 从深色 M3 换成浅色后台风）。
+     这里只放这一页自己的布局。规矩照旧：只用纯色，不许渐变。 */
   *{box-sizing:border-box;margin:0;padding:0}
   body{
-    background:var(--surface);color:var(--on-surface);
-    font:15px/1.45 "Google Sans",-apple-system,"Segoe UI","Microsoft YaHei",system-ui,sans-serif;
-    padding:24px 20px 60px;-webkit-font-smoothing:antialiased;
+    background:var(--bg);color:var(--on-surface);
+    font:14px/1.55 "Google Sans",-apple-system,"Segoe UI","Microsoft YaHei",system-ui,sans-serif;
+    padding:16px 20px 48px;-webkit-font-smoothing:antialiased;
   }
-  .wrap{width:100%;max-width:760px;margin:0 auto}
+  .wrap{width:100%;max-width:900px;margin:0 auto}
 
-  .head{display:flex;align-items:center;gap:10px;padding:0 8px;margin-bottom:18px}
-  .back{display:grid;place-items:center;width:38px;height:38px;flex:none;border-radius:999px;
-        background:var(--surface-2);color:var(--on-variant);text-decoration:none;font-size:16px}
-  .back:hover{background:var(--surface-3);color:var(--on-surface)}
-  .dot{width:10px;height:10px;border-radius:50%;background:var(--muted);flex:none}
+  .head{display:flex;align-items:center;gap:9px;padding:0 2px;margin-bottom:12px}
+  .back{display:grid;place-items:center;width:26px;height:26px;flex:none;border-radius:var(--r-btn);
+        background:var(--surface-3);color:var(--on-variant);text-decoration:none;font-size:14px}
+  .back:hover{background:var(--border);color:var(--on-surface)}
+  .dot{width:7px;height:7px;border-radius:50%;background:#c9cfda;flex:none}
   .dot.on{background:var(--primary)}
-  .name{font-size:20px;font-weight:600;letter-spacing:-.2px;flex:1}
-  .chip{font-size:13px;font-weight:600;padding:6px 14px;border-radius:999px;
-        background:var(--surface-3);color:var(--on-variant);white-space:nowrap}
+  .name{font-size:16px;font-weight:600;letter-spacing:-.1px;flex:1}
+  .chip{display:inline-flex;align-items:center;height:22px;padding:0 8px;border-radius:var(--r-tag);
+        font-size:12px;font-weight:500;background:var(--surface-3);color:var(--on-variant);white-space:nowrap}
   .chip.live{background:var(--primary-c);color:var(--on-primary-c)}
 
-  .tabs{display:flex;gap:8px;padding:0 8px 16px;flex-wrap:wrap}
-  .tab{font-size:14px;font-weight:600;padding:9px 18px;border-radius:999px;cursor:pointer;
-       background:var(--surface-2);color:var(--on-variant);border:none;font-family:inherit}
-  .tab.on{background:var(--primary-c);color:var(--on-primary-c)}
+  /* 11 个 tab：胶囊改下划线页签 —— 顶栏已经有一排标签了，这里再摆一排胶囊会打架 */
+  .tabs{display:flex;gap:0;padding:0;margin-bottom:16px;flex-wrap:wrap;
+        border-bottom:1px solid var(--border)}
+  .tab{font:inherit;font-size:13px;font-weight:500;padding:9px 11px;border-radius:0;cursor:pointer;
+       background:none;color:var(--on-variant);border:none;
+       border-bottom:2px solid transparent;margin-bottom:-1px;transition:color .12s}
+  .tab:hover{color:var(--on-surface)}
+  .tab.on{color:var(--primary);border-bottom-color:var(--primary);font-weight:600}
 
-  .card{background:var(--surface-1);border-radius:28px;padding:24px;margin-bottom:18px}
-  .card h2{font-size:16px;font-weight:600;margin-bottom:4px}
-  .card .sub{font-size:13px;color:var(--muted);margin-bottom:18px}
+  /* 合并后的分组标题：只有一屏里塞了两块内容时才出来（body.multi），
+     用来分开「礼物」和「素材」这种被合到一页的旧页签 */
+  body.multi section[id^="tab-"]::before{
+    content:attr(data-label);display:block;font-size:12px;font-weight:600;
+    color:var(--muted);letter-spacing:.4px;margin:0 0 9px;padding-left:1px}
+
+  /* 挂在外壳里的时候：页签栏和「←」都跟侧栏目重复，藏掉。
+     直接双击打开 settings.html 没有 in-shell 这个类，还是原来的样子。 */
+  body.in-shell .tabs,body.in-shell .back{display:none}
+
+  .card{background:var(--surface-1);border:1px solid var(--border);
+        border-radius:var(--r-card);padding:16px 18px;margin-bottom:12px}
+  .card h2{font-size:14px;font-weight:600;margin-bottom:6px}
+  .card .sub{font-size:13px;color:var(--on-variant);margin-bottom:14px;line-height:1.6}
 
   .row{display:flex;gap:10px;align-items:center}
   .row.wrap{flex-wrap:wrap}
 
   input[type=text],input[type=number],textarea,select{
-    background:var(--surface-2);border:1px solid var(--surface-4);color:var(--on-surface);
-    border-radius:14px;padding:11px 14px;font:inherit;font-size:14px;width:100%;outline:none;
+    background:var(--surface-1);border:1px solid var(--border-2);color:var(--on-surface);
+    border-radius:var(--r-btn);padding:0 10px;height:32px;font:inherit;font-size:13px;
+    width:100%;outline:none;transition:border-color .12s;
   }
-  input:focus,textarea:focus,select:focus{border-color:var(--primary)}
-  textarea{resize:vertical;min-height:76px;line-height:1.6}
+  input[type=text]:hover,input[type=number]:hover,textarea:hover,select:hover{border-color:var(--primary)}
+  input:focus,textarea:focus,select:focus{border-color:var(--primary);box-shadow:0 0 0 2px var(--primary-c)}
+  textarea{resize:vertical;min-height:72px;line-height:1.6;padding:8px 10px;height:auto}
 
-  .btn{font:inherit;font-size:14px;font-weight:600;border:none;border-radius:999px;
-       padding:11px 20px;cursor:pointer;background:var(--surface-3);color:var(--on-surface);
-       white-space:nowrap;flex:none}
-  .btn:hover{background:var(--surface-4)}
-  .btn.pri{background:var(--primary);color:var(--on-primary)}
-  .btn.ghost{background:transparent;border:1px solid var(--surface-4)}
-  .btn.warn{background:var(--warn-c);color:var(--warn)}
-  .btn.danger{background:var(--danger-c);color:var(--danger)}
+  .btn{font:inherit;font-size:13px;font-weight:500;border:1px solid var(--border-2);
+       border-radius:var(--r-btn);height:32px;padding:0 13px;cursor:pointer;
+       background:var(--surface-1);color:var(--on-surface);white-space:nowrap;flex:none;
+       transition:border-color .12s,background .12s}
+  .btn:hover{border-color:var(--primary);color:var(--primary-h)}
+  .btn.pri{background:var(--primary);border-color:var(--primary);color:var(--on-primary)}
+  .btn.pri:hover{background:var(--primary-h);border-color:var(--primary-h);color:var(--on-primary)}
+  .btn.ghost{background:transparent}
+  .btn.warn{background:var(--warn-c);border-color:var(--warn-c);color:var(--warn)}
+  .btn.warn:hover{background:#fbeacd;border-color:var(--warn);color:var(--warn)}
+  .btn.danger{background:var(--danger-c);border-color:var(--danger-c);color:var(--danger)}
+  .btn.danger:hover{background:#fbe0e5;border-color:var(--danger);color:var(--danger)}
   .btn:disabled{opacity:.45;cursor:not-allowed}
 
   .ulist{display:flex;flex-direction:column;gap:2px;margin-top:14px;max-height:420px;overflow:auto}
-  .uitem{display:flex;gap:12px;align-items:center;padding:11px 12px;border-radius:16px;cursor:pointer}
+  .uitem{display:flex;gap:12px;align-items:center;padding:11px 12px;border-radius:var(--r-btn);cursor:pointer}
   .uitem:hover{background:var(--surface-2)}
   .uitem .av{width:34px;height:34px;border-radius:50%;background:var(--surface-3);flex:none;
              display:grid;place-items:center;font-size:13px;font-weight:600;color:var(--on-variant)}
   .uitem .who{flex:1;min-width:0}
   .uitem .nick{font-size:14px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .uitem .meta{font-size:12px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  .uitem .tag{font-size:11px;font-weight:600;padding:3px 9px;border-radius:999px;
+  .uitem .tag{font-size:11px;font-weight:600;padding:3px 9px;border-radius:var(--r-tag);
               background:var(--warn-c);color:var(--warn);flex:none}
 
-  .detail{background:var(--surface-2);border-radius:20px;padding:18px;margin-top:14px}
+  .detail{background:var(--surface-2);border-radius:var(--r-card);padding:18px;margin-top:14px}
   .kv{display:grid;grid-template-columns:96px 1fr;gap:8px 14px;font-size:13px;margin-bottom:14px}
   .kv .k{color:var(--muted)}
   .kv .v{color:var(--on-surface);word-break:break-all}
@@ -93,20 +97,20 @@
 
   /* ── 音源那张卡（2026-10-28） ── */
   .srcs{display:flex;flex-direction:column;gap:8px}
-  .src{display:flex;align-items:center;gap:12px;padding:12px 14px;border-radius:16px;
+  .src{display:flex;align-items:center;gap:12px;padding:12px 14px;border-radius:var(--r-btn);
        background:var(--surface-2)}
   .src .nm{font-size:14px;font-weight:600;flex:1}
-  .src .st{font-size:12px;font-weight:600;padding:4px 12px;border-radius:999px;
+  .src .st{font-size:12px;font-weight:600;padding:4px 12px;border-radius:var(--r-tag);
            background:var(--surface-4);color:var(--muted)}
   .src.on .st{background:var(--primary-c);color:var(--on-primary-c)}
   .src .tip{font-size:11px;color:var(--muted)}
-  .qrwrap{background:#fff;border-radius:20px;padding:14px;width:230px;height:230px;
+  .qrwrap{background:#fff;border-radius:var(--r-card);padding:14px;width:230px;height:230px;
           display:grid;place-items:center;margin-bottom:12px}
   .qrwrap img{width:100%;height:100%;object-fit:contain;display:block}
   a.btn{display:inline-flex;align-items:center}
 
   .plist{display:flex;flex-direction:column;gap:10px}
-  .pitem{border:1px solid var(--surface-4);border-radius:20px;padding:16px;cursor:pointer;
+  .pitem{border:1px solid var(--surface-4);border-radius:var(--r-card);padding:16px;cursor:pointer;
          background:var(--surface-2)}
   .pitem.on{border-color:var(--primary);background:var(--primary-c)}
   .pitem .pt{font-size:15px;font-weight:600;display:flex;align-items:center;gap:8px}
@@ -117,20 +121,34 @@
   .mark{width:16px;height:16px;border-radius:50%;border:2px solid var(--muted);flex:none}
   .pitem.on .mark{border-color:var(--primary);background:var(--primary)}
 
+  /* ── 知识库那张卡（2026-10-27） ── */
+  .kbrow{display:flex;align-items:center;gap:14px;padding:14px 16px;border-radius:var(--r-btn);
+         background:var(--surface-2);border:1px solid transparent;margin-top:10px}
+  .kbrow.off{opacity:.5;border-color:var(--surface-4)}
+  .kbrow .g{flex:1;min-width:0}
+  .kbrow .t{font-size:14px;font-weight:600;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .kbrow .d{font-size:12px;color:var(--muted);line-height:1.7;margin-top:5px;word-break:break-all}
+  .kbrow .num{display:flex;align-items:center;gap:6px;flex:none;font-size:12px;color:var(--muted)}
+  .kbrow .num input{width:62px;padding:7px 4px;text-align:center;font-size:13px}
+  .kwtag{font-size:11px;font-weight:600;padding:3px 9px;border-radius:var(--r-tag);
+         background:var(--primary-c);color:var(--on-primary-c)}
+  .kwtag.grey{background:var(--surface-4);color:var(--muted)}
+  .inject{white-space:pre-wrap;font-size:13px;line-height:1.7;max-height:260px;overflow:auto}
+
   .testbox{margin-top:16px;padding-top:16px;border-top:1px solid var(--surface-3)}
-  .out{margin-top:12px;padding:14px 16px;border-radius:16px;background:var(--surface-2);
+  .out{margin-top:12px;padding:14px 16px;border-radius:var(--r-btn);background:var(--surface-2);
        font-size:15px;line-height:1.6;min-height:48px}
   .out .len{font-size:11px;color:var(--muted);display:block;margin-top:6px}
 
   .hint{font-size:12px;color:var(--muted);line-height:1.7;margin-top:10px}
 
   /* ══════════ 搬 DSH 面板过来的那几页要用的控件（2026-10-28） ══════════
-     只用纯色、只用 999px 胶囊和 16~18px 圆角，跟前面几页一个调子。 */
+     2026-10-29 跟着主题换成浅色 + 小圆角，控件形态没变。 */
   .grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
   @media (max-width:600px){.grid2{grid-template-columns:1fr}}
 
   /* 开关：方块开关不好点，M3 用胶囊 + 圆点位移 */
-  .swrow{display:flex;align-items:center;gap:12px;padding:12px 14px;border-radius:16px;
+  .swrow{display:flex;align-items:center;gap:12px;padding:12px 14px;border-radius:var(--r-btn);
          background:var(--surface-2);margin-top:10px}
   .swrow .lbl{flex:1;font-size:14px;font-weight:600}
   .swrow .tip{font-size:12px;color:var(--muted);font-weight:400;margin-top:3px;line-height:1.5}
@@ -150,21 +168,23 @@
             font-variant-numeric:tabular-nums}
 
   /* 分段选择（回复档位那种三选一） */
-  .seg{display:inline-flex;background:var(--surface-2);border-radius:999px;padding:4px;gap:2px;flex-wrap:wrap}
-  .seg button{font:inherit;font-size:13px;font-weight:600;border:none;background:transparent;
-              color:var(--on-variant);padding:8px 15px;border-radius:999px;cursor:pointer}
-  .seg button[data-on]{background:var(--primary-c);color:var(--on-primary-c)}
+  .seg{display:inline-flex;background:var(--surface-3);border-radius:var(--r-btn);padding:2px;gap:2px;flex-wrap:wrap}
+  .seg button{font:inherit;font-size:13px;font-weight:500;border:none;background:transparent;
+              color:var(--on-variant);padding:6px 13px;border-radius:3px;cursor:pointer}
+  .seg button:hover{color:var(--on-surface)}
+  .seg button[data-on]{background:var(--surface-1);color:var(--primary);font-weight:600;
+                       box-shadow:0 1px 2px rgba(16,24,40,.08)}
 
   /* 一排小数字（诊断页） */
   .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(118px,1fr));gap:10px}
-  .stat{background:var(--surface-2);border-radius:16px;padding:12px 14px}
+  .stat{background:var(--surface-2);border-radius:var(--r-btn);padding:12px 14px}
   .stat .k{font-size:11.5px;color:var(--muted)}
   .stat .v{font-size:18px;font-weight:600;margin-top:4px;font-variant-numeric:tabular-nums}
 
   /* 档位卡（电脑页） */
-  .tier{background:var(--surface-2);border-radius:18px;padding:14px 16px;margin-top:10px}
+  .tier{background:var(--surface-2);border-radius:var(--r-btn);padding:14px 16px;margin-top:10px}
   .tier .th{display:flex;align-items:center;gap:10px;font-size:14px;font-weight:600}
-  .tier .badge{font-size:11px;font-weight:600;padding:3px 9px;border-radius:999px;
+  .tier .badge{font-size:11px;font-weight:600;padding:3px 9px;border-radius:var(--r-tag);
                background:var(--surface-4);color:var(--on-variant);flex:none}
   .tier .tr{display:flex;align-items:center;gap:10px;margin-top:10px;font-size:13px;color:var(--on-variant)}
   .tier .tr > span{width:66px;flex:none}
@@ -176,7 +196,7 @@
   /* 形象选择卡（2026-10-28）：整张卡可点，选中用 primary 描边 + 主色底 */
   .pets{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:14px}
   @media (max-width:600px){.pets{grid-template-columns:1fr}}
-  .petcard{background:var(--surface-2);border:2px solid transparent;border-radius:22px;
+  .petcard{background:var(--surface-2);border:2px solid transparent;border-radius:var(--r-card);
            padding:14px;cursor:pointer;text-align:center;transition:background .15s,border-color .15s}
   .petcard:hover{background:var(--surface-3)}
   .petcard.on{border-color:var(--primary);background:var(--primary-c)}
@@ -186,7 +206,7 @@
   .petcard .mt{font-size:12px;color:var(--muted);margin-top:5px;line-height:1.5}
   .petcard.on .nm{color:var(--on-primary-c)}
   .petcard.on .mt{color:var(--on-primary-c);opacity:.8}
-  .petbig{width:150px;flex:none;border-radius:18px;background:var(--surface-2);object-fit:contain}
+  .petbig{width:150px;flex:none;border-radius:var(--r-btn);background:var(--surface-2);object-fit:contain}
   .kv2{display:grid;grid-template-columns:92px 1fr;gap:8px 14px;font-size:13px;margin-top:14px}
   .kv2 .k{color:var(--muted)}
   .kv2 .v{word-break:break-all}
@@ -195,7 +215,7 @@
   .hide{display:none}
   .toast{position:fixed;left:50%;bottom:28px;transform:translateX(-50%);
          background:var(--surface-4);color:var(--on-surface);font-size:13px;font-weight:600;
-         padding:11px 20px;border-radius:999px;opacity:0;pointer-events:none;transition:opacity .2s}
+         padding:11px 20px;border-radius:var(--r-tag);opacity:0;pointer-events:none;transition:opacity .2s}
   .toast.on{opacity:1}
 </style>
 </head>
@@ -208,22 +228,22 @@
     <div class="chip" id="mode">—</div>
   </div>
 
+  <!-- 6 个页签，每个吃一到两个 section（data-sect）。
+       以前是 11 个页签各管一块，常用的东西得先进「设置」再找 —— 现在合成 6 组：
+       账号(账号+回复) 素材(礼物+电脑) 形象(形象+人格) 记忆(记忆+知识) 声音(音量+音源) 诊断
+       卡片一张没搬，靠 data-sect 一次显示多个 section 实现的。 -->
   <div class="tabs">
-    <button class="tab on" data-tab="account">账号</button>
-    <button class="tab" data-tab="pet">形象</button>
-    <button class="tab" data-tab="reply">回复</button>
-    <button class="tab" data-tab="gift">礼物</button>
-    <button class="tab" data-tab="computer">电脑</button>
-    <button class="tab" data-tab="sound">声音</button>
-    <button class="tab" data-tab="music">音源</button>
-    <button class="tab" data-tab="users">记忆</button>
-    <button class="tab" data-tab="persona">人格</button>
-    <button class="tab" data-tab="diag">诊断</button>
+    <button class="tab on" data-tab="account" data-sect="account,reply">账号</button>
+    <button class="tab" data-tab="media" data-sect="gift,computer">素材</button>
+    <button class="tab" data-tab="look" data-sect="pet,persona">形象</button>
+    <button class="tab" data-tab="memory" data-sect="users,kb">记忆</button>
+    <button class="tab" data-tab="audio" data-sect="sound,music">声音</button>
+    <button class="tab" data-tab="diag" data-sect="diag">诊断</button>
   </div>
 
   <!-- ══════════════ 卡片 I：用户记忆 ══════════════ -->
   <!-- ══════════════ ① 账号 ══════════════ -->
-  <section id="tab-account">
+  <section id="tab-account" data-label="账号">
     <div class="card">
       <h2>抖音账号</h2>
       <div class="sub" id="accSub">扫码登录一次，之后桥自己保活</div>
@@ -251,7 +271,7 @@
   </section>
 
   <!-- ══════════════ ② 形象 ══════════════ -->
-  <section id="tab-pet" class="hide">
+  <section id="tab-pet" class="hide" data-label="形象">
     <div class="card">
       <h2>当前形象</h2>
       <div class="sub" id="petSub">正在读…</div>
@@ -267,10 +287,21 @@
         新素材丢进去后刷新这页就能看到 —— 角色包围盒由画面进程现量，别手填。
       </div>
     </div>
+
+    <div class="card">
+      <h2>这套皮套的人设</h2>
+      <div class="sub" id="skinSub">正在读…</div>
+      <div class="out inject" id="skinText" style="display:none"></div>
+      <div class="hint">
+        外观、自称、这一身对应的身份都写在 <code>prompts/skins/&lt;皮套名&gt;.md</code>，
+        <b>换皮套就换这一段</b>，下一条弹幕生效。主卡里不许再写死颜色和服装 ——
+        不然红发皮套下她会说自己是蓝头发。加新皮套只要丢一个 md 进去。
+      </div>
+    </div>
   </section>
 
   <!-- ══════════════ ③ 回复 ══════════════ -->
-  <section id="tab-reply" class="hide">
+  <section id="tab-reply" class="hide" data-label="回复">
     <div class="card">
       <h2>回复档位</h2>
       <div class="sub" id="modeSub">正在问…</div>
@@ -298,7 +329,7 @@
   </section>
 
   <!-- ══════════════ ③ 礼物 ══════════════ -->
-  <section id="tab-gift" class="hide">
+  <section id="tab-gift" class="hide" data-label="礼物">
     <div class="card">
       <h2>礼物感谢</h2>
       <div class="sub">收到礼物要不要念一句</div>
@@ -329,7 +360,7 @@
     <div class="card">
       <h2>礼物名 → 档位</h2>
       <div class="sub">
-        决定这个礼物播哪一档素材。1 档最轻、4 档最重（档位本身在「电脑」页配）。
+        决定这个礼物播哪一档素材。1 档最轻、4 档最重（档位本身在「素材」页配）。
         0 档是闲时/点播那几条，选它就让这个礼物去放那些。
       </div>
       <div id="giftMapBox"><div class="hint">正在读…</div></div>
@@ -343,15 +374,15 @@
         <button class="btn" id="btnGmAdd">加上</button>
       </div>
       <div class="hint">
-        认不出的礼物走「电脑」页的默认档位。想让所有档位混着随机抽，
-        就在「电脑」页打开「礼物不分档」—— 那样子就不看礼物名了，
+        认不出的礼物走「素材」页的默认档位。想让所有档位混着随机抽，
+        就在「素材」页打开「礼物不分档」—— 那样子就不看礼物名了，
         0 档也在池子里。
       </div>
     </div>
   </section>
 
   <!-- ══════════════ ④ 电脑 ══════════════ -->
-  <section id="tab-computer" class="hide">
+  <section id="tab-computer" class="hide" data-label="素材">
     <div class="card">
       <h2>素材区</h2>
       <div class="sub">右边那台显示器里放什么</div>
@@ -445,7 +476,7 @@
   </section>
 
   <!-- ══════════════ ⑤ 声音 ══════════════ -->
-  <section id="tab-sound" class="hide">
+  <section id="tab-sound" class="hide" data-label="音量">
     <div class="card">
       <h2>四个音量</h2>
       <div class="sub">都是 0–100。素材音量是<b>乘</b>在档位音量上的，不是直接替换</div>
@@ -467,7 +498,7 @@
   </section>
 
   <!-- ══════════════ ⑦ 记忆 ══════════════ -->
-  <section id="tab-users" class="hide">
+  <section id="tab-users" class="hide" data-label="记忆">
     <div class="card">
       <h2>用户记忆</h2>
       <div class="sub" id="userSub">按抖音 uid 记账，只存本机</div>
@@ -493,7 +524,7 @@
   </section>
 
   <!-- ══════════════ 卡片 J：人格性格 ══════════════ -->
-  <section id="tab-persona" class="hide">
+  <section id="tab-persona" class="hide" data-label="人格">
     <div class="card">
       <h2>当前性格</h2>
       <div class="sub">切换立刻生效，不用重起桥。三种性格共用同一套记忆和成长值。</div>
@@ -531,8 +562,50 @@
     </div>
   </section>
 
+  <!-- ══════════════ 卡片 K：知识库 ══════════════ -->
+  <section id="tab-kb" class="hide" data-label="知识">
+    <div class="card">
+      <h2>知识库</h2>
+      <div class="sub">
+        弹幕里踩到<b>触发词</b>才会把那段知识交给模型，平时的对话一点都用不到 ——
+        所以这里可以一直往里加，她不会越说越像招生简章。改完下一条就生效，不用重起桥。
+      </div>
+      <div class="row" style="justify-content:space-between;align-items:center;margin-top:16px">
+        <div>
+          <div style="font-weight:600">总开关</div>
+          <div class="hint" style="margin-top:4px">关掉 = 所有知识闭嘴，只靠人设和记忆说话</div>
+        </div>
+        <button class="sw" id="kbAll"></button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>资料库</h2>
+      <div class="sub">
+        一份 md 就是一个库，放在 <code>prompts/kb/</code>。新加一份丢进去就自动认出来。
+      </div>
+      <div id="kbFiles"><div class="hint">正在读…</div></div>
+    </div>
+
+    <div class="card">
+      <h2>知识块</h2>
+      <div class="sub">一块一个话题。关掉一块只隔离这一段，别的照常 —— 这就是「必要的时候隔离」。</div>
+      <div id="kbBlocks"><div class="hint">正在读…</div></div>
+    </div>
+
+    <div class="card">
+      <h2>试一条弹幕</h2>
+      <div class="sub">看它会捞到哪几块，以及真正拼进这一条提示词的原文（不调用模型，不花钱）</div>
+      <div class="row">
+        <input type="text" id="kbTest" placeholder="例如：你们学校堵车严重吗 / 那个外号是什么梗">
+        <button class="btn pri" id="btnKbTest">试试</button>
+      </div>
+      <div class="out" id="kbOut">等着看效果</div>
+    </div>
+  </section>
+
   <!-- ══════════════ 卡片 III：音源（点歌放不放得出整首就看这里）══════════════ -->
-  <section id="tab-music" class="hide">
+  <section id="tab-music" class="hide" data-label="音源">
     <div class="card">
       <h2>歌单队列</h2>
       <div class="sub">
@@ -609,7 +682,7 @@
   </section>
 
   <!-- ══════════════ ⑨ 诊断 ══════════════ -->
-  <section id="tab-diag" class="hide">
+  <section id="tab-diag" class="hide" data-label="诊断">
     <div class="card">
       <h2>桥和直播间</h2>
       <div class="sub" id="diagSub">正在问…</div>
@@ -660,13 +733,25 @@ const post = (path, body) =>
 document.querySelectorAll('.tab').forEach((btn) => {
   btn.onclick = () => {
     document.querySelectorAll('.tab').forEach((b) => b.classList.toggle('on', b === btn))
-    /* 按 id 自动切，别再一个个写死 —— 加一张卡就要改三行太容易漏 */
+    /* 一个页签可以管多块：data-sect="gift,computer" 就把这两块一起显示。
+       没写 data-sect 就退回「页签名 = section 名」的老规矩。 */
+    const keys = (btn.dataset.sect || btn.dataset.tab).split(',').filter(Boolean)
+    const want = new Set(keys.map((k) => 'tab-' + k))
     document.querySelectorAll('section[id^="tab-"]').forEach((s) => {
-      s.classList.toggle('hide', s.id !== 'tab-' + btn.dataset.tab)
+      s.classList.toggle('hide', !want.has(s.id))
     })
-    runLoader(btn.dataset.tab)
+    /* 一屏里塞了两块内容时才画分组标题，不然「诊断」那种单块页会多一行废话 */
+    document.body.classList.toggle('multi', keys.length > 1)
+    for (const k of keys) runLoader(k)
+    paintHead(btn)
   }
 })
+
+/* 页头那几个字跟着分组走。写死「设置」不行 —— 设置已经不是一级概念了。 */
+function paintHead(btn) {
+  const nm = document.querySelector('.head .name')
+  if (nm) nm.textContent = '大肥鱼 · ' + btn.textContent.trim()
+}
 
 /* 每页自己的取数函数。**切到哪页才取哪页** —— 九页一起发请求，开页面就卡一下。
    用 function 声明（会提升），所以上面的点击处理现在就能引用到。 */
@@ -681,6 +766,7 @@ function runLoader(key) {
     else if (key === 'music') { loadQueue(); loadSrc() }
     else if (key === 'users') loadUsers()
     else if (key === 'persona') loadPersona()
+    else if (key === 'kb') loadKb()
     else if (key === 'diag') loadDiag()
   } catch (e) { toast('这一页没打开：' + e.message) }
 }
@@ -1083,6 +1169,141 @@ $('btnTest').onclick = async () => {
 }
 $('pTest').onkeydown = (e) => { if (e.key === 'Enter') $('btnTest').click() }
 
+/* ══════════════════ 知识库 ══════════════════
+   这里的「开」有三种粒度，别搞混：
+     · 总开关       一整库闭嘴
+     · 每份资料      只关 myschool 这一份
+     · 每个块        只关「myschool/就业」这一段（blockOff 里存的是 "文件/块名"）
+   三种都是改 cache/kb.json，桥那边 3 秒内一定读得到，实际改完是立刻。 */
+let KB = null
+
+async function loadKb() {
+  KB = await api('/kb')
+  renderKb()
+}
+
+function renderKb() {
+  const kb = KB || { enabled: true, files: [], blocks: [] }
+  swOn('kbAll', kb.enabled !== false)
+
+  const files = kb.files || []
+  $('kbFiles').innerHTML = files.length
+    ? files.map((f) => {
+        const mine = (kb.blocks || []).filter((b) => b.file === f.key && !b.off).length
+        const all = (kb.blocks || []).filter((b) => b.file === f.key).length
+        return `<div class="kbrow ${f.on ? '' : 'off'}" data-file="${esc(f.key)}">
+          <div class="g">
+            <div class="t">${esc(f.key)}.md
+              <span class="kwtag ${f.on ? '' : 'grey'}">${f.on ? '在用' : '已关'}</span>
+              <span class="kwtag grey">${mine}/${all} 块</span>
+            </div>
+            <div class="d">弹幕命中触发词时最多带 <b>${f.maxBlocks}</b> 块、不超过 <b>${f.maxChars}</b> 字</div>
+          </div>
+          <div class="num">
+            <span>块</span><input type="number" min="1" max="4" value="${f.maxBlocks}" data-f="maxBlocks">
+            <span>字</span><input type="number" min="200" max="2000" step="50" value="${f.maxChars}" data-f="maxChars">
+          </div>
+          <button class="sw" ${f.on ? 'data-on' : ''} data-act="fileOn"></button>
+        </div>`
+      }).join('')
+    : '<div class="hint">prompts/kb/ 里还没有 md 文件</div>'
+
+  $('kbFiles').querySelectorAll('.kbrow').forEach((row) => {
+    const file = row.dataset.file
+    row.querySelector('[data-act="fileOn"]').onclick = async (e) => {
+      const on = !e.currentTarget.hasAttribute('data-on')
+      try {
+        KB = await post('/kb', { file, on })
+        toast(on ? `${file} 已打开` : `${file} 已关掉`)
+        renderKb()
+      } catch (err) { toast('没存上：' + err.message) }
+    }
+    row.querySelectorAll('input[data-f]').forEach((inp) => {
+      inp.onchange = async () => {
+        const k = inp.dataset.f
+        try {
+          KB = await post('/kb', { file, [k]: Number(inp.value) })
+          toast('存好了')
+        } catch (err) { toast('没存上：' + err.message) }
+        renderKb()
+      }
+    })
+  })
+
+  const blocks = kb.blocks || []
+  const groups = []
+  for (const b of blocks) {
+    let g = groups.find((x) => x.key === b.file)
+    if (!g) groups.push((g = { key: b.file, items: [] }))
+    g.items.push(b)
+  }
+  /* 总开关关掉 / 整份资料关掉的时候，块按钮还是得显示、还得能点 ——
+     否则界面上只剩一片空白，主播以为知识没了，其实只是被关了。 */
+  $('kbBlocks').innerHTML = groups.length
+    ? (kb.enabled === false
+        ? '<div class="hint" style="color:var(--warn)">总开关是关的，下面这些现在都不生效。</div>'
+        : '') +
+      groups.map((g) => `
+        <div style="margin-top:12px;font-size:12px;color:var(--muted)">${esc(g.key)}.md</div>` +
+        g.items.map((b) => {
+          const live = kb.enabled !== false && b.fileOn !== false && !b.off
+          const why = kb.enabled === false ? '总开关关了' : b.fileOn === false ? '整份资料关了' : '已隔离'
+          return `<div class="kbrow ${live ? '' : 'off'}">
+            <div class="g">
+              <div class="t">${esc(b.title)} <span class="kwtag grey">${b.chars} 字</span>
+                ${live ? '' : `<span class="kwtag grey">${why}</span>`}</div>
+              <div class="d">${b.kws.map((k) => esc(k)).join(' · ')}</div>
+            </div>
+            <button class="sw" ${live ? 'data-on' : ''} data-block="${esc(g.key + '/' + b.title)}"></button>
+          </div>`
+        }).join('')
+      ).join('')
+    : '<div class="hint">还没有知识块。每块以 <code>## 标题</code> 开头，下一行写 <code>&lt;!-- kw: 触发词 --&gt;</code>。</div>'
+
+  $('kbBlocks').querySelectorAll('[data-block]').forEach((btn) => {
+    btn.onclick = async () => {
+      const id = btn.dataset.block
+      const b = (KB.blocks || []).find((x) => x.file + '/' + x.title === id) || {}
+      const live = KB.enabled !== false && b.fileOn !== false && !b.off
+      try {
+        KB = await post('/kb', { block: id, on: !live })
+        renderKb()
+        if (live) toast('已隔离这一段')
+        else if (KB.enabled === false) toast('打开了，但整个知识库还关着')
+        else if (b.fileOn === false) toast('打开了，但整份资料还关着')
+        else toast('已打开')
+      } catch (err) { toast('没存上：' + err.message) }
+    }
+  })
+}
+
+/* 总开关的绑定放在文件末尾「起来」那一段 —— swBind 是下面才声明的 const，
+   在这儿调用会撞上暂时性死区（TDZ），整页 JS 直接不跑。 */
+
+$('btnKbTest').onclick = async () => {
+  const text = $('kbTest').value.trim()
+  if (!text) return toast('先打一条弹幕')
+  $('btnKbTest').disabled = true
+  $('kbOut').textContent = '查…'
+  try {
+    const o = await post('/kb/test', { text })
+    if (!o.ok) $('kbOut').textContent = o.error || '没查到'
+    else if (!o.hit.length) {
+      $('kbOut').innerHTML = `<span style="color:var(--muted)">没踩到知识，这一条不加料</span>`
+    } else {
+      $('kbOut').innerHTML =
+        `命中 ${o.hit.length} 块：<b>${o.hit.map(esc).join('、')}</b>，共 ${o.len} 字` +
+        `<span class="len">拼进提示词的原文（模型看得到，观众看不到）</span>` +
+        `<div class="inject">${esc(o.injected.trim())}</div>`
+    }
+  } catch (e) {
+    $('kbOut').textContent = '桥没回话：' + e.message
+  } finally {
+    $('btnKbTest').disabled = false
+  }
+}
+$('kbTest').onkeydown = (e) => { if (e.key === 'Enter') $('btnKbTest').click() }
+
 $('btnSearch').onclick = loadUsers
 $('q').onkeydown = (e) => { if (e.key === 'Enter') loadUsers() }
 
@@ -1269,12 +1490,37 @@ function renderPet() {
   $('petList').querySelectorAll('[data-pet]').forEach((el) => {
     el.onclick = () => switchPet(el.dataset.pet)
   })
+
+  /* ── 这套皮套的人设（2026-10-28）──
+     主人问过「换皮套能不能换提示词」，所以这里必须让人**看得见**她换的是哪一份，
+     否则下次还会以为她记错自己的颜色。 */
+  const sk = (PET_INFO && PET_INFO.skin) || {}
+  const sp = sk.pet || cur
+  if (!sp) {
+    $('skinSub').textContent = '还不知道现在穿哪套，读不到皮套就不换人设'
+    $('skinText').style.display = 'none'
+  } else if (!sk.has) {
+    $('skinSub').innerHTML =
+      `<span style="color:var(--warn)">这套（${esc(sp)}）没写人设</span>` +
+      ` —— 她只按主卡说话，外观和自称会含糊。`
+    $('skinText').style.display = 'none'
+  } else {
+    const drift = cur && sk.pet && cur !== sk.pet
+      ? `<br><span style="color:var(--warn)">版式里写的是 ${esc(sk.pet)}，画面还停在 ${esc(cur)} —— 等 1 秒或重开画面</span>`
+      : ''
+    $('skinSub').innerHTML =
+      `现在用的是 <code>prompts/skins/${esc(sp)}.md</code>，${sk.chars} 字，` +
+      `接在 system 末尾${drift}`
+    $('skinText').style.display = ''
+    /* 那份 md 是喂给模型的，`**` 是有用的强调；但这里只是给人看，去掉别让星号糊一屏 */
+    $('skinText').textContent = String(sk.text || '').replace(/\*\*/g, '')
+  }
 }
 
 async function switchPet(name) {
   if (!PET_INFO || name === PET_INFO.cur) return
   const x = (PET_INFO.list || []).find((v) => v.name === name)
-  if (!confirm(`换成「${(x && x.label) || name}」？画面会立刻换人，身高和站位都不动。`)) return
+  if (!confirm(`换成「${(x && x.label) || name}」？\n画面会立刻换人，身高和站位都不动。\n她的人设也一起换成 prompts/skins/${name}.md，下一条弹幕生效。`)) return
   try {
     const o = await postT('/pet', { name }, 12000)
     if (!o.ok) { toast(o.error || '换不了'); return }
@@ -1282,7 +1528,7 @@ async function switchPet(name) {
        真正换人由画面进程做，1 秒内它会把这套的 cur 写回 pet-geom.json。 */
     PET_INFO.cur = name
     renderPet()
-    toast('换了，画面 1 秒内换人')
+    toast('换了，画面 1 秒内换人，人设也跟着换')
     setTimeout(loadPet, 2200)
   } catch (e) {
     toast(e.name === 'AbortError' ? '换不了：超时' : '换不了：' + e.message)
@@ -1537,6 +1783,51 @@ swBind('musicOnSw', async (on) => {
   toast(on ? '背景音乐开了' : '背景音乐关了')
 })
 
+/* ── 剩下这七个开关（2026-10-29 补）────────────────────────────────
+ * 原来只有 mdOn / musicOnSw / kbAll 挂了点击，其余七个一直是死的：
+ * loadGift / loadMedia 只负责「把状态画上去」，没人给它们绑 onclick ——
+ * 点下去连 data-on 都不翻转，面板上看着是开着的，实际什么都没发生。
+ *
+ * 这几个都只改一个布尔值，统一「一点就存」：要人再点「保存这一页」的话，
+ * 最容易出的事故是以为关了、直播里还在自动谢礼物。
+ * 后端 /gift/cfg 和 /media/config 都是字段级局部更新，只传一个字段不会
+ * 把同页的冷却、模板这些冲掉。 */
+swBind('giftOn', async (on) => {
+  const o = await postT('/gift/cfg', { on }, 12000)
+  if (!o.ok) throw new Error(o.error || '存不下')
+  toast(on ? '自动感谢开着' : '自动感谢关了 —— 礼物只放素材，不说话')
+})
+swBind('giftLlm', async (on) => {
+  const o = await postT('/gift/cfg', { useLlm: on }, 12000)
+  if (!o.ok) throw new Error(o.error || '存不下')
+  toast(on ? '让模型自己说' : '改用下面的模板套，省 token')
+})
+swBind('rInt', async (on) => {
+  const o = await postT('/media/config', { rules: { interrupt: on } }, 12000)
+  if (!o.ok) throw new Error(o.error || '存不下')
+  toast(on ? '高档会让位' : '高档不打断，排队等')
+})
+swBind('rDuck', async (on) => {
+  const o = await postT('/media/config', { rules: { duckMusic: on } }, 12000)
+  if (!o.ok) throw new Error(o.error || '存不下')
+  toast(on ? '她开口时压音乐' : '说话不压音乐')
+})
+swBind('rFlat', async (on) => {
+  const o = await postT('/media/config', { rules: { flatGift: on } }, 12000)
+  if (!o.ok) throw new Error(o.error || '存不下')
+  toast(on ? '礼物不分档了，1–4 档混着抽' : '礼物按名字分档')
+})
+swBind('rIdleFull', async (on) => {
+  const o = await postT('/media/config', { rules: { idleFull: on } }, 12000)
+  if (!o.ok) throw new Error(o.error || '存不下')
+  toast(on ? '0 档会放完' : '她一说话就把视频切走')
+})
+swBind('ipOn', async (on) => {
+  const o = await postT('/media/config', { idlePlay: { on } }, 12000)
+  if (!o.ok) throw new Error(o.error || '存不下')
+  toast(on ? '闲时自动放开着' : '闲时自动放关了')
+})
+
 /* 待机画面改完立刻存 —— 下拉框只有一个值，再要人点一次保存是多余的 */
 $('mdIdle').onchange = async () => {
   try {
@@ -1644,10 +1935,25 @@ async function loadDiag() {
 }
 $('btnDiag').onclick = loadDiag
 
-/* ── 起来 ── */
+/* 在外壳里跑：同源，直接比较 window.self 和 window.top 就行。
+   藏掉页签栏、「←」这些跟侧栏重复的东西，页头改成当前分组名。 */
+if (window.self !== window.top) document.body.classList.add('in-shell')
+;(function () {
+  const on = document.querySelector('.tab.on')
+  if (on) paintHead(on)
+})()
+
+/* 起来 ── */
 loadUsers()
 loadPersona()
 loadAccount()
+
+/* 知识库总开关（放这儿是因为要等上面 swBind 声明完，见 TDZ 那条注释） */
+swBind('kbAll', async (on) => {
+  KB = await post('/kb', { enabled: on })
+  renderKb()
+  toast(on ? '知识库已打开' : '知识库全关了')
+})
 
 /* 支持 #页签 深链：settings.html#sound 直接落在「声音」页。
    一是能收藏/分享到具体一页，二是验收时可以逐页截图。 */

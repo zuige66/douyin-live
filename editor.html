@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>直播画面编辑器 · zuige大肥鱼</title>
+<link rel="stylesheet" href="/ui/theme.css">
 <style>
 /* ══════════════════════════════════════════════════════════════════════
    直播画面编辑器（2026-10-28）
@@ -14,14 +15,8 @@
       卡片高度是倒推出来的（点歌台 = 正在播放 + 3 首 + 提示两行），
       放开高度就会出现"拖矮了文字叠成一团"。所以没有上下拉伸手柄。
    ══════════════════════════════════════════════════════════════════════ */
-/* ── 外壳配色：跟 home.html / settings.html / music.html 同一套 M3E 深色青 ──
+/* ── 外壳配色：来自 /ui/theme.css（2026-10-29 换成浅色后台风）──
    只改「工具外壳」。画布里面的颜色是 #stage 那套（画面真实的配色），别动。 */
-:root{
-  --surface:#0f1417;--surface-1:#171d21;--surface-2:#1d2429;--surface-3:#262f35;--surface-4:#313a41;
-  --on-surface:#dfe3e6;--on-variant:#b3bcc1;--muted:#6d777d;
-  --primary:#7fddc4;--on-primary:#00382c;--primary-c:#005143;--on-primary-c:#9bfbdf;
-  --warn:#f5c06b;--warn-c:#4a3410;--danger:#f2b8b5;--danger-c:#3f1412;
-}
 *{box-sizing:border-box}
 html,body{height:100%;margin:0}
 body{
@@ -33,7 +28,7 @@ button{font:inherit;cursor:pointer}
 input,select{font:inherit}
 input[type=checkbox],input[type=range]{accent-color:var(--primary)}
 ::-webkit-scrollbar{width:10px;height:10px}
-::-webkit-scrollbar-thumb{background:var(--surface-3);border-radius:999px;border:2px solid var(--surface-1)}
+::-webkit-scrollbar-thumb{background:var(--surface-3);border-radius:var(--r-btn);border:2px solid var(--surface-1)}
 ::-webkit-scrollbar-track{background:transparent}
 
 /* ── 顶栏 ── */
@@ -44,13 +39,13 @@ input[type=checkbox],input[type=range]{accent-color:var(--primary)}
 #top .brand{font-weight:600;font-size:14px;letter-spacing:-.2px;margin-right:2px}
 #top .brand small{font-weight:400;color:var(--muted);margin-left:6px;font-size:12px}
 #top .sep{width:1px;height:20px;background:var(--surface-3);margin:0 4px}
-.btn{padding:7px 14px;border:none;background:var(--surface-3);border-radius:999px;
+.btn{padding:7px 14px;border:none;background:var(--surface-3);border-radius:var(--r-btn);
   color:var(--on-surface);font-size:12.5px;font-weight:600;transition:background .15s,transform .1s;
   display:inline-flex;align-items:center;gap:6px;text-decoration:none}
 .btn:hover{background:var(--surface-4)}
 .btn:active{transform:scale(.98)}
 .btn.primary{background:var(--primary);color:var(--on-primary)}
-.btn.primary:hover{background:#96e8d3}
+.btn.primary:hover{background:var(--primary-h)}
 .btn.on{background:var(--primary-c);color:var(--on-primary-c)}
 .btn.ghost{background:transparent;color:var(--on-variant)}
 .btn.ghost:hover{background:var(--surface-2)}
@@ -69,7 +64,7 @@ aside{flex:0 0 auto;background:var(--surface-1);display:flex;flex-direction:colu
 
 /* 组件列表 */
 #comps{display:flex;flex-direction:column;gap:2px}
-.comp{display:flex;align-items:center;gap:8px;padding:9px 10px;border-radius:14px;
+.comp{display:flex;align-items:center;gap:8px;padding:9px 10px;border-radius:var(--r-btn);
   cursor:pointer;color:var(--on-variant);font-size:13px}
 .comp:hover{background:var(--surface-2)}
 .comp.on{background:var(--primary-c);color:var(--on-primary-c);font-weight:600}
@@ -84,22 +79,27 @@ aside{flex:0 0 auto;background:var(--surface-1);display:flex;flex-direction:colu
   flex:1;min-width:0;position:relative;overflow:auto;display:flex;
   align-items:center;justify-content:center;padding:26px;
   background-color:var(--surface);
-  background-image:radial-gradient(circle at 1px 1px #222b31 1px,transparent 0);
+  background-image:radial-gradient(circle at 1px 1px #d5dbe4 1px,transparent 0);
   background-size:16px 16px;
 }
-#stageBox{position:relative;flex:0 0 auto;background:#17131F;box-shadow:0 12px 40px rgba(0,0,0,.55)}
+#stageBox{position:relative;flex:0 0 auto;background:#17131F;box-shadow:0 4px 18px rgba(16,24,40,.16)}
 
 #stage{
   position:absolute;left:0;top:0;width:1920px;height:1080px;transform-origin:0 0;overflow:hidden;
   --ink:#E6E1E5;--dim:#CAC4D0;--faint:rgba(202,196,208,.5);
   --pri:#D0BCFF;--ter:#EFB8C8;--card:#2E263F;--hair:#5C4F78;
+  --hr:rgba(255,255,255,.08);--tipbg:rgba(208,188,255,.08);
   --font:"Microsoft YaHei","Segoe UI",sans-serif;
 }
-/* 浅色主题：跟 native/render.py 的 _PALETTE['light'] 一一对应 */
+/* 浅色主题：跟 native/render.py 的 _PALETTE['light'] 一一对应
+   2026-10-28 晚改：强调色换成「背景红」#B0274A，卡片改成玻璃白 + 柔影 */
 #stage[data-theme="light"]{
   --ink:#1B1B1F;--dim:#44464F;--faint:rgba(68,70,79,.75);
-  --pri:#4F378B;--ter:#7D5260;--card:#FFFFFF;--hair:#CAC4D0;
+  --pri:#B0274A;--ter:#963A54;--card:rgba(255,255,255,.80);--hair:rgba(255,255,255,.94);
+  --hr:rgba(27,27,31,.12);--tipbg:rgba(176,39,74,.09);
 }
+#stage[data-theme="light"] .card,
+#stage[data-theme="light"] .t-subtitle .bar{box-shadow:0 14px 34px rgba(128,34,66,.20)}
 #bgLayer{position:absolute;inset:0;background-size:cover;background-position:center;background-repeat:no-repeat}
 #scrim{position:absolute;inset:0;pointer-events:none;background:#000;opacity:0}
 #grid{position:absolute;inset:0;pointer-events:none;display:none;
@@ -135,7 +135,7 @@ aside{flex:0 0 auto;background:var(--surface-1);display:flex;flex-direction:colu
 .c-bars{position:absolute;display:flex;gap:4px;align-items:flex-end}
 .c-bars s{width:5px;flex:0 0 auto;background:var(--pri);border-radius:2px;display:block;text-decoration:none}
 .c-dot{position:absolute;border-radius:50%;background:var(--pri)}
-.c-hr{position:absolute;height:1px;background:var(--hair);opacity:.45}
+.c-hr{position:absolute;height:1px;background:var(--hr)}
 
 .t-banner{display:flex;align-items:center;justify-content:center;font-family:var(--font);
   font-weight:700;white-space:nowrap;color:var(--pri)}
@@ -169,7 +169,7 @@ aside{flex:0 0 auto;background:var(--surface-1);display:flex;flex-direction:colu
 .fld{display:flex;align-items:center;gap:8px;margin-bottom:9px}
 .fld label{flex:0 0 44px;color:var(--muted);font-size:12px}
 .fld input[type=number],.fld input[type=text],.fld select{
-  flex:1;min-width:0;padding:8px 10px;border:1px solid var(--surface-3);border-radius:12px;
+  flex:1;min-width:0;padding:8px 10px;border:1px solid var(--surface-3);border-radius:var(--r-btn);
   background:var(--surface-2);color:var(--on-surface);font-size:12.5px;outline:none}
 .fld input:focus,.fld select:focus{border-color:var(--primary)}
 .fld input[readonly]{background:var(--surface-1);color:var(--muted)}
@@ -180,14 +180,14 @@ aside{flex:0 0 auto;background:var(--surface-1);display:flex;flex-direction:colu
 .grid2 .fld{margin-bottom:0}
 .grid2 .fld label{flex:0 0 16px;text-align:center;color:var(--muted)}
 .mini{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:12px}
-.mini button{padding:9px 0;border:none;background:var(--surface-2);border-radius:999px;
+.mini button{padding:9px 0;border:none;background:var(--surface-2);border-radius:var(--r-btn);
   color:var(--on-variant);font-size:12px;font-weight:600}
 .mini button:hover{background:var(--surface-3);color:var(--on-surface)}
 .chk{display:flex;align-items:center;gap:8px;color:var(--on-variant);font-size:12.5px;
   margin:12px 0 2px;cursor:pointer}
 .hr{height:1px;background:var(--surface-3);margin:14px 0}
 .empty{color:var(--muted);padding:18px 2px;text-align:center;line-height:1.9;font-size:12.5px}
-.warnbox{background:var(--warn-c);border-radius:14px;padding:10px 12px;color:var(--warn);
+.warnbox{background:var(--warn-c);border-radius:var(--r-btn);padding:10px 12px;color:var(--warn);
   font-size:11.5px;line-height:1.7;margin-top:10px}
 
 /* 预览模式 */
@@ -201,7 +201,7 @@ body.preview #previewHint{display:block}
   font-size:12px;pointer-events:none}
 
 #toast{position:fixed;left:50%;bottom:26px;transform:translate(-50%,20px);opacity:0;
-  background:var(--surface-4);color:var(--on-surface);padding:11px 20px;border-radius:999px;
+  background:var(--surface-4);color:var(--on-surface);padding:11px 20px;border-radius:var(--r-btn);
   font-size:12.5px;font-weight:600;pointer-events:none;transition:.22s;z-index:99;max-width:70vw}
 #toast.on{opacity:1;transform:translate(-50%,0)}
 
@@ -209,7 +209,7 @@ body.preview #previewHint{display:block}
    原来只弹 1.8 秒的 toast，直播中低头看屏幕就错过了 —— 表现就是
    「我拖了、但画面没动」，跟没做一样。 */
 .sync{display:inline-flex;align-items:center;gap:6px;font-size:11.5px;font-weight:600;
-  padding:6px 12px;border-radius:999px;background:var(--primary-c);color:var(--on-primary-c);
+  padding:6px 12px;border-radius:var(--r-btn);background:var(--primary-c);color:var(--on-primary-c);
   white-space:nowrap}
 .sync::before{content:'';width:6px;height:6px;border-radius:50%;background:currentColor}
 .sync.dirty{background:var(--warn-c);color:var(--warn)}
@@ -322,8 +322,12 @@ let PET_R = 693 / 676;                       // 皮套高宽比，loadPet() 会�
 let PET_STILL = 'assets/pet2-still.png';     // 皮套静态预览图
 const DM_FLOOR = H - 206;
 function H_(key, y, w) {
-  if (key === 'stats') return 216;
-  if (key === 'songs') return 478;
+  /* 2026-10-28 晚：两张卡的高度改成跟 native/render.py 的 stats_h()/songs_h() 一模一样
+     （stats = 28*2 + 42 + 22 + 64 + 30，songs = 28*2 + 42 + 14 + 56 + 14 + 3*58）。
+     以前这里写死 216 / 478，改版式时两边都忘了就会错位。
+     22:2x 又砍了歌手行和「点歌格式」块，songs 从 510 掉到 356。 */
+  if (key === 'stats') return 214;
+  if (key === 'songs') return 356;
   if (key === 'banner') return 64;
   /* 皮套 = 角色包围盒的高宽比。**这个数字跟着素材走**：pet2 是 693/676、
      pet 是 267/213，所以不能写死 —— 由 loadPet() 从桥的 /pet 拿当前那套的
@@ -349,7 +353,7 @@ function defaultScene() {
   items.banner.size = 50;
   items.banner.align = 'center';
   return { version:1, theme:'dark',
-    bg:{ type:'image', image:'assets/bg-gdut.png', color:'#1E182A', dim:0 },
+    bg:{ type:'image', image:'assets/bg.png', color:'#1E182A', dim:0 },
     items };
 }
 
@@ -458,40 +462,43 @@ function htmlOf(key, it) {
         'justify-content:' + (it.align === 'left' ? 'flex-start' : it.align === 'right' ? 'flex-end' : 'center') + '">' +
         '刷礼物有惊喜</div>';
     case 'stats': {
-      const k = it.w / 452;
-      const rows = [['收到弹幕', '1,284'], ['收到礼物', '37'], ['已回复', '1,190']];
+      /* 横排三格：坐标抄 native/render.py 的 stats_geom()（28 / 92 / 156）。
+         **这里不乘 k** —— 真画面的内边距是固定像素，不跟卡片宽度缩放；
+         乘了 k 之后 594 宽的卡在预览里会比真画面松一大截。 */
+      const cell = (it.w - 56) / 3;
+      const vals = ['1,284', '37', '1,190'];
+      const labs = ['收到弹幕', '收到礼物', '已回复'];
+      /* 数字字号跟 render.py 一样按格宽收：卡片拖窄到 400 时 48 号会压到隔壁格。
+         雅黑粗体的「1,284」约 2.8px/号 宽，所以按最宽的那个反算。 */
+      let nsz = 48;
+      while (nsz > 26 && 2.8 * nsz > cell - 24) nsz -= 2;
       let s = '<div class="card">';
-      s += tx(k, 30, 30, '本场数据', 25, 'var(--dim)');
-      s += tr(k, 30, 30, '实时', 22, 'var(--faint)');
-      rows.forEach(function (r, i) {
-        const y = 90 + i * 46;
-        s += tx(k, 30, y, r[0], 27, 'var(--dim)');
-        s += tr(k, 30, y, r[1], 27, 'var(--ink)', 'font-weight:700');
-      });
+      s += tx(1, 28, 28, '本场数据', 30, 'var(--ink)', 'font-weight:700');
+      s += tr(1, 28, 36, '直播中', 21, 'var(--dim)');
+      s += '<i class="c-dot" style="right:100px;top:47px;width:8px;height:8px"></i>';
+      for (let i = 0; i < 3; i++) {
+        const x = 28 + cell * i;
+        s += tx(1, x, 92, vals[i], nsz, 'var(--ink)',
+          'font-weight:700;width:' + cell + 'px;text-align:center');
+        s += tx(1, x, 156, labs[i], 23, 'var(--dim)',
+          'width:' + cell + 'px;text-align:center');
+      }
       return s + '</div>';
     }
     case 'songs': {
-      const k = it.w / 452;
+      /* 坐标同样抄 render.py：28 / 84 / 140（细线）/ 154 起排队。
+         22:2x 砍掉「正在播放」标签、歌手名、点歌格式块之后只剩四段。 */
       let s = '<div class="card">';
-      s += tx(k, 30, 30, '点歌台', 25, 'var(--dim)');
-      s += tr(k, 30, 30, '歌单 3 首', 22, 'var(--faint)');
-      s += '<i class="c-dot" style="left:' + (33 * k) + 'px;top:' + (97 * k) + 'px;' +
-           'width:' + (10 * k) + 'px;height:' + (10 * k) + 'px"></i>';
-      s += tx(k, 54, 90, '正在播放', 21, 'var(--faint)');
-      s += '<span class="c-bars" style="right:' + (30 * k) + 'px;top:' + (92 * k) + 'px">' +
-        [10, 18, 13, 20].map(function (h) {
-          return '<s style="height:' + (h * k) + 'px"></s>';
-        }).join('') + '</span>';
-      s += tx(k, 30, 118, '起风了', 28, 'var(--ink)', 'font-weight:700');
-      s += tx(k, 30, 156, '买辣椒也用券', 21, 'var(--dim)');
-      s += '<div class="c-hr" style="left:' + (30 * k) + 'px;right:' + (60 * k) + 'px;top:' + (186 * k) + 'px"></div>';
-      ['晴天', '孤勇者', '夜空中最亮的星'].forEach(function (t, i) {
-        const y = 202 + i * 58, first = i === 0;
-        s += tx(k, 30, y + 4, String(i + 1), 24, first ? 'var(--pri)' : 'var(--faint)');
-        s += tx(k, 70, y, t, 29, first ? 'var(--pri)' : 'var(--ink)', first ? 'font-weight:700' : '');
+      s += tx(1, 28, 28, '点歌台', 30, 'var(--ink)', 'font-weight:700');
+      s += tr(1, 28, 36, '12 首排队', 21, 'var(--dim)');
+      s += tx(1, 28, 84, 'I Really Like You', 34, 'var(--ink)', 'font-weight:700');
+      s += '<div class="c-hr" style="left:28px;right:28px;top:140px"></div>';
+      ['晴天', '海阔天空', '鱼仔'].forEach(function (t, i) {
+        const y = 154 + i * 58, first = i === 0;
+        s += tx(1, 28, y + 6, String(i + 1), 24, first ? 'var(--pri)' : 'var(--faint)');
+        s += tx(1, 68, y, t, 28, first ? 'var(--pri)' : 'var(--ink)',
+          first ? 'font-weight:700' : '');
       });
-      s += tx(k, 30, 384, '点歌格式', 22, 'var(--dim)');
-      s += tx(k, 30, 414, '点歌，歌名，歌手（可不填）', 28, 'var(--ink)');
       return s + '</div>';
     }
     case 'character':

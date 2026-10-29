@@ -1,0 +1,611 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>大肥鱼 · 控制台</title>
+<link rel="stylesheet" href="/ui/theme.css">
+<!--
+  统一外壳（2026-10-29）。左边一级菜单切页，内容区是 iframe，原页面一行不改就能挂进来。
+  顶栏下面那排是「打开过的页面」，模仿 SoybeanAdmin 的多标签页：能关、能快速切。
+
+  🔴 播放器为什么长在这里、不在 panel.html 里：
+     桥靠 /client/poll 的心跳判断「播放器界面在不在」，超过 25 秒没心跳就回落
+     本机 QQ 音乐，观众那边就是静音。iframe 切页会整页卸载，只有外壳这个文档
+     一直可见 —— 所以 <audio> 和 poll 必须放这儿，不能放内容区。
+
+  配色和圆角全在 /ui/theme.css 里，这里只管布局。规矩照旧：不许渐变。
+-->
+<style>
+  :root{
+    --side:216px;
+    --top:52px;
+    --tabbar:40px;
+  }
+  html,body{height:100%}
+  body{
+    background:var(--bg);color:var(--on-surface);
+    font:14px/1.5 "Google Sans",-apple-system,"Segoe UI","Microsoft YaHei",system-ui,sans-serif;
+    -webkit-font-smoothing:antialiased;overflow:hidden;
+  }
+
+  .app{display:flex;height:100vh}
+
+  /* ── 侧边栏 ─────────────────────────────────────────── */
+  .sb{width:var(--side);flex:none;background:var(--surface-1);display:flex;
+      flex-direction:column;border-right:1px solid var(--border);
+      transition:width .15s ease;overflow:hidden}
+  .sb.tiny{width:60px}
+
+  .brand{height:var(--top);display:flex;align-items:center;gap:9px;padding:0 15px;
+         flex:none;border-bottom:1px solid var(--border)}
+  .sb.tiny .brand{padding:0;justify-content:center}
+  .mark{width:26px;height:26px;border-radius:6px;background:var(--primary);
+        color:var(--on-primary);display:grid;place-items:center;
+        font-size:13px;font-weight:600;flex:none}
+  .btxt{font-size:14px;font-weight:600;letter-spacing:-.1px;white-space:nowrap}
+  .sb.tiny .btxt{display:none}
+
+  .nav{flex:1;overflow-y:auto;overflow-x:hidden;padding:8px}
+  .sb.tiny .nav{padding:8px 6px}
+
+  .item{display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:var(--r-btn);
+        color:var(--on-variant);text-decoration:none;font-size:13px;font-weight:500;
+        white-space:nowrap;margin-bottom:2px}
+  .item:hover{background:var(--surface-3);color:var(--on-surface)}
+  .item.on{background:var(--primary-c);color:var(--on-primary-c)}
+  .item svg{width:16px;height:16px;flex:none;stroke:currentColor;fill:none;
+            stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
+  .sb.tiny .item{justify-content:center;padding:8px 0}
+  .sb.tiny .item span{display:none}
+  /* 菜单里那道横线：把「日常」和「工具」分开 */
+  .sep{height:1px;background:var(--border);margin:8px 10px}
+
+
+  /* ── 右侧主区 ───────────────────────────────────────── */
+  .main{flex:1;display:flex;flex-direction:column;min-width:0}
+
+  .top{height:var(--top);flex:none;display:flex;align-items:center;gap:8px;
+       padding:0 12px 0 8px;border-bottom:1px solid var(--border);
+       background:var(--surface-1)}
+  .iconbtn{width:30px;height:30px;border-radius:var(--r-btn);border:none;background:none;
+           cursor:pointer;color:var(--on-variant);display:grid;place-items:center;flex:none}
+  .iconbtn:hover{background:var(--surface-3);color:var(--on-surface)}
+  .iconbtn svg{width:17px;height:17px;stroke:currentColor;fill:none;
+               stroke-width:1.7;stroke-linecap:round}
+  .crumb{font-size:14px;font-weight:600;letter-spacing:-.1px;white-space:nowrap}
+  .spacer{flex:1}
+
+  /* 顶栏右侧：音乐状态 */
+  .mstat{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--on-variant);
+         padding:5px 9px;border-radius:var(--r-btn);cursor:pointer;min-width:0;max-width:300px}
+  .mstat:hover{background:var(--surface-3)}
+  #mTxt{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .mdot{width:6px;height:6px;border-radius:50%;background:#c9cfda;flex:none}
+  .mdot.on{background:var(--primary)}
+  .mdot.pause{background:var(--warn)}
+
+  .pill{border:none;border-radius:var(--r-btn);padding:0 12px;height:28px;
+        font-family:inherit;font-size:13px;font-weight:500;cursor:pointer;
+        background:var(--primary);color:var(--on-primary);flex:none;white-space:nowrap}
+  .pill:hover{background:var(--primary-h)}
+
+  /* ── 多标签页 ───────────────────────────────────────── */
+  .tabbar{height:var(--tabbar);flex:none;display:flex;align-items:center;gap:5px;
+          padding:0 12px;background:var(--surface-1);border-bottom:1px solid var(--border);
+          overflow-x:auto;overflow-y:hidden;scrollbar-width:none}
+  .tabbar::-webkit-scrollbar{display:none}
+  .tbtn{display:inline-flex;align-items:center;gap:6px;height:26px;padding:0 9px;
+        border-radius:var(--r-btn);font-size:12px;color:var(--on-variant);
+        border:1px solid var(--border);background:var(--surface-1);cursor:pointer;
+        white-space:nowrap;flex:none;font-family:inherit}
+  .tbtn:hover{border-color:var(--border-2);color:var(--on-surface)}
+  .tbtn.on{background:var(--primary-c);color:var(--on-primary-c);border-color:var(--primary-c)}
+  .tbtn .x{font-size:13px;line-height:1;opacity:.45;width:14px;height:14px;
+           display:grid;place-items:center;border-radius:2px}
+  .tbtn .x:hover{opacity:1;background:rgba(0,0,0,.07)}
+
+  iframe{flex:1;width:100%;border:0;display:block;background:var(--bg)}
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="sb" id="sb">
+    <div class="brand">
+      <span class="mark">鱼</span>
+      <span class="btxt">大肥鱼</span>
+    </div>
+    <nav class="nav" id="nav"></nav>
+  </aside>
+
+  <div class="main">
+    <header class="top">
+      <button class="iconbtn" id="bFold" title="收起侧栏">
+        <svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+      </button>
+      <div class="crumb" id="crumb">控制台</div>
+      <div class="spacer"></div>
+      <div class="mstat" id="mStat" title="去音乐页">
+        <span class="mdot" id="mDot"></span>
+        <span id="mTxt">声音未开</span>
+      </div>
+      <button class="pill" id="bSound">开启声音</button>
+    </header>
+
+    <div class="tabbar" id="tabbar"></div>
+
+    <iframe id="view" title="内容区"></iframe>
+  </div>
+</div>
+
+<script>
+const $ = (s) => document.querySelector(s)
+
+/* ══════════════════════════════════════════════════════════════════
+ * 菜单与路由
+ *
+ * hash 路由：#/panel  #/settings/account  #/settings/audio  #/editor  #/music
+ * （#/settings 不带组名就落「账号」；组名是 account/media/look/memory/audio/diag）
+ * 用 <a href="#/...">，浏览器的前进/后退天然能用。
+ * ══════════════════════════════════════════════════════════════════ */
+const ICON = {
+  panel:'<svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M7.5 9.5h4M7.5 14h7"/></svg>',
+  account:'<svg viewBox="0 0 24 24"><circle cx="12" cy="8.2" r="3.4"/><path d="M5 19.6c1.3-3.6 4-5.4 7-5.4s5.7 1.8 7 5.4"/></svg>',
+  media:'<svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2.5"/><path d="M10 9.6l4.6 2.4-4.6 2.4z"/></svg>',
+  look:'<svg viewBox="0 0 24 24"><path d="M12 3.2l1.9 4.9 4.9 1.9-4.9 1.9L12 16.8l-1.9-4.9L5.2 10l4.9-1.9z"/><path d="M17.6 15.4l.9 2.2 2.2.9-2.2.9-.9 2.2-.9-2.2-2.2-.9 2.2-.9z"/></svg>',
+  memory:'<svg viewBox="0 0 24 24"><path d="M12 3.4l8 4-8 4-8-4z"/><path d="M4 12l8 4 8-4"/><path d="M4 16.6l8 4 8-4"/></svg>',
+  audio:'<svg viewBox="0 0 24 24"><path d="M4 10v4h3l4 3.4V6.6L7 10z"/><path d="M15.4 9.2a4 4 0 010 5.6"/><path d="M18 6.6a7.6 7.6 0 010 10.8"/></svg>',
+  diag:'<svg viewBox="0 0 24 24"><path d="M3 12h4l2.4-6 3.2 12 2.4-6h6"/></svg>',
+  editor:'<svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="13" rx="2.5"/><path d="M9 20.5h6"/></svg>',
+  music:'<svg viewBox="0 0 24 24"><path d="M9.5 17.5V5.5l9-1.8v11.6"/><circle cx="6.8" cy="17.8" r="2.7"/><circle cx="15.8" cy="15.3" r="2.7"/></svg>',
+  ext:'<svg viewBox="0 0 24 24"><path d="M14 4h6v6"/><path d="M20 4l-8.5 8.5"/><path d="M18 14.5V19a1.6 1.6 0 01-1.6 1.6H5.6A1.6 1.6 0 014 19V8.6A1.6 1.6 0 015.6 7H10"/></svg>',
+  logs:'<svg viewBox="0 0 24 24"><rect x="4" y="3.5" width="16" height="17" rx="2.5"/><path d="M8 8.5h8M8 12.2h8M8 15.9h5"/></svg>',
+}
+
+/* 页面文件表。settings 不再是一级菜单（下面拆开挂），这里只剩「哪个 id 对应哪个文件」。 */
+const PAGES = {
+  panel:    { file:'/panel.html',    name:'控制台' },
+  logs:     { file:'/logs.html',     name:'日志'   },
+  settings: { file:'/settings.html', name:'设置'   },
+  editor:   { file:'/editor.html',   name:'画面'   },
+  music:    { file:'/music.html',    name:'播放器' },
+}
+
+/* ══════════════════════════════════════════════════════════════════
+ * 侧栏 9 项（2026-10-29 第二次重排）
+ *
+ * 原来是「设置」一个一级项、底下挂 11 个二级页签 —— 音量、礼物开关这种
+ * 直播当中要随手点的东西，得先点设置再点页签，两跳。
+ * 现在把重叠的页签合成 6 组（settings.html 里一个 .tab 吃多个 section），
+ * 每组直接当一级入口，只有一跳：
+ *
+ *   账号 = 账号 + 回复        素材 = 礼物 + 电脑（改名：里面全是素材配置）
+ *   形象 = 形象 + 人格        记忆 = 记忆 + 知识
+ *   声音 = 音量 + 音源        诊断 = 诊断
+ *
+ * id 同时也是多标签页的键（'set:audio' 这种）。换组不重载 iframe ——
+ * 只有 page 变了才重新取，不然在设置里来回切会一直整页重新取数。
+ * ══════════════════════════════════════════════════════════════════ */
+const NAV = [
+  { id:'panel',       hash:'#/panel',            name:'控制台', icon:'panel',   page:'panel' },
+  /* 日志从控制台里拆出来了（收发 + 桥日志 + 素材播放三个页签）。
+   * 直播当中「她刚才说没说话」是最常瞄的，不该埋在控制台下面要滚才看到。 */
+  { id:'logs',        hash:'#/logs',             name:'日志',   icon:'logs',    page:'logs' },
+  { id:'set:account', hash:'#/settings/account', name:'账号',   icon:'account', page:'settings', tab:'account' },
+  { id:'set:media',   hash:'#/settings/media',   name:'素材',   icon:'media',   page:'settings', tab:'media' },
+  { id:'set:look',    hash:'#/settings/look',    name:'形象',   icon:'look',    page:'settings', tab:'look' },
+  { id:'set:memory',  hash:'#/settings/memory',  name:'记忆',   icon:'memory',  page:'settings', tab:'memory' },
+  { id:'set:audio',   hash:'#/settings/audio',   name:'声音',   icon:'audio',   page:'settings', tab:'audio' },
+  { sep:true },
+  { id:'editor',      hash:'#/editor',           name:'画面',   icon:'editor',  page:'editor' },
+  { id:'music',       hash:'#/music',            name:'播放器', icon:'music',   page:'music' },
+  /* 备用播放页在 18083 那边，是另一个端口和另一份页面，只能新标签打开。
+   * 千万别塞进内容区：iframe 一切走就整页卸载，心跳断，声音也跟着停。
+   * ext 的条目不进路由表，点它就是一个普通的外链。 */
+  { id:'player',      name:'备用播放页', icon:'ext', ext:'http://127.0.0.1:18083/player.html' },
+  { id:'set:diag',    hash:'#/settings/diag',    name:'诊断',   icon:'diag',    page:'settings', tab:'diag' },
+]
+
+const ITEMS = NAV.filter((e) => !e.sep && !e.ext)
+const BY_ID = Object.fromEntries(ITEMS.map((e) => [e.id, e]))
+
+function paintNav() {
+  $('#nav').innerHTML = NAV.map((e) => {
+    if (e.sep) return '<div class="sep"></div>'
+    if (e.ext) {
+      return `<a class="item" href="${e.ext}" target="_blank" rel="noopener" title="${e.name}（新标签打开）">${ICON[e.icon]}<span>${e.name}</span></a>`
+    }
+    return `<a class="item" href="${e.hash}" data-id="${e.id}" title="${e.name}">${ICON[e.icon]}<span>${e.name}</span></a>`
+  }).join('')
+}
+paintNav()
+
+const view = $('#view')
+let pendingTab = ''
+let current = 'panel'
+
+/* ── 多标签页 ──────────────────────────────────────────────────────
+ * 打开过的页面停在顶栏，能关能切，刷新后还在（存 sessionStorage）。
+ * 最后一个关不掉 —— 关光了就没内容了。 */
+let opened = []
+try {
+  const saved = JSON.parse(sessionStorage.getItem('zy-tabs') || '[]')
+  if (Array.isArray(saved)) opened = saved.filter((k) => BY_ID[k])
+} catch {}
+if (!opened.length) opened = ['panel']
+
+function saveTabs() {
+  try { sessionStorage.setItem('zy-tabs', JSON.stringify(opened)) } catch {}
+}
+
+function paintTabs() {
+  $('#tabbar').innerHTML = opened.map((k) => {
+    const x = opened.length > 1 ? `<b class="x" data-close="${k}" title="关闭">×</b>` : ''
+    return `<span class="tbtn${k === current ? ' on' : ''}" data-key="${k}">${BY_ID[k].name}${x}</span>`
+  }).join('')
+}
+
+$('#tabbar').addEventListener('click', (e) => {
+  const closeKey = e.target.dataset && e.target.dataset.close
+  if (closeKey) { e.stopPropagation(); closeTab(closeKey); return }
+  const t = e.target.closest('.tbtn')
+  if (t && t.dataset.key !== current) location.hash = BY_ID[t.dataset.key].hash
+})
+
+function closeTab(key) {
+  const i = opened.indexOf(key)
+  if (i < 0 || opened.length <= 1) return
+  opened.splice(i, 1)
+  saveTabs()
+  if (current === key) {
+    /* 关掉的正是当前页：切到它左边那个，没有就切右边 */
+    const next = opened[Math.max(0, i - 1)]
+    location.hash = BY_ID[next].hash
+  } else {
+    paintTabs()
+  }
+}
+
+/* ── 路由 ───────────────────────────────────────────────────────── */
+function clickTab(tab) {
+  try {
+    const d = view.contentDocument
+    const b = d && d.querySelector(`.tab[data-tab="${tab}"]`)
+    if (b) { b.click(); return true }
+  } catch {}
+  return false
+}
+
+function paintActive() {
+  document.querySelectorAll('.item').forEach((a) => a.classList.toggle('on', a.dataset.id === current))
+}
+
+/* 把地址解成一个菜单入口。#/settings 没带组名就落「账号」。 */
+function entryFromHash() {
+  const raw = location.hash.replace(/^#\/?/, '') || 'panel'
+  const [key, tab] = raw.split('/')
+  if (key === 'settings') {
+    const t = tab || 'account'
+    return ITEMS.find((e) => e.page === 'settings' && e.tab === t) || BY_ID['set:account']
+  }
+  return BY_ID[key] || BY_ID.panel
+}
+
+function route() {
+  const e = entryFromHash()
+  /* 子页签名 #/<页>/<页签>。设置页从 NAV 里带（e.tab），别的页（比如日志）
+   * 直接取地址里第二段 —— 这样 #/logs/bridge 也能直达。 */
+  const rawTab = location.hash.replace(/^#\/?/, '').split('/')[1] || ''
+  const tab = e.tab || rawTab
+
+  if (!opened.includes(e.id)) {
+    opened.push(e.id)
+    saveTabs()
+  }
+  current = e.id
+
+  paintActive()
+  document.querySelector('.crumb').textContent = e.name
+  document.title = '大肥鱼 · ' + e.name
+  paintTabs()
+
+  if (view.dataset.page !== e.page) {
+    /* 换页才动 src —— 在设置里换组不动 iframe，免得整页重新取数 */
+    view.dataset.page = e.page
+    pendingTab = tab || ''
+    view.src = PAGES[e.page].file
+  } else if (tab) {
+    clickTab(tab)
+  }
+}
+
+view.addEventListener('load', () => {
+  const e = BY_ID[current]
+  try {
+    const d = view.contentDocument
+
+    /* 「← 返回」在 iframe 里点会套一层外壳套外壳，改成切回控制台 */
+    d.querySelectorAll('a[href="/"]').forEach((a) => {
+      a.addEventListener('click', (ev) => { ev.preventDefault(); location.hash = '#/panel' })
+    })
+
+    /* 页面之间的跳转也交给外壳，这样左边菜单会跟着亮 */
+    d.querySelectorAll('a[href$=".html"]').forEach((a) => {
+      if (a.target === '_blank') return
+      const m = (a.getAttribute('href') || '').match(/^\/([a-z]+)\.html$/)
+      if (!m || !PAGES[m[1]]) return
+      const t = ITEMS.find((x) => x.page === m[1])
+      if (!t) return
+      a.addEventListener('click', (ev) => { ev.preventDefault(); location.hash = t.hash })
+    })
+
+    /* 页面里点了页签：左边菜单跟着亮，地址栏也换成那个入口的地址 ——
+     * 用 replaceState 而不是改 hash：不新增历史，也不会再触发一次 route */
+    d.querySelectorAll('.tab[data-tab]').forEach((b) => {
+      b.addEventListener('click', () => {
+        /* 🔴 必须限定「当前这页」的页签。只按 tab 名找会串页 ——
+         *    日志页有个页签也叫 media，正好撞上设置里的「素材」组，
+         *    点一下会把面包屑和左边菜单切成素材。 */
+        const t = ITEMS.find((x) => x.page === view.dataset.page && x.tab === b.dataset.tab)
+        if (t) {
+          current = t.id
+          if (!opened.includes(t.id)) { opened.push(t.id); saveTabs(); paintTabs() }
+          paintActive()
+          document.querySelector('.crumb').textContent = t.name
+          document.title = '大肥鱼 · ' + t.name
+          history.replaceState(null, '', t.hash)
+        } else {
+          /* 没有对应的一级入口（比如日志页的三个页签）：只把地址同步成 #/<页>/<页签>。
+           * 左边菜单不用动 —— 它高亮的是「日志」本身。 */
+          history.replaceState(null, '', `#/${view.dataset.page}/${b.dataset.tab}`)
+        }
+      })
+    })
+
+    /* 直接开 #/settings 进来时，按页面自己停在哪个页签点亮菜单
+     * （不然左边一片不亮，看着像坏了） */
+    if (e && e.page === 'settings' && !e.tab) {
+      const on = d.querySelector('.tab.on[data-tab]')
+      const t = on && ITEMS.find((x) => x.page === 'settings' && x.tab === on.dataset.tab)
+      if (t) { current = t.id; paintActive() }
+    }
+  } catch {}
+
+  if (pendingTab) {
+    clickTab(pendingTab)
+    pendingTab = ''
+  }
+})
+
+window.addEventListener('hashchange', route)
+
+/* 折叠：记在本地，下次打开还是收着的 */
+const sb = $('#sb')
+try { if (localStorage.getItem('zy-sb-tiny') === '1') sb.classList.add('tiny') } catch {}
+$('#bFold').onclick = () => {
+  sb.classList.toggle('tiny')
+  try { localStorage.setItem('zy-sb-tiny', sb.classList.contains('tiny') ? '1' : '0') } catch {}
+  /* route() 里会按折叠状态重新决定二级菜单要不要展开 */
+  route()
+}
+
+route()
+</script>
+
+<script>
+/* ══════════════════════════════════════════════════════════════════
+ * 常驻播放器
+ *
+ * 这一段是从 panel.html 整体搬过来的 —— 只把「启动播放」按钮换成了顶栏那个
+ * 「开启声音」。为什么必须在外壳里：见文件开头的注释。
+ *
+ * 🔴 只有点了「开启声音」之后才 poll（2026-10-29 改，原来是无条件每秒都发）。
+ *    原因是 /client/poll 取走命令就清空，而且顺手把 unlocked 写回服务端 ——
+ *    后台还没解锁就每秒抢一次，会跟 18083 上那个独立播放页（player.html）
+ *    互相偷命令，还把它的 unlocked 反复冲成 0。表现是「点了歌不放」和
+ *    「明明在唱着却说没声音」。没打算用这个播放器，就别去碰那根线。
+ * 🔴 出声必须由用户点一次 —— 浏览器的自动播放策略。点过之后 localStorage
+ *    记住，刷新页面也尽量自动接上。
+ * ══════════════════════════════════════════════════════════════════ */
+const MUSIC_BASE = 'http://127.0.0.1:18083'
+const au = new Audio()
+au.preload = 'auto'
+au.volume = 0.7
+
+let auTrack = ''
+let auSongId = ''
+let auPolling = false
+let auResumed = false
+let musicUnlocked = false
+let nowName = ''
+try {
+  musicUnlocked = localStorage.getItem('zy-music-unlocked') === '1'
+} catch {}
+
+async function mApi(path, opt) {
+  const r = await fetch(MUSIC_BASE + path, opt)
+  if (!r.ok) throw new Error('HTTP ' + r.status)
+  return r.json()
+}
+const mPost = (path, body) =>
+  mApi(path, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body || {}),
+  })
+
+const $m = (id) => document.getElementById(id)
+
+function paintMusic() {
+  const dot = $m('mDot')
+  const txt = $m('mTxt')
+  const btn = $m('bSound')
+  if (!musicUnlocked) {
+    dot.className = 'mdot'
+    txt.textContent = '声音未开'
+    btn.style.display = ''
+    return
+  }
+  btn.style.display = 'none'
+  if (!auTrack) {
+    dot.className = 'mdot'
+    txt.textContent = '已开 · 待播放'
+    return
+  }
+  dot.className = 'mdot ' + (au.paused ? 'pause' : 'on')
+  txt.textContent = (au.paused ? '暂停 · ' : '在放 · ') + (nowName || '—')
+}
+
+async function auPlayTrack(track) {
+  auTrack = String(track.id || '')
+  auSongId = String(track.songId || auTrack.replace(/\D/g, ''))
+  let u = null
+  try {
+    u = await mApi('/url?id=' + encodeURIComponent(auSongId) + '&quality=exhigh')
+  } catch (e) {
+    mPost('/client/error', { why: '取直链失败：' + e.message }).catch(() => {})
+  }
+  if (!u || !u.url) {
+    mPost('/client/error', { why: (u && u.why) || '取不到直链' }).catch(() => {})
+    /* 取不到就报播完，让服务端切下一首，别卡死 */
+    setTimeout(() => mPost('/client/ended', { trackId: auTrack }).then(auApply).catch(() => {}), 800)
+    return
+  }
+  au.src = u.url
+  try {
+    await au.play()
+    musicUnlocked = true
+    try {
+      localStorage.setItem('zy-music-unlocked', '1')
+    } catch {}
+    paintMusic()
+  } catch {
+    /* 被自动播放策略拦了：按钮放回来，别假装在放 */
+    musicUnlocked = false
+    paintMusic()
+  }
+}
+
+async function auApply(list) {
+  for (const c of list || []) {
+    try {
+      if (c.type === 'play') await auPlayTrack(c.track)
+      else if (c.type === 'pause') au.pause()
+      else if (c.type === 'resume') {
+        try {
+          await au.play()
+        } catch {}
+      } else if (c.type === 'volume') {
+        au.volume = Math.min(1, Math.max(0, Number(c.value) || 0))
+      } else if (c.type === 'stop') {
+        au.pause()
+        au.removeAttribute('src')
+        auTrack = ''
+        auSongId = ''
+      }
+    } catch {}
+  }
+}
+
+async function auTick() {
+  if (auPolling) return
+  /* 没解锁就一次都别发：一是拿了命令也放不出声（自动播放策略），
+   * 二是会把 18083 那个独立播放页的命令偷走、unlocked 冲成 0。 */
+  if (!musicUnlocked) return
+  auPolling = true
+  try {
+    /* unlocked 一起带上：服务端靠它区分「页面开着」和「能出声」。
+     * 只发 poll 不发 report 也能维持心跳 —— 空闲时也必须在。 */
+    const r = await mApi('/client/poll?unlocked=' + (musicUnlocked ? '1' : '0'))
+    await auApply(r.commands)
+    if (typeof r.volume === 'number') au.volume = r.volume
+
+    const np = r.nowPlaying
+    const nm = np && np.name ? np.name : ''
+    if (nm !== nowName) {
+      nowName = nm
+      paintMusic()
+    }
+
+    /* 刷新页面后接上正在放的那首：不接的话账本以为在放、耳朵里没声，
+     * 看起来就像「点歌成功但没声音」。只试一次，失败交给服务端切歌。 */
+    if (!auTrack && !auResumed && musicUnlocked && np && np.trackId) {
+      auResumed = true
+      await auPlayTrack({ id: np.trackId, songId: np.trackId })
+      if (np.positionSec > 2) {
+        try {
+          au.currentTime = Number(np.positionSec) || 0
+        } catch {}
+      }
+    }
+  } catch {
+    /* 播放器服务没起来时不要刷屏报错，顶栏那个点会一直是灰的 */
+  } finally {
+    auPolling = false
+  }
+}
+
+/* 每 1 秒取命令、每 2 秒报真实进度（服务端的 nowPlaying 以这个为准） */
+setInterval(auTick, 1000)
+setInterval(() => {
+  if (!auTrack) return
+  mPost('/client/report', {
+    trackId: auTrack,
+    positionSec: au.currentTime || 0,
+    durationSec: au.duration || 0,
+    playing: !au.paused,
+  }).catch(() => {})
+}, 2000)
+
+au.addEventListener('ended', async () => {
+  try {
+    const r = await mPost('/client/ended', { trackId: auTrack })
+    await auApply(r.commands)
+  } catch {}
+})
+
+au.addEventListener('error', () => {
+  if (!auTrack) return
+  mPost('/client/error', { why: 'audio 播放出错' }).catch(() => {})
+  setTimeout(async () => {
+    try {
+      const r = await mPost('/client/ended', { trackId: auTrack })
+      await auApply(r.commands)
+    } catch {}
+  }, 600)
+})
+
+$m('bSound').onclick = async () => {
+  /* 先看一眼有没有别的页面在取命令。两边同时取会互相偷（/client/poll 取走即清空），
+   * 所以这里先问一句，别让「点了开启声音，结果歌一半不出声」这种毛病重演。 */
+  try {
+    const st = await mApi('/state')
+    if (st && st.clientAlive) {
+      const goOn = confirm(
+        '检测到另一个播放页正在放音（多半是侧栏那个「备用播放页」）。\n\n' +
+          '两边同时会抢命令，点了之后请立刻把那个页面关掉。\n\n继续吗？'
+      )
+      if (!goOn) return
+    }
+  } catch {}
+
+  musicUnlocked = true
+  try {
+    localStorage.setItem('zy-music-unlocked', '1')
+  } catch {}
+  paintMusic()
+  try {
+    await au.play()
+  } catch {}
+  auTick()
+}
+
+/* 点顶栏那个音乐状态，去音乐页 */
+$m('mStat').onclick = () => { location.hash = '#/music' }
+
+/* 刷新后如果之前解锁过，先试着直接接上；被拦就等用户点 */
+if (musicUnlocked) setTimeout(() => au.play().catch(() => {}), 1200)
+paintMusic()
+</script>
+</body>
+</html>

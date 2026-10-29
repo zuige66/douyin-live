@@ -3,108 +3,106 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>大肥鱼 · 音乐播放器</title>
+<title>大肥鱼 · 备用播放页</title>
 <!--
-  这个页面才是真正出声的地方。
-  播放器服务（musicd.mjs）只记账、取直链、转命令；声音必须由浏览器放，
-  跟原来 DSH 里那个播放器一个原理 —— 区别只是这个页面由控制台自己发，
-  不需要 DSH。
+  ⚠️ 这是**备用**播放页，正常直播不用开它。
+     正常出声的是后台（http://127.0.0.1:18082），那边的 <audio> 一直在放。
 
-  必须一直开着（最小化可以，关掉就没声音了）。
+  为什么留这一页：node 不会出声，声音必须由一个开着的网页用 <audio> 放。
+  后台要是打不开 / 改坏了，还得有个地方能顶上去，不然整场静音没法救。
+
+  🔴 为什么默认「待机」而不是一打开就放：
+     /client/poll 是「取走即清空」—— 两个页面同时取同一个队列，命令只会落到
+     其中一方。以前这页一打开就开始取，后台也在取，结果观众点的歌有一半
+     被后台拿走、后台又没解锁放不出声，那首歌就静默消失了。
+     所以现在：先看 /state 的 clientAlive（只读，不带副作用），
+     有别人在放就只显示、不取；别人没了才允许点「接管放音」。
+
+  2026-10-29：配色从深紫改成浅色，跟后台 ui/theme.css 一套。
 -->
 <style>
-  :root {
-    --bg: #12101a;
-    --card: #1d1a28;
-    --line: #2e2a3d;
-    --fg: #ece9f5;
-    --dim: #9d97b5;
-    --acc: #c9a2ff;
-    --ok: #59d99a;
-    --bad: #ff7a7a;
+  :root{
+    color-scheme: light;
+    --bg:#f4f6f8; --surface-1:#ffffff; --surface-3:#eef1f5;
+    --border:#e6e9ef; --on-surface:#1f2225; --on-variant:#5c6470; --muted:#8a94a6;
+    --primary:#18a058; --primary-h:#128a4a; --primary-c:#e9f7ef; --on-primary-c:#0e7a45;
+    --warn:#d98b0b; --warn-c:#fdf4e3; --danger:#d03050; --danger-c:#fdecef;
+    --r-card:6px; --r-btn:4px; --r-tag:3px;
   }
-  * { box-sizing: border-box; }
-  body {
-    margin: 0;
-    min-height: 100vh;
-    background: var(--bg);
-    color: var(--fg);
-    font: 14px/1.5 system-ui, "Microsoft YaHei", sans-serif;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: 24px;
+  *,*::before,*::after{box-sizing:border-box}
+  body{
+    margin:0;min-height:100vh;background:var(--bg);color:var(--on-surface);
+    font:14px/1.5 "Google Sans",-apple-system,"Segoe UI","Microsoft YaHei",system-ui,sans-serif;
+    -webkit-font-smoothing:antialiased;
+    display:flex;align-items:flex-start;justify-content:center;padding:32px 24px 40px;
   }
-  .wrap { width: 100%; max-width: 520px; }
-  .bar {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    margin-bottom: 16px;
-    color: var(--dim);
-    font-size: 13px;
-  }
-  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--dim); flex: 0 0 auto; }
-  .dot.ok { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
-  .dot.bad { background: var(--bad); }
-  .bar .spacer { flex: 1; }
-  .bar input[type=range] { width: 96px; vertical-align: middle; accent-color: var(--acc); }
+  .wrap{width:100%;max-width:560px}
 
-  .now {
-    background: var(--card);
-    border: 1px solid var(--line);
-    border-radius: 16px;
-    padding: 18px;
-    display: flex;
-    gap: 16px;
-    align-items: center;
-  }
-  #cover {
-    width: 92px; height: 92px;
-    border-radius: 12px;
-    object-fit: cover;
-    background: #2a2639;
-    flex: 0 0 auto;
-  }
-  .meta { min-width: 0; flex: 1; }
-  .name { font-size: 17px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .artist { color: var(--dim); font-size: 13px; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .prog { height: 4px; background: #2a2639; border-radius: 2px; margin-top: 14px; overflow: hidden; }
-  .fill { height: 100%; width: 0%; background: var(--acc); transition: width .25s linear; }
-  .times { display: flex; justify-content: space-between; color: var(--dim); font-size: 12px; margin-top: 6px; }
+  /* 顶上那条「这是备用页」的提醒。用 block 不用 flex —— flex 会把
+     <b> 和 <span> 拆成两个独立列，两边各自换行，读起来像被切断的两句话。 */
+  .note{background:var(--warn-c);border:1px solid #f2e0bd;border-radius:var(--r-card);
+        padding:10px 12px;font-size:12px;line-height:1.65;color:#7a5306;margin-bottom:14px}
+  .note b{font-weight:600}
+  .note code{font-family:"Cascadia Mono",Consolas,monospace;font-size:11px;
+             background:#fff;border:1px solid #f2e0bd;border-radius:2px;padding:0 3px}
 
-  .queue {
-    margin-top: 14px;
-    background: var(--card);
-    border: 1px solid var(--line);
-    border-radius: 16px;
-    padding: 12px 16px;
-    max-height: 210px;
-    overflow: auto;
-  }
-  .queue h3 { margin: 0 0 8px; font-size: 13px; color: var(--dim); font-weight: 500; }
-  .qitem { display: flex; gap: 8px; padding: 4px 0; font-size: 13px; color: var(--dim); }
-  .qitem b { color: var(--fg); font-weight: 500; }
-  .empty { color: var(--dim); font-size: 13px; }
+  .bar{display:flex;align-items:center;gap:9px;margin-bottom:12px;
+       font-size:12px;color:var(--on-variant);min-height:28px}
+  .dot{width:7px;height:7px;border-radius:50%;background:#c9cfda;flex:none}
+  .dot.ok{background:var(--primary)}
+  .dot.warn{background:var(--warn)}
+  .dot.bad{background:var(--danger)}
+  .bar .spacer{flex:1}
 
-  #boot {
-    margin-top: 16px;
-    width: 100%;
-    padding: 14px;
-    border: 0;
-    border-radius: 14px;
-    background: var(--acc);
-    color: #1a1226;
-    font-size: 15px;
-    font-weight: 600;
-    cursor: pointer;
-  }
-  #boot:active { transform: scale(.99); }
-  .hint { color: var(--dim); font-size: 12px; margin-top: 10px; text-align: center; }
+  /* 音量：跟后台一套（18px 可点区，4px 轨道用伪元素画） */
+  input[type=range]{-webkit-appearance:none;appearance:none;width:110px;height:18px;
+    background:transparent;outline:none;cursor:pointer;vertical-align:middle}
+  input[type=range]::-webkit-slider-runnable-track{height:4px;border-radius:2px;background:var(--surface-3)}
+  input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:14px;height:14px;border-radius:50%;
+    background:var(--primary);border:2px solid var(--surface-1);
+    box-shadow:0 1px 2px rgba(16,24,40,.2);margin-top:-5px}
+  input[type=range]::-moz-range-track{height:4px;border-radius:2px;background:var(--surface-3)}
+  input[type=range]::-moz-range-thumb{width:12px;height:12px;border-radius:50%;
+    background:var(--primary);border:2px solid var(--surface-1)}
+  #volTxt{width:38px;text-align:right;font-variant-numeric:tabular-nums}
+
+  .now{background:var(--surface-1);border:1px solid var(--border);border-radius:var(--r-card);
+       padding:16px 18px;display:flex;gap:16px;align-items:center}
+  #cover{width:76px;height:76px;border-radius:4px;object-fit:cover;
+         background:var(--surface-3);flex:none}
+  .meta{min-width:0;flex:1}
+  .name{font-size:16px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .artist{color:var(--on-variant);font-size:13px;margin-top:2px;
+          white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .prog{height:4px;background:var(--surface-3);border-radius:2px;margin-top:14px;overflow:hidden}
+  .fill{height:100%;width:0%;background:var(--primary);transition:width .25s linear}
+  .times{display:flex;justify-content:space-between;color:var(--muted);font-size:12px;
+         margin-top:6px;font-variant-numeric:tabular-nums}
+
+  .queue{margin-top:12px;background:var(--surface-1);border:1px solid var(--border);
+         border-radius:var(--r-card);padding:12px 18px;max-height:210px;overflow:auto}
+  .queue h3{margin:0 0 8px;font-size:12px;font-weight:600;color:var(--muted);letter-spacing:.4px}
+  .qitem{display:flex;gap:8px;padding:3px 0;font-size:13px;color:var(--on-variant)}
+  .qitem b{color:var(--on-surface);font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .empty{color:var(--muted);font-size:13px}
+
+  #boot{margin-top:14px;width:100%;padding:12px;border:0;border-radius:var(--r-btn);
+        background:var(--primary);color:#fff;font:inherit;font-size:14px;font-weight:600;cursor:pointer}
+  #boot:hover{background:var(--primary-h)}
+  #boot:active{transform:scale(.995)}
+  #boot[disabled]{background:var(--surface-3);color:var(--muted);cursor:not-allowed}
+  #boot[disabled]:hover{background:var(--surface-3)}
+  .hint{color:var(--muted);font-size:12px;margin-top:10px;text-align:center;line-height:1.7}
 </style>
 </head>
 <body>
 <div class="wrap">
+  <div class="note">
+    <b>这是备用页。</b>
+    <span>正常直播不用开它 —— 后台（<code>127.0.0.1:18082</code>）自己会出声。
+      只有在后台打不开的时候，才在这里点「接管放音」。两边同时放会互相抢命令。</span>
+  </div>
+
   <div class="bar">
     <span id="dot" class="dot"></span>
     <span id="stat">连接中…</span>
@@ -129,8 +127,8 @@
     <div id="qlist" class="empty">队列是空的</div>
   </div>
 
-  <button id="boot">▶ 点这里启动播放</button>
-  <div class="hint">浏览器不让页面自己出声，必须点一次。点完之后就不用管了。</div>
+  <button id="boot">接管放音</button>
+  <div class="hint" id="hint">先看后台在不在放。浏览器不让页面自己出声，接管后点一次就行。</div>
 </div>
 
 <audio id="au" preload="auto"></audio>
@@ -141,8 +139,10 @@ const au = $('#au')
 
 let currentId = ''      // 形如 netease:123
 let currentSongId = ''  // 纯数字 id，取流用
-let unlocked = false
+let takingOver = false  // 是否已接管：只有接管了才去取命令队列
+let busyElsewhere = false // 服务端说「有别的客户端在取命令」
 let polling = false
+let watching = false
 
 const mmss = (sec) => {
   const s = Math.max(0, Math.floor(Number(sec) || 0))
@@ -167,6 +167,9 @@ function setStatus(text, cls) {
   $('#dot').className = 'dot' + (cls ? ' ' + cls : '')
 }
 
+const esc = (s) =>
+  String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c])
+
 function paintTrack(track) {
   currentId = String(track.id || track.trackId || '')
   currentSongId = String(track.songId || currentId.replace(/\D/g, ''))
@@ -177,51 +180,6 @@ function paintTrack(track) {
   $('#fill').style.width = '0%'
   $('#pos').textContent = '0:00'
   $('#dur').textContent = mmss((Number(track.durationMs) || 0) / 1000)
-}
-
-/** 放一首：先取直链，再交给 audio */
-async function playTrack(track) {
-  paintTrack(track)
-  let u
-  try {
-    u = await api('/url?id=' + encodeURIComponent(currentSongId) + '&quality=exhigh')
-  } catch (e) {
-    await post('/client/error', { why: '取直链失败：' + e.message })
-    return
-  }
-  if (!u || !u.url) {
-    await post('/client/error', { why: u && u.why ? u.why : '取不到直链' })
-    setStatus('这首歌取不到音源，跳过', 'bad')
-    // 直接报播完，让它自动跳下一首，别卡死
-    setTimeout(() => post('/client/ended', { trackId: currentId }).then(applyCommands), 800)
-    return
-  }
-  au.src = u.url
-  au.load()
-  try {
-    await au.play()
-    setStatus('播放中' + (u.trial ? '（试听片段）' : ''), 'ok')
-  } catch (e) {
-    /* 自动播放被拦：把启动按钮放回来，别假装在放 */
-    setStatus('被浏览器拦了，点下面的按钮', 'bad')
-    $('#boot').style.display = 'block'
-    $('#boot').textContent = '▶ 点这里启动播放'
-  }
-}
-
-async function applyCommands(list) {
-  for (const c of list || []) {
-    try {
-      if (c.type === 'play') await playTrack(c.track)
-      else if (c.type === 'pause') { au.pause(); }
-      else if (c.type === 'resume') { try { await au.play() } catch {} }
-      else if (c.type === 'volume') { au.volume = Math.min(1, Math.max(0, Number(c.value) || 0)); syncVol() }
-      else if (c.type === 'stop') { au.pause(); au.removeAttribute('src'); currentId = ''; currentSongId = ''; }
-      else if (c.type === 'queue') paintQueue(c.queue)
-    } catch (e) {
-      console.warn('命令执行失败', c, e)
-    }
-  }
 }
 
 function paintQueue(list) {
@@ -241,21 +199,116 @@ function paintQueue(list) {
     .join('')
 }
 
-const esc = (s) =>
-  String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c])
-
 function syncVol() {
   const v = Math.round((au.volume || 0) * 100)
   $('#vol').value = String(v)
   $('#volTxt').textContent = v + '%'
 }
 
-/* ── 轮询命令 ─────────────────────────────────────────────────── */
+/* ── 放一首：先取直链，再交给 audio ─────────────────────────────── */
+async function playTrack(track) {
+  paintTrack(track)
+  let u
+  try {
+    u = await api('/url?id=' + encodeURIComponent(currentSongId) + '&quality=exhigh')
+  } catch (e) {
+    await post('/client/error', { why: '取直链失败：' + e.message })
+    return
+  }
+  if (!u || !u.url) {
+    await post('/client/error', { why: u && u.why ? u.why : '取不到直链' })
+    setStatus('这首歌取不到音源，跳过', 'bad')
+    setTimeout(() => post('/client/ended', { trackId: currentId }).then(applyCommands), 800)
+    return
+  }
+  au.src = u.url
+  au.load()
+  try {
+    await au.play()
+    setStatus('已接管 · 在放' + (u.trial ? '（试听片段）' : ''), 'ok')
+  } catch {
+    /* 自动播放被拦：把按钮放回来，别假装在放 */
+    setStatus('被浏览器拦了，点下面按钮', 'bad')
+    $('#boot').style.display = 'block'
+    $('#boot').textContent = '点一下开始放'
+  }
+}
+
+async function applyCommands(list) {
+  for (const c of list || []) {
+    try {
+      if (c.type === 'play') await playTrack(c.track)
+      else if (c.type === 'pause') { au.pause() }
+      else if (c.type === 'resume') { try { await au.play() } catch {} }
+      else if (c.type === 'volume') { au.volume = Math.min(1, Math.max(0, Number(c.value) || 0)); syncVol() }
+      else if (c.type === 'stop') { au.pause(); au.removeAttribute('src'); currentId = ''; currentSongId = '' }
+      else if (c.type === 'queue') paintQueue(c.queue)
+    } catch (e) {
+      console.warn('命令执行失败', c, e)
+    }
+  }
+}
+
+/* ── 待机监视：只读 /state，绝不碰命令队列 ────────────────────────
+ * 这一步既能画界面（正在放什么、队列），又能判断「有没有别人在放」。
+ * /state 没有副作用，随便读。 */
+async function watch() {
+  if (watching) return
+  watching = true
+  try {
+    const st = await api('/state')
+    busyElsewhere = !!st.clientAlive && !takingOver
+
+    /* 待机时用服务端的账本把界面画出来（只读，不出声） */
+    if (!takingOver) {
+      const np = st.nowPlaying
+      if (np) {
+        paintTrack(np)
+        const d = Number(np.durationSec) || 0
+        const c = Number(np.positionSec) || 0
+        $('#fill').style.width = d ? Math.min(100, (c / d) * 100) + '%' : '0%'
+        $('#pos').textContent = mmss(c)
+        if (d) $('#dur').textContent = mmss(d)
+      }
+      paintQueue(st.queue)
+      if (typeof st.volume === 'number') {
+        $('#vol').value = String(Math.round(st.volume * 100))
+        $('#volTxt').textContent = Math.round(st.volume * 100) + '%'
+      }
+    }
+
+    paintGate()
+  } catch {
+    setStatus('连不上播放器服务', 'bad')
+    $('#boot').disabled = false
+  } finally {
+    watching = false
+  }
+}
+
+function paintGate() {
+  const btn = $('#boot')
+  if (takingOver) { btn.style.display = 'none'; return }
+  btn.style.display = 'block'
+  if (busyElsewhere) {
+    btn.disabled = true
+    btn.textContent = '后台正在放音 · 不用接管'
+    setStatus('待机 · 后台在放', 'ok')
+    $('#hint').textContent = '后台（18082）在出声，这页只负责显示。要换成这里放，先把后台关掉。'
+  } else {
+    btn.disabled = false
+    btn.textContent = '接管放音'
+    setStatus('待机 · 没有别的播放器', 'warn')
+    $('#hint').textContent = '后台没在放，可以点上面接管。接管后这页就成了出声的地方，别关。'
+  }
+}
+
+/* ── 取命令（只有接管之后才跑）─────────────────────────────────── */
 async function tick() {
-  if (polling) return
+  if (!takingOver || polling) return
   polling = true
   try {
-    const r = await api('/client/poll')
+    const r = await api('/client/poll?unlocked=1')
     await applyCommands(r.commands)
     if (!r.commands || !r.commands.length) {
       /* 没有新命令也要同步状态：页面刷新后接上正在放的那首 */
@@ -264,7 +317,7 @@ async function tick() {
         const u = await api('/url?id=' + encodeURIComponent(currentSongId)).catch(() => null)
         if (u && u.url) {
           au.src = u.url
-          if (unlocked) { try { await au.play() } catch {} }
+          try { await au.play() } catch {}
         }
       }
       if (typeof r.volume === 'number' && Math.abs((au.volume || 0) - r.volume) > 0.02) {
@@ -272,8 +325,8 @@ async function tick() {
         syncVol()
       }
     }
-    setStatus(unlocked ? '已连接' : '已连接（等你点启动）', 'ok')
-  } catch (e) {
+    setStatus('已接管 · 已连接', 'ok')
+  } catch {
     setStatus('连不上播放器服务', 'bad')
   } finally {
     polling = false
@@ -282,7 +335,7 @@ async function tick() {
 
 /* ── 上报真实进度（服务端的账本以这个为准）───────────────────── */
 async function report() {
-  if (!currentId) return
+  if (!takingOver || !currentId) return
   try {
     await post('/client/report', {
       trackId: currentId,
@@ -295,6 +348,7 @@ async function report() {
 
 /* ── 进度条 ───────────────────────────────────────────────────── */
 setInterval(() => {
+  if (!takingOver) return
   const d = au.duration || 0
   const c = au.currentTime || 0
   $('#fill').style.width = d ? Math.min(100, (c / d) * 100) + '%' : '0%'
@@ -304,6 +358,7 @@ setInterval(() => {
 
 /* ── 播完自动下一首 ───────────────────────────────────────────── */
 au.addEventListener('ended', async () => {
+  if (!takingOver) return
   try {
     const r = await post('/client/ended', { trackId: currentId })
     await applyCommands(r.commands)
@@ -314,7 +369,7 @@ au.addEventListener('ended', async () => {
 })
 
 au.addEventListener('error', async () => {
-  if (!currentId) return
+  if (!takingOver || !currentId) return
   const err = au.error
   await post('/client/error', { why: 'audio 错误 code=' + (err && err.code) })
   setStatus('这首放不出来，跳下一首', 'bad')
@@ -328,23 +383,32 @@ au.addEventListener('error', async () => {
 
 /* ── 用户交互 ─────────────────────────────────────────────────── */
 $('#boot').addEventListener('click', async () => {
-  unlocked = true
+  if ($('#boot').disabled) return
+  takingOver = true
   $('#boot').style.display = 'none'
   au.volume = Number($('#vol').value) / 100
   try { await au.play() } catch {}
+  setStatus('已接管 · 等命令', 'ok')
   tick()
 })
 
 $('#vol').addEventListener('input', () => {
+  /* 只改本机音量。真正的音量基准由后台 /media/config 的 audio.music 管，
+   * 走桥那条线，这里不去重复写，免得两个地方互相盖。 */
   au.volume = Number($('#vol').value) / 100
   $('#volTxt').textContent = $('#vol').value + '%'
 })
 
-/* ── 启动 ─────────────────────────────────────────────────────── */
+/* ── 启动：只有监视，不取命令 ─────────────────────────────────── */
+/* 封面拿不到时别留一个破图标，直接空着（网易云有些老歌没有封面） */
+$('#cover').addEventListener('error', () => { $('#cover').style.visibility = 'hidden' })
+$('#cover').addEventListener('load', () => { $('#cover').style.visibility = 'visible' })
+
 au.volume = 0.7
+setInterval(watch, 2000)
 setInterval(tick, 1000)
 setInterval(report, 2000)
-tick()
+watch()
 </script>
 </body>
 </html>

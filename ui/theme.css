@@ -1,0 +1,105 @@
+/* ════════════════════════════════════════════════════════════════════
+ * 公共主题（2026-10-29）
+ *
+ * 从「深色 M3 Expressive」换成「浅色后台风」，参照 SoybeanAdmin / Naive UI：
+ *   · 卡片靠 1px 边框分隔，不靠阴影和大圆角
+ *   · 圆角 4~6px（原来卡片 28px、按钮胶囊 999px）
+ *   · 主色 #18a058，浅绿容器 #e9f7ef 配深绿字 #0e7a45
+ *
+ * 规矩照旧：只用纯色，任何地方都不许出现渐变。
+ *
+ * 变量名沿用旧名（--surface / --surface-1 / --primary-c …），
+ * 这样四个页面里的 CSS 不用改选择器，只把 :root 换成本文件的 link 就行。
+ * ════════════════════════════════════════════════════════════════════ */
+:root{
+  /* 告诉浏览器用浅色原生控件 —— 不加这行，range 轨道和滚动条会按深色渲染，
+     在浅色页面上是刺眼的一条黑杠。 */
+  color-scheme: light;
+
+  /* 底色层级 */
+  --bg:#f4f6f8;
+  --surface:#f4f6f8;        /* 页面底 */
+  --surface-1:#ffffff;      /* 卡片 */
+  --surface-2:#f7f9fb;      /* 次级填充：stat 块、只读区 */
+  --surface-3:#eef1f5;      /* hover、按钮底 */
+  --surface-4:#d9dee7;      /* 深一点的边框 */
+  --border:#e6e9ef;         /* 标准分隔线 */
+  --border-2:#dfe4ec;
+
+  /* 文字 */
+  --on-surface:#1f2225;
+  --on-variant:#5c6470;
+  --muted:#8a94a6;
+
+  /* 主色 */
+  --primary:#18a058;
+  --primary-h:#128a4a;
+  --primary-c:#e9f7ef;      /* 浅绿容器：选中项、Tag、次按钮 */
+  --on-primary-c:#0e7a45;   /* 浅绿底上的深绿字 */
+  --on-primary:#ffffff;     /* 实心主色上的字 */
+
+  /* 语义色：实心色 + 同色系浅底 */
+  --warn:#d98b0b;
+  --warn-c:#fdf4e3;
+  --danger:#d03050;
+  --danger-c:#fdecef;
+  --info:#2080f0;
+  --info-c:#eaf3fe;
+
+  /* 圆角与阴影 */
+  --r-card:6px;
+  --r-btn:4px;
+  --r-tag:3px;
+  --shadow:0 1px 2px rgba(16,24,40,.05);
+}
+
+/* ── 基础 ───────────────────────────────────────────────────────── */
+*,*::before,*::after{box-sizing:border-box}
+
+/* ── 滑杆 ─────────────────────────────────────────────────────────
+ * 🔴 可点区域的高度必须给足（18px），轨道的 4px 用伪元素画。
+ *    直接给 input 设 height:4px 会让整个控件只有 4px 高 —— 滑块伸出去的那截
+ *    收不到点击，表现就是「拖不动」，2026-10-29 踩过一次。 */
+input[type=range]{
+  -webkit-appearance:none;appearance:none;
+  height:18px;background:transparent;outline:none;cursor:pointer;
+}
+input[type=range]::-webkit-slider-runnable-track{
+  height:4px;border-radius:2px;background:var(--surface-3);
+}
+input[type=range]::-webkit-slider-thumb{
+  -webkit-appearance:none;width:14px;height:14px;border-radius:50%;
+  background:var(--primary);border:2px solid var(--surface-1);
+  box-shadow:0 1px 2px rgba(16,24,40,.2);cursor:pointer;
+  margin-top:-5px; /* (4 - 14) / 2，让滑块压在轨道正中 */
+}
+input[type=range]::-moz-range-track{
+  height:4px;border-radius:2px;background:var(--surface-3);
+}
+input[type=range]::-moz-range-thumb{
+  width:12px;height:12px;border-radius:50%;background:var(--primary);
+  border:2px solid var(--surface-1);cursor:pointer;
+}
+
+/* ── 状态标签（替代以前那种「灰色小字跟在按钮后面」）─────────────── */
+.tag{display:inline-flex;align-items:center;gap:5px;height:22px;padding:0 7px;
+     border-radius:var(--r-tag);font-size:12px;font-weight:500;line-height:1;
+     background:var(--surface-3);color:var(--on-variant);white-space:nowrap;
+     font-variant-numeric:tabular-nums}
+.tag i{width:6px;height:6px;border-radius:50%;background:currentColor;flex:none}
+.tag.on{background:var(--primary-c);color:var(--on-primary-c)}
+.tag.warn{background:var(--warn-c);color:var(--warn)}
+.tag.bad{background:var(--danger-c);color:var(--danger)}
+.tag.info{background:var(--info-c);color:var(--info)}
+
+/* ── 键值行：左边名称、中间内容、右边状态 ─────────────────────── */
+.kv{display:grid;grid-template-columns:104px 1fr auto;align-items:center;
+    gap:14px;padding:12px 0;border-bottom:1px solid var(--border)}
+.kv:first-child{padding-top:0}
+.kv:last-child{border-bottom:none;padding-bottom:0}
+.kv .k{font-size:13px;color:var(--on-variant)}
+.kv .v{display:flex;align-items:center;gap:8px;font-size:13px;min-width:0}
+.kv .v .num{font-size:13px;font-weight:500;font-variant-numeric:tabular-nums}
+@media (max-width:720px){
+  .kv{grid-template-columns:1fr;gap:6px;align-items:start}
+}
