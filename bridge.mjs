@@ -2191,7 +2191,7 @@ async function boxState() {
   box = {
     ok: true,
     alive: !!r.clientAlive,
-    why: r.clientAlive ? '' : '播放器界面没开（DSH 里把音乐打开）',
+    why: r.clientAlive ? '' : '播放器界面没开（打开控制台 http://127.0.0.1:18082/ 那一页）',
     at: Date.now(),
     now: np,
     pending: Number(r.pending) || 0,
@@ -2672,7 +2672,7 @@ async function boxCmd(cmd, extra = {}) {
     boxSetVolume(extra.v)
     return { ok: true, src: 'box', why: '' }
   }
-  if (!box.alive) return { ok: false, src: 'box', why: box.why || '播放器界面没开（DSH 里把音乐打开）' }
+  if (!box.alive) return { ok: false, src: 'box', why: box.why || '播放器界面没开（打开控制台 http://127.0.0.1:18082/ 那一页）' }
   /* 音乐关着时，面板上的播放/暂停/切歌一律不执行 —— 否则点一下就把
    * 刚关掉的音乐又放起来了，而开关还显示"关着"。（vol 在上面已经放过。） */
   if (!musicOn) return { ok: false, src: 'box', why: '背景音乐关着（启动页可以打开）' }
