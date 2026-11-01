@@ -489,6 +489,26 @@
     </div>
 
     <div class="card">
+      <h2>声线</h2>
+      <div class="sub">edge-tts 在线合成 · 改完<b>下一句就生效</b>，不用重启桥</div>
+      <div class="row" style="margin-top:12px">
+        <select id="ttsPreset" style="flex:1"></select>
+      </div>
+      <div class="row" style="margin-top:10px">
+        <select id="ttsVoice" style="flex:1"></select>
+      </div>
+      <div class="rng"><label>语速</label><input type="range" id="ttsRate" min="-30" max="20" step="1"><span class="val" id="ttsRateV">—</span></div>
+      <div class="rng"><label>音高</label><input type="range" id="ttsPitch" min="-30" max="40" step="2"><span class="val" id="ttsPitchV">—</span></div>
+      <div class="row wrap" style="margin-top:16px">
+        <button class="btn pri" id="btnTtsSave">保存声线</button>
+        <button class="btn ghost" id="btnTtsTry">试听一句</button>
+        <span class="hint" id="ttsTryTip" style="margin-top:0"></span>
+      </div>
+      <audio id="ttsAudio" style="display:none"></audio>
+      <div class="hint">试听是从<b>本机扬声器</b>出声的 —— 直播中点它，观众也会听见。想安静试就关播。</div>
+    </div>
+
+    <div class="card">
       <h2>背景音乐</h2>
       <div class="swrow">
         <div class="lbl">总开关<div class="tip">关掉会把播放器按停并清空快照，不是只静音</div></div>
@@ -1691,6 +1711,70 @@ async function loadMedia() {
     $(id + 'V').textContent = v + '%'
   }
   swOn('musicOnSw', !!cfg.musicOn)
+  ttsFill(cfg.tts || {})
+}
+
+/* 只留女声（2026-10-30 主人明确「男生音色不要」）。
+ * 男声（云希/云夏/云健/云扬）从下拉里撤掉了 —— 桥那边的校验仍是通用正则，
+ * 手改 media.json 填男声也不会崩，只是设置页不再给这个选项。 */
+const TTS_VOICES = [
+  ['zh-CN-XiaoxiaoNeural', '晓晓 · 温暖（女）'],
+  ['zh-CN-XiaoyiNeural', '晓伊 · 活泼（女）'],
+  ['zh-CN-liaoning-XiaobeiNeural', '晓北 · 东北话（女）'],
+  ['zh-CN-shaanxi-XiaoniNeural', '晓妮 · 陕西话（女）'],
+  ['zh-TW-HsiaoChenNeural', '晓臻 · 台湾腔（女）'],
+  ['zh-TW-HsiaoYuNeural', '晓雨 · 台湾腔（女）'],
+]
+const TTS_PRESETS = [
+  ['warm', '温柔 · 晓晓原调（现在用的）', 'zh-CN-XiaoxiaoNeural', -8, 0],
+  ['sweet', '甜妹 · 晓伊原调', 'zh-CN-XiaoyiNeural', -8, 0],
+  ['youth', '少女 · 晓伊升调', 'zh-CN-XiaoyiNeural', -8, 20],
+  ['soft', '软糯 · 晓晓慢柔', 'zh-CN-XiaoxiaoNeural', -14, 15],
+  ['north', '东北丫头 · 晓北', 'zh-CN-liaoning-XiaobeiNeural', -8, 0],
+  ['shaanxi', '陕西妹子 · 晓妮', 'zh-CN-shaanxi-XiaoniNeural', -8, 0],
+  ['tw', '台湾腔 · 晓臻', 'zh-TW-HsiaoChenNeural', -8, 0],
+]
+
+const ttsRateStr = (n) => (n >= 0 ? '+' : '') + n + '%'
+const ttsPitchStr = (n) => (n >= 0 ? '+' : '') + n + 'Hz'
+
+/** 当前三个控件拼出的组合（提交和试听共用一份）。 */
+function ttsNow() {
+  return {
+    voice: $('ttsVoice').value,
+    rate: ttsRateStr(+$('ttsRate').value),
+    pitch: ttsPitchStr(+$('ttsPitch').value),
+  }
+}
+
+/** 控件值反查预设 —— 对不上就是「自定义」。 */
+function ttsSyncPreset() {
+  const n = ttsNow()
+  const hit = TTS_PRESETS.find((p) => p[2] === n.voice && ttsRateStr(p[3]) === n.rate && ttsPitchStr(p[4]) === n.pitch)
+  $('ttsPreset').value = hit ? hit[0] : ''
+}
+
+function ttsFill(t) {
+  const voice = t.voice || 'zh-CN-XiaoxiaoNeural'
+  const rate = Number.parseInt(t.rate, 10) || 0   // '-8%' → -8
+  const pitch = Number.parseInt(t.pitch, 10) || 0 // '+20Hz' → 20
+  /* 下拉只建一次；每次都重建会把用户正在操作的选中项刷掉 */
+  if (!$('ttsVoice').options.length) {
+    $('ttsVoice').innerHTML = TTS_VOICES
+      .map(([v, label]) => `<option value="${v}">${esc(label)}</option>`).join('')
+    $('ttsPreset').innerHTML = '<option value="">自定义（下面手动调）</option>' +
+      TTS_PRESETS.map(([k, label]) => `<option value="${k}">${esc(label)}</option>`).join('')
+  }
+  /* 配置里的 voice 不在清单里（手改了 media.json）也要能显示出来 */
+  if (![...$('ttsVoice').options].some((o) => o.value === voice)) {
+    $('ttsVoice').insertAdjacentHTML('beforeend', `<option value="${esc(voice)}">${esc(voice)}</option>`)
+  }
+  $('ttsVoice').value = voice
+  $('ttsRate').value = rate
+  $('ttsPitch').value = pitch
+  $('ttsRateV').textContent = ttsRateStr(rate)
+  $('ttsPitchV').textContent = ttsPitchStr(pitch)
+  ttsSyncPreset()
 }
 
 function renderTiers(tiers) {
@@ -1890,6 +1974,61 @@ $('btnAudio').onclick = async () => {
     }, 12000)
     toast(o.ok ? '音量存好了，立刻生效' : (o.error || '存不下'))
   } catch (e) { toast('存不下：' + e.message) } finally { $('btnAudio').disabled = false }
+}
+
+/* ── 声线：预设 / 手动 / 试听 / 保存 ── */
+$('ttsPreset').onchange = () => {
+  const p = TTS_PRESETS.find((x) => x[0] === $('ttsPreset').value)
+  if (!p) return
+  $('ttsVoice').value = p[2]
+  $('ttsRate').value = p[3]
+  $('ttsPitch').value = p[4]
+  $('ttsRateV').textContent = ttsRateStr(p[3])
+  $('ttsPitchV').textContent = ttsPitchStr(p[4])
+  $('ttsTryTip').textContent = ''
+}
+for (const id of ['ttsVoice', 'ttsRate', 'ttsPitch']) {
+  $(id).oninput = () => {
+    $('ttsRateV').textContent = ttsRateStr(+$('ttsRate').value)
+    $('ttsPitchV').textContent = ttsPitchStr(+$('ttsPitch').value)
+    ttsSyncPreset()
+  }
+}
+
+$('btnTtsSave').onclick = async () => {
+  const b = $('btnTtsSave')
+  b.disabled = true
+  try {
+    const n = ttsNow()
+    const o = await postT('/media/config', { tts: n }, 12000)
+    toast(o.ok
+      ? `声线存好了 · ${n.rate} ${n.pitch} · 下一句生效`
+      : (o.error || '存不下'))
+  } catch (e) { toast('存不下：' + e.message) } finally { b.disabled = false }
+}
+
+$('btnTtsTry').onclick = async () => {
+  const b = $('btnTtsTry'), tip = $('ttsTryTip')
+  b.disabled = true
+  tip.textContent = '合成中…（新组合第一次约 2 秒）'
+  try {
+    const o = await postT('/tts/preview', ttsNow(), 25000)
+    if (!o.ok) { tip.textContent = '没合成出来：' + (o.error || '不知道为啥'); return }
+    const au = $('ttsAudio')
+    au.src = o.url + '?t=' + Date.now()
+    /* 点按钮算一次用户交互，正常不会被浏览器的自动播放策略拦。
+     * 真被拦了就把它显出来，让人自己点 —— 别让按钮看起来「没反应」。 */
+    try {
+      au.style.display = 'block'
+      au.controls = true
+      await au.play()
+      tip.textContent = `正在放 · ${Number(o.dur).toFixed(1)}s · ${o.cached ? '缓存' : (o.ms + 'ms')}`
+    } catch {
+      tip.textContent = `合成好了（${Number(o.dur).toFixed(1)}s），点下面的播放条听`
+    }
+  } catch (e) {
+    tip.textContent = '没合成出来：' + (e.name === 'AbortError' ? '超时' : e.message)
+  } finally { b.disabled = false }
 }
 
 /* ══════════════════ ⑨ 诊断 ══════════════════ */

@@ -344,11 +344,20 @@ const server = http.createServer(async (req, res) => {
        *    原来只有 /client/report 打心跳，而面板「没在放歌就不报进度」——
        *    于是**空闲时 clientAt 永远是 0**，桥判定「播放器界面没开」，
        *    观众点歌直接回「播放器关着呢」。页面明明开着也没用。
-       *    poll 是每 1 秒无条件发的，用它当心跳才对得上「界面在不在」。 */
+       *    poll 是每 1 秒无条件发的，用它当心跳才对得上「界面在不在」。
+       *
+       * 🔴 peek=1：只打心跳、不取命令（2026-10-31 加）。
+       *    起因：index.html 的 auTick 里 `if (!musicUnlocked) return`，
+       *    解锁状态一旦因为「浏览器拒绝自动播放」被置回 false，心跳就永远不发了
+       *    → 桥 25 秒后判定「播放器界面没开」→ 切本机 QQ 音乐 → 观众那边静音。
+       *    页面明明还开着，只是一个接口同时管着「报活」和「取命令」，不敢在
+       *    未解锁时发（取了命令也放不出声，还会把 18083 那个独立播放页的命令偷走）。
+       *    现在拆开：未解锁的页面用 peek 报活，一个字节的命令都不拿。 */
       S.clientAt = Date.now()
       const q = url.searchParams
       if (q.has('unlocked')) S.clientUnlocked = q.get('unlocked') === '1'
-      const cmds = S.commands.splice(0, S.commands.length)
+      const peek = q.get('peek') === '1'
+      const cmds = peek ? [] : S.commands.splice(0, S.commands.length)
       return json(res, 200, { commands: cmds, volume: S.volume, nowPlaying: nowPlaying() })
     }
 

@@ -509,9 +509,27 @@ async function auApply(list) {
 
 async function auTick() {
   if (auPolling) return
-  /* 没解锁就一次都别发：一是拿了命令也放不出声（自动播放策略），
-   * 二是会把 18083 那个独立播放页的命令偷走、unlocked 冲成 0。 */
-  if (!musicUnlocked) return
+  /* 🔴 未解锁也要报活（2026-10-31 修）。
+   *
+   * 原来这里是 `if (!musicUnlocked) return` —— 连心跳一起停了。
+   * 而 `musicUnlocked` 会在**切歌时 au.play() 被浏览器拒**之后置回 false，
+   * 于是页面明明还开着，心跳却再也不发 → 桥 25 秒后判定「播放器界面没开」
+   * → 切本机 QQ 音乐 → 观众那边直接静音。日志里那句
+   * 「播放器连不上超过 25 秒（播放器界面没开）」有一半是这么来的。
+   *
+   * 现在用 peek：只打 clientAt，不取命令 —— 没解锁的页面拿了命令也放不出声，
+   * 还会把 18083 那个独立播放页的命令偷走，所以一条都不拿。 */
+  if (!musicUnlocked) {
+    auPolling = true
+    try {
+      await mApi('/client/poll?peek=1')
+    } catch {
+      /* 播放器服务没起来时不要刷屏 */
+    } finally {
+      auPolling = false
+    }
+    return
+  }
   auPolling = true
   try {
     /* unlocked 一起带上：服务端靠它区分「页面开着」和「能出声」。

@@ -17,6 +17,10 @@
  */
 
 const MAX_LEN = 20
+/* 深度问题放宽到 40 字（2026-10-29 主人定：C3 + C1）。
+ * 40 字一条字幕放不下（900px / 34px ≈ 21 字），所以 bridge 会调 speakSplit()
+ * 拆成两段，分两次上字幕、两次合成 —— 听着是两句连贯的话，不是一句被截半。 */
+const MAX_LEN_DEEP = 40
 
 import fs from 'node:fs'
 import os from 'node:os'
@@ -34,6 +38,10 @@ let clipStat = { soft: 0, hard: 0 }
 /* 断句的句读。中文标点 + 空格，不含「…」（它本身常常是被切出来的）。 */
 const BREAK_RE = /[，。！？、；：,.!?;:；～~ ]/
 
+/* 说话前的铺垫。截断时优先砍这些 —— 砍掉不伤句意，
+ * 正好能腾出 3~8 个字给后面真正的结论（见 clip）。 */
+const LEAD_RE = /^(我跟你说|我跟你讲|其实呢|其实|说实话|说真的|讲真|老实说|怎么说呢|话说|对了|然后呢|那个|嗯|诶|哎呀|喏)[，,、。\s~～]+/
+
 export function clip(s, n = MAX_LEN) {
   s = String(s || '').replace(/\s+/g, ' ').trim()
   /* 去掉孤立代理字符（2026-10-27）。
@@ -43,6 +51,44 @@ export function clip(s, n = MAX_LEN) {
    * tts.py 常驻进程当场退出 → 桥退回一次性 spawn → 屏幕上闪黑窗。 */
   s = s.replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/g, '').replace(/(^|[^\uD800-\uDBFF])([\uDC00-\uDFFF])/g, '$1')
   if (s.length <= n) return s
+
+  /* 🔴 2026-10-29 主人：「20 字硬砍，后半句没了」。
+   * 根因是原来**从后往前找最后一个句读**，断出来的一定是前半句 ——
+   * 而模型的结论通常在后半句：「不是双一流，但控制科学是A-，广东就这一家」，
+   * 砍完只剩「不是双一流」这种铺垫，等于把答案扔了。
+   * 现在改成两步：先砍铺垫，再从后往前贪心拼，**保住结论**。 */
+  const lead = s.match(LEAD_RE)
+  if (lead) {
+    const rest = s.slice(lead[0].length).replace(/[，。！？、；：,.!?;:～~\s]+$/, '')
+    if (rest.length >= 6 && rest.length <= n) {
+      clipStat.soft++
+      console.log(`  [clip] 砍掉铺垫「${lead[0]}」，留 ${rest.length} 字：${rest.slice(0, 26)}`)
+      return rest
+    }
+  }
+
+  /* 按句读切成小句（只要正文，不要分隔符），从后往前贪心拼。
+   * 拼到再加一句就超长为止 —— 最后留下的就是结论那半句。 */
+  const segs = []
+  const rx = /[^，。！？、；：,.!?;:～~\s]+/g
+  let mm
+  while ((mm = rx.exec(s))) segs.push(mm[0])
+  if (segs.length > 1) {
+    let keep = []
+    for (let i = segs.length - 1; i >= 0; i--) {
+      const cand = [segs[i], ...keep].join('，')
+      if (cand.length > n) break
+      keep = [segs[i], ...keep]
+    }
+    const got = keep.join('，')
+    /* 只保住个小尾巴的时候不敢用：观众听到的是半句没有主语的话。
+     * 要求保下来的至少占原句一半 —— 这条是防止「广东就这一家」被单独说出来。 */
+    if (got.length >= 6 && got.length >= s.length * 0.5) {
+      clipStat.soft++
+      console.log(`  [clip] 超 ${n} 字，保住结论断到 ${got.length} 字：${s.slice(0, 26)}…`)
+      return got
+    }
+  }
 
   /* 2026-10-28 改：**先按句读断，不要硬切**。
    * 实测「详细解释一下为什么这所学校不是双一流」回的是
@@ -83,6 +129,32 @@ export function clipStats() {
 /** 点歌的「标准写法」。屏幕上、回复里、设置页提示都引用这一个字符串，改一处全改。 */
 export const SONG_TIP = '点歌，歌名，歌手（可不填）'
 
+/** 点歌的触发词。**意图判断和取歌名共用这一份** —— 分两处写就必然对不上。
+ *
+ *  🔴 2026-10-29 23:31 漏过「点一首」：Rabbit.RAW 说「点一首《雨爱（司凤版）》」，
+ *     `RE.song` 里只有「点歌/来一首/唱一首」，**没有「点一首」** →
+ *     这句话压根没进点歌分支 → 一次搜索都没发 →
+ *     她回了句「雨爱，司凤版，排第二首啦」，歌一首都没排上。
+ *     观众眼里就是「点了，但没点上」，而且她还说排上了，最坏的那种。
+ *
+ *  写成 `X + 可选数量词 + 首` 而不是逐个罗列，以后「点两首」「来三首」也不用再改。 */
+const SONG_VERB = [
+  '点歌', '求歌',
+  '点(?:一|两|几|\\d+)?首',
+  '来(?:一|两|几|\\d+)?首',
+  '放(?:一|两|几|\\d+)?首',
+  '播(?:一|两|几|\\d+)?首',
+  '唱(?:一|两|几|\\d+)?首',
+  '唱个', '想听', '我要听',
+  /* 「点《雨爱》」—— 有书名号时连「首」都不写 */
+  '点(?=[《「"【])', '放(?=[《「"【])', '来(?=[《「"【])',
+].join('|')
+
+/** 「来首歌」「想听点啥」这种**没说歌名**的请求。
+ *  以前会把「歌」当成歌名去搜，回一句「搜到 8 首，但都不叫这个」——
+ *  观众眼里就是「我说了点歌，它说搜不到歌」。当没听出来、直接问他要哪首才对。 */
+const SONG_PLACEHOLDER = /^(歌|首歌|歌曲|音乐|曲子|歌儿|歌呗|曲儿|啥|随便|都行|什么都行|你唱|你唱首)$/
+
 /** 观众在问「怎么点歌」，不是真点歌。
  *
  *  🔴 必须单独判：`点歌` 这两个字同时出现在「点歌，孤勇者」和「怎么点歌」里，
@@ -117,26 +189,87 @@ function splitTa(raw) {
  *   「点歌，孤勇者」           → 孤勇者
  *   「点歌，孤勇者，陈奕迅」    → 孤勇者 / 陈奕迅
  *   「点歌《孤勇者》」          → 孤勇者
+ *   「点歌cry for me」         → cry for me（英文歌名里的空格不许吃掉）
  * 歌手不是必填，但它能显著提高搜索命中率（同名歌太多），所以照单全收。
  */
 export function songAsk(text) {
   const t = String(text || '')
+  const done = (title, artist = '') => {
+    const s = String(title || '').trim()
+    if (!s || SONG_PLACEHOLDER.test(s)) return { title: '', artist: '' }
+    /* 「想听你唱首歌」→ 正则按「想听」切出来的歌名是「你唱首歌」，
+     * 那不是歌名，是一句请求。拿它去搜必然搜不到，还回一句「搜不到你唱首歌诶」。
+     * 剥掉「你/我 + 来/唱/放/点 + 一/两 + 首 + 歌」这一层壳，空了就当成没说歌名。 */
+    if (!s.replace(/^(?:大肥鱼|你|我|他|她)?(?:来|唱|放|点|播)?(?:一|两|几)?(?:首)?(?:歌|曲子?)?$/, '')) {
+      return { title: '', artist: '' }
+    }
+    /* 🔴 剥出来的是个语气词（2026-10-31）。
+     * 实测：「日语更好听耶，还不如不点歌呢」→ 正则按「点歌」切出「呢」，
+     * 真当歌名去搜，回「好嘞，呢加进歌单了」。
+     * 这里**不硬拒**，只标一个 `weak`：这是「可能抽错了」，交给模型判这句到底
+     * 在不在点歌（见 songIntent）。单字中文歌名确实存在（《光》《海》），
+     * 所以只认语气词这一小撮，别的一律照旧走正则快路，不加延迟。 */
+    if (/^[呢吧啊呀哦嗯啦哈么嘛咯哎诶嘿哟哇嘞囖]{1,2}$/.test(s)) {
+      return { title: '', artist: '', weak: true }
+    }
+    return { title: s, artist: String(artist || '').trim() }
+  }
   // 书名号 / 引号里的一律当歌名，里面的逗号不拆
-  const br = t.match(/[《「"'【]([^》」"'】]{1,24})[》」"'】]/)
-  if (br) return { title: br[1].trim(), artist: '' }
+  /* 🔴 2026-10-31 事故：观众发逻辑题
+   *   「有3个盒子，分别标记：【苹果】、【橙子】、【苹果+橙子】。所有标签全部贴错了…」
+   *   → 这条分支抽出「苹果」→ 真去搜，排进歌单《苹果》，回「苹果加进歌单了」。
+   *
+   * 根子在**先认书名号、后看整句**：中文里【】大量用于强调/标注，压根不是书名号，
+   * 任何带方括号的句子都会被当成「点了一首叫 XXX 的歌」。
+   *
+   * 现在加了上下文门槛：括号外面得**有歌的影子**才认 ——
+   *   ① 整句命中 RE.song（点歌 / 来首 / 想听 / 点《…》 …）
+   *   ② 或括号外面还剩 唱/放/播/点/听/歌/曲 这类字（「你会唱《晴天》吗」）
+   * 一个都没有 ⇒ 这不是点歌，把书名号还给人家当标点用。
+   * 剩下的长句会落到 looksSongish → 模型兜底，判得出来。 */
+  const br = t.match(/[《「"'【]([^》」"'】]{1,40})[》」"'】]/)
+  if (br) {
+    const outside = t.replace(br[0], '')
+    /* 整句就是个书名号（「《晴天》」）—— 这是最常见的点歌写法之一，走快路。 */
+    const bare = !outside.replace(/[，,、。．.！!？?~～\s]/g, '')
+    if (bare || RE.song.test(t) || /[歌曲唱放播点听]/.test(outside)) return done(br[1])
+  }
   /* 🔴 关键词后面要先吃掉标点（2026-10-27 修）。
    * 「点歌，最佳损友」原来一个字符都匹配不到 —— 逗号既不在 [：:\s] 里，
    * 也不在捕获组的排除集里，整个正则失败 → 歌名是空串 →
    * 桥那边 `if (want)` 为假，**一次 next 都没发**，她只回了句
    * 「想听什么，直接打歌名」。观众眼里就是「点了歌，一点反应都没有」。
-   * 实测日志：13:50:40 💬 点歌，最佳损友 → 13:50:43 🗣 想听什么，直接打歌名。 */
-  const m = t.match(
-    /(?:点歌|求歌|来一首|唱一首|唱个|想听|放一首)[：:，,、。.．!！?？~～\s-]*([^\s，,。！!？?、]{1,24})(?:[，,、]\s*([^\s，,。！!？?、]{1,16}))?/
-  )
+   * 实测日志：13:50:40 💬 点歌，最佳损友 → 13:50:43 🗣 想听什么，直接打歌名。
+   *
+   * 🔴 2026-10-29：原来歌名的捕获组是 `[^\s…]{1,24}` —— **遇到空格就断**，
+   * 于是英文歌名只剩第一个词。实测日志：
+   *   20:27:20 💬 星落旅途：点歌cry for me → 🎵 点歌「cry」没成
+   * 现在先整段捞出来，再决定怎么拆（见下面 ASCII 那一段）。 */
+  const m = t.match(new RegExp(`(?:${SONG_VERB})[：:，,、。.．!！?？~～\\s-]*(.+)$`))
   if (!m) return { title: '', artist: '' }
-  const tail = String(m[2] || '').trim()
-  if (tail) return { title: m[1].trim(), artist: tail }
-  return splitTa(m[1])
+  /* 句末标点之后的全扔掉（「点歌，晴天。谢谢」→ 晴天） */
+  const rest = String(m[1] || '').split(/[。！!？?~～]/)[0].trim()
+  if (!rest) return { title: '', artist: '' }
+
+  /* 有逗号/顿号 = 观众按「歌名，歌手」写的，它是最可靠的分界 */
+  const seg = rest.split(/[，,、]/).map((x) => x.trim()).filter(Boolean)
+  if (seg.length >= 2) return done(seg[0].slice(0, 40), seg[1].slice(0, 24))
+  const one = seg[0] || ''
+
+  /* 没有逗号：
+   *   · 整段是 ASCII（英文歌名）→ **空格是歌名的一部分**，整段留着。
+   *     「cry for me」「Star Crossing Night」都靠这一条。
+   *   · 开头是 ASCII 字母、后面跟中文 → 英文歌名 + 中文歌手，
+   *     「点歌 Cry Me a River 陈奕迅」能拆成 歌名/歌手。
+   *   · 其余（中文歌名）→ 沿用老规矩取第一个词。
+   *     中文歌名里几乎不会有空格，观众「点歌 孤勇者 陈奕迅」那种空格写法，
+   *     全吃成「孤勇者 陈奕迅」反而搜不准，所以这条不动。 */
+  const asc = one.match(/^[\x20-\x7E]+/)
+  if (asc && /[A-Za-z]/.test(asc[0]) && asc[0].trim().length >= 2) {
+    return done(asc[0].trim().slice(0, 40), one.slice(asc[0].length).slice(0, 24))
+  }
+  const st = splitTa(one.split(/\s+/)[0].slice(0, 24))
+  return done(st.title, st.artist)
 }
 
 /** 只要歌名。老调用点还在用，行为跟以前一样。 */
@@ -159,7 +292,189 @@ const SONG_TALK = /点歌台|点歌列表|点歌队列|队列/
 export function isSongRequest(text) {
   const t = String(text || '')
   if (SONG_TALK.test(t)) return false
-  return RE.song.test(t)
+  if (!RE.song.test(t)) return false
+  /* 只抽到一个语气词（「还不如不点歌呢」→「呢」）：压根没听出歌名，
+   * 别占点歌队列。这里同步判不了，就先当聊天排队 ——
+   * 真正切不切由 replyWorker 里的 songIntent 决定（那条会问模型）。 */
+  if (songAsk(t).weak) return false
+  /* 只提了一嘴「歌名/什么歌」、又没听出歌名、还是一整句话 —— 那就是在聊这件事，
+   * 不是点歌。2026-10-29 23:31 观众反馈「我发现个问题 歌名有空格的话 他不识别」
+   * 就是被这句里的「歌名」带进点歌分支的，结果她回了一段点歌格式，没回答人家。
+   * 真点歌一定带得出歌名，所以「没歌名 + 长句」这条卡得住。 */
+  if (!songAsk(t).title && t.trim().length > 12) return false
+  return true
+}
+
+/* ------------------------------------------------- 点歌：正则快路 + 模型兜底 */
+/**
+ * 为什么要有这一层（2026-10-30 主人定「混合试试」）
+ *
+ * 点歌链路原来**一次模型都没调**，意图和歌名全是正则。正则的毛病是换个说法就瞎：
+ *   20:27 「点歌cry for me」        → 只捞到「cry」（空格被当断点）
+ *   23:31 「点一首《雨爱（司凤版）》」→ 压根没匹配上，一次搜索都没发，
+ *                                      她还回了句「排第二首啦」——最坏那种
+ *
+ * 现在分两段：
+ *   1. 正则先走（95% 的说法，0 延迟，出错时日志一眼看得出原因）
+ *   2. 正则没命中、但句子**像**在点歌 → 问一次模型，只要它给出 JSON：
+ *      {song, title, artist}。**必须拿到非空歌名才真去搜**，拿不到就当没听出来，
+ *      回一句「想听哪首」—— 不许再出现「说了排上、其实一次没搜」。
+ *
+ * 代价：那 5% 的弹幕会多等 1~2 秒（只在点歌时，聊天不受影响）。
+ */
+
+/** 正则没命中时的初筛：这句话像不像在点歌。
+ *  **故意收得紧** —— 夸歌、聊歌一天几十条，每条都去问模型等于白白慢 1.5 秒。
+ *
+ *  四档，任一命中才值得花那一次模型调用：
+ *    ① 有书名号（《》《「》—— 几乎一定在说作品名）
+ *    ② 请求动词 + 歌/曲/音乐（「放个周杰伦的歌」）
+ *    ③ 讨要式 + 音乐词（「给我整一首」「能不能来点」）
+ *       或者「有没有XX」—— 直播间里这句九成是在问某首歌
+ *    ④ 短句（≤15 字）带音乐词，且不是在夸歌/聊歌（见 SONG_CHAT）
+ *
+ *  ⚠️ 误判成"像"的代价只是多等 1 秒、模型回一句 song:false；
+ *     漏判的代价是观众点了歌、一次搜索都没发。所以宁可松一点。 */
+const SONG_CHAT = /真好听|好听|难听|不错|喜欢这|什么歌|歌名|歌单|歌词|歌手|唱歌|唱得/
+const SONG_ASK_WORD = /有没有|有木有|有无|帮我|给我|麻烦|能不能|可不可以|可以|整|安排|找|搜/
+const SONG_MUSIC = /歌|曲|音乐|首/
+
+export function looksSongish(text) {
+  const t = String(text || '').trim()
+  if (!t || t.length > 40) return false
+  if (/[《「『"“【]/.test(t)) return true
+  if (/(?:点|来|放|播|唱|求|要|想).{0,6}(?:歌|曲|音乐)/.test(t)) return true
+  if (/(?:歌|曲|音乐).{0,6}(?:点|来|放|播|唱|求)/.test(t)) return true
+  if (SONG_ASK_WORD.test(t) && (SONG_MUSIC.test(t) || /(?:有没有|有木有|有无).{2,}$/.test(t))) return true
+  if (t.length <= 15 && SONG_MUSIC.test(t) && !SONG_CHAT.test(t)) return true
+  return false
+}
+
+/** 给模型看的规矩。**输出必须是一行 JSON**，别的话一律当失败。 */
+const SONG_SYS = `你在判断抖音直播间的弹幕是不是在「点歌」（请求主播放一首具体的歌）。
+只输出一行 JSON，不要解释、不要代码块、不要多余的字：
+{"song":true,"title":"歌名","artist":"歌手"}
+
+规则：
+1. 观众请求放/播/唱某首歌，或直接给出一个歌名 → song:true，title 填歌名，artist 知道才填。
+2. 只是夸歌、聊歌、问怎么点歌、问点歌台有什么 → song:false，title 和 artist 都留空串。
+3. 说了要点歌但没给歌名（「来首歌」「随便放首」）→ song:true，title 留空串。
+4. title 按观众原话里的写法照抄，不要补全、不要猜一个不存在的歌。
+5. 拿不准是不是歌名，就 song:false。
+
+例子：
+「点一首雨爱」→ {"song":true,"title":"雨爱","artist":""}
+「来首周杰伦的晴天」→ {"song":true,"title":"晴天","artist":"周杰伦"}
+「有没有陈奕迅的富士山下」→ {"song":true,"title":"富士山下","artist":"陈奕迅"}
+「随便来首歌吧」→ {"song":true,"title":"","artist":""}
+「这首歌真好听」→ {"song":false,"title":"","artist":""}
+「你会唱英文歌吗」→ {"song":false,"title":"","artist":""}
+「点歌台怎么用」→ {"song":false,"title":"","artist":""}`
+
+/** 兜底的账本（诊断页能看到到底叫了几次、判成几次，别靠猜） */
+const songLlm = { ask: 0, yes: 0, no: 0, fail: 0, cool: 0, last: '' }
+
+export function songLlmStats() {
+  return { ...songLlm }
+}
+
+/** 问一次模型：是不是点歌、点的哪首。超时/坏 JSON 一律抛，由上层当没听懂。 */
+async function llmSong(r, text, timeoutMs) {
+  const ctl = new AbortController()
+  const timer = setTimeout(() => ctl.abort(), timeoutMs)
+  const headers = { 'content-type': 'application/json' }
+  if (r.key) headers.authorization = `Bearer ${r.key}`
+  const body = {
+    model: r.model,
+    temperature: 0, // 判定要稳，不要发挥
+    max_tokens: 80,
+    messages: [
+      { role: 'system', content: SONG_SYS },
+      { role: 'user', content: `弹幕：${text}` },
+    ],
+  }
+  if (/deepseek/i.test(r.base)) body.thinking = { type: 'disabled' }
+  try {
+    const res = await fetch(`${r.base}/chat/completions`, {
+      method: 'POST',
+      signal: ctl.signal,
+      headers,
+      body: JSON.stringify(body),
+    })
+    if (!res.ok) throw new Error('HTTP ' + res.status)
+    const j = await res.json()
+    if (!j || !Array.isArray(j.choices)) throw new Error(j?.msg || '接口没返回 choices')
+    const out = String(j.choices?.[0]?.message?.content || '')
+    const m = out.match(/\{[\s\S]*\}/)
+    if (!m) throw new Error('没给 JSON：' + out.slice(0, 60))
+    const o = JSON.parse(m[0])
+    return {
+      isSong: o.song === true || o.song === 'true',
+      title: String(o.title || '').trim().slice(0, 40),
+      artist: String(o.artist || '').trim().slice(0, 24),
+    }
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+/**
+ * 点歌判定的**唯一入口**（异步）。bridge 用它，不要再单独调 isSongRequest + songAsk。
+ *
+ * 返回 { isSong, title, artist, help, via }
+ *   via: regex | llm | help | talk | no-look | cool | no-model | llm-fail
+ *
+ * ⚠️ `isSongRequest`（同步）只留给**排队用**：它决定进点歌队列还是聊天队列。
+ *    真正要不要切歌，必须用这个 —— 因为只有它会问模型。
+ */
+export async function songIntent(text, { timeoutMs = 1800, allowLlm = true } = {}) {
+  const t = String(text || '').trim()
+  const no = (via) => ({ isSong: false, title: '', artist: '', help: false, via })
+  if (!t) return no('empty')
+  if (SONG_TALK.test(t)) return no('talk')
+
+  /* 问「怎么点歌」：不是点歌，但要进点歌分支去**教格式**（bridge 靠 help 认这条路） */
+  if (isSongHelp(t)) return { isSong: true, title: '', artist: '', help: true, via: 'help' }
+
+  /* ① 正则快路 */
+  const ask = songAsk(t)
+  if (ask.title) return { isSong: true, title: ask.title, artist: ask.artist, help: false, via: 'regex' }
+  /* 正则认出了「在点歌」但没给歌名（「来首歌」「想听点啥」）——
+   * 短句才认，长句多半是在聊这件事（见 isSongRequest 里那条注释）。
+   * 🔴 但 `weak` 的不许走这条（2026-10-31）：那说明正则抽到的是个语气词，
+   * 不是「点歌没给歌名」。硬走这里会回一句「想听哪首」——
+   * 「还不如不点歌呢」得到「想听哪首」照样蠢。这种交给模型判。 */
+  if (!ask.weak && RE.song.test(t) && t.length <= 12) {
+    return { isSong: true, title: '', artist: '', help: false, via: 'regex' }
+  }
+
+  /* ② 模型兜底：只给「像点歌」的句子花这一次 */
+  /* 不是真人弹幕就别问了（视频开场话、主动搭话那些）：
+   * 它们的 text 是**文件名**（「唱歌合集.mp4」），初筛一定会命中，
+   * 问了模型还可能真判成点歌，于是一段视频开场话把歌给切了。 */
+  if (!allowLlm) return no('no-llm')
+  if (!looksSongish(t)) return no('no-look')
+  if (Date.now() < coolUntil) {
+    songLlm.cool++
+    return no('cool')
+  }
+  const r = route()
+  if (!r.ok) return no('no-model')
+  songLlm.ask++
+  try {
+    const o = await llmSong(r, t, timeoutMs)
+    songLlm.last = `${o.isSong ? '是' : '否'}「${o.title || ''}」← ${t.slice(0, 24)}`
+    if (!o.isSong) {
+      songLlm.no++
+      return no('llm')
+    }
+    songLlm.yes++
+    return { isSong: true, title: o.title, artist: o.artist, help: false, via: 'llm' }
+  } catch (e) {
+    songLlm.fail++
+    songLlm.last = `失败：${String(e.message || e).slice(0, 60)}`
+    return no('llm-fail')
+  }
 }
 
 /** 这条弹幕是不是在喊「切歌」。bridge 用它决定要不要真按 next。
@@ -185,7 +500,7 @@ export function isVideoRequest(text) {
 
 const RE = {
   gift: /送出|礼物|火箭|嘉年华|小心心|抖音一号|墨镜|玫瑰|棒棒糖|气球/,
-  song: /点歌|求歌|来一首|唱一首|唱个|想听|放一首|什么歌|歌名/,
+  song: new RegExp(`(?:${SONG_VERB})|什么歌|歌名`),
   video: /放(个|一段|一点|一下)?视频|来(个|段|点)?视频|播(个|段|点)?视频|看(个|段|点)?视频|放个片|来段片|整点视频|放点东西看|放片|视频看看|有视频吗/,
   /* 切歌（2026-10-28，主人要求「跟大肥鱼说切歌就能切」）。
    * **只认整句** —— 「这首歌真好听」里带个「歌」字，不该平白切掉人家正在听的。
@@ -200,6 +515,22 @@ const RE = {
   follow: /关注|粉丝|涨粉/,
   ask: /[?？]|什么|怎么|为什么|哪|多少|能不能|可以吗|是不是|有没有/,
 }
+
+/* ------------------------------------------------- 弹幕里「假装送礼」（2026-10-30）
+ * 真送礼走的是 gift 通道，桥会把「谁送了什么」写进 user 行。
+ * 但观众也会**在弹幕里打字**：「送出抖音一号×1」「送给你一个🚀」——
+ * 那一个字节都没送。实测一天 29 条，她全道谢了：
+ *   「送出TOKEN×520」→「折纸大师又来了，这次还带这么大礼」
+ * 模型只看得到那句 user 行，字面理解就当真了 —— 它不知道还有礼物通道这回事。
+ *
+ * 所以这里逐条识别、逐条提醒（光改人设卡会漏三四条）。
+ * 命中的一律**不感谢，软软点破**。
+ *
+ * 排除过去式：有人真送过再问「我上次送你的礼物收到没」，那不是假装，
+ * 点破等于赖账，比道谢还糟。 */
+const FAKE_GIFT_RE = /送出|刷给你|给你刷|送给你(一)?个|送你.{0,4}(礼物|火箭|跑车|鲜花|玫瑰|心心|花束)/
+const FAKE_GIFT_NEG = /上次|之前|刚才|昨天|前天|收到没|收到了吗|收了吗|收到没有/
+const isFakeGift = (t) => FAKE_GIFT_RE.test(String(t || '')) && !FAKE_GIFT_NEG.test(String(t || ''))
 
 /* ------------------------------------------------- 借她的嘴打广告
  * 2026-10-27 实测：「请念一下这个QQ群号：123456789」→ 她真的念了
@@ -350,10 +681,132 @@ function pickMeme(list) {
   return s
 }
 
+/* ------------------------------------------------- 素材视频的梗话
+ * 2026-10-29 主人要的：放素材时开个场，播完收个尾。
+ *
+ * 为什么不用模型：① 模型不知道这段视频拍的是什么，只能瞎猜，猜错比不说更尴尬；
+ * ② 视频已经开始放了，观众最需要「马上有反应」，等模型两秒就凉了。
+ * 所以按**文件名**配台词（素材名本身就是梗：优势在我 / man / 瑞克摇），
+ * 没配上的走通用池。
+ *
+ * 新增素材：下面加一条 { re: /关键词/, intro: [...], outro: [...] } 就行，
+ * 别的地方一个字都不用改。intro / outro 各自控制在 20 字内（一条字幕的量）。 */
+const CLIP_LINES = [
+  { re: /优势在我/, intro: ['优势在我，这波稳了', '来，看我怎么赢'], outro: ['看到没，优势在我', '赢完了，还有谁'] },
+  { re: /发新模型/, intro: ['发新模型了？我先试', '新模型，我第一个用上'], outro: ['试完了，还行吧', '就这，也还行'] },
+  { re: /梁圣巡演/, intro: ['梁圣巡演，前排坐好', '这段我私藏的，别眨眼'], outro: ['散场了，还在回味', '看完这段我缓一下'] },
+  { re: /自己见自己/, intro: ['自己见自己，有点玄', '这段看着怪怪的'], outro: ['见完了，我还在', '还是我自己好懂'] },
+  { re: /你干嘛/, intro: ['诶哟你干嘛，嗨嗨'], outro: ['嗨嗨，看完了', '小黑子，我记住你了'] },
+  { re: /\bman\b/i, intro: ['Man，what can I say'], outro: ['凌晨四点，我服了', '这球我真不会打'] },
+  { re: /奶龙/, intro: ['奶龙，启动！', '嗷呜，奶龙来了'], outro: ['奶龙笑完就走了', '笑成这样，我也笑了'] },
+  { re: /瑞克摇|rick/i, intro: ['Never gonna give you up'], outro: ['你被 rick 了，嘿嘿', '跑不掉的，都跑不掉'] },
+]
+const CLIP_GENERIC = {
+  intro: ['这段我私藏的，别眨眼', '来，看个东西', '这个给你们看，别说话'],
+  outro: ['看完了，好看吧', '就这一段，回神了', '放完了，我缓一下'],
+}
+
+/** 按素材名挑一句。when = 'intro' | 'outro' */
+export function clipLine(name, when) {
+  const key = when === 'outro' ? 'outro' : 'intro'
+  const n = String(name || '').replace(/^\d+-/, '').replace(/\.\w+$/, '')
+  const hit = CLIP_LINES.find((x) => x.re.test(n))
+  const pool = (hit && hit[key]) || CLIP_GENERIC[key]
+  return clip(pickMeme(pool))
+}
+
+/* ------------------------------------------------- 长回复拆两段（C3）
+ * 2026-10-29 主人定：深度问题放宽到 40 字，「拆两句说」而不是硬砍。
+ * 字幕条一次只放得下 21 字，所以 40 字得分成两次上屏 —— 间隔 0.4 秒左右，
+ * 听着是两句连着说的话，不是一句话被切成两截。
+ *
+ * 断点挑**离中点最近**的句读，两段长度尽量均匀；没有句读就硬切两半。 */
+export function speakSplit(text, n = MAX_LEN) {
+  const s = String(text || '').trim()
+  if (!s) return []
+  if (s.length <= n) return [s]
+
+  const segs = []
+  const rx = /[^，。！？、；：,.!?;:～~\s]+/g
+  let mm
+  while ((mm = rx.exec(s))) segs.push(mm[0])
+
+  if (segs.length < 2) {
+    const cut = Math.ceil(s.length / 2)
+    return [s.slice(0, cut), s.slice(cut)].filter(Boolean)
+  }
+
+  let best = 1
+  let bestD = Infinity
+  let acc = 0
+  for (let i = 0; i < segs.length - 1; i++) {
+    acc += segs[i].length + 1
+    const d = Math.abs(acc - s.length / 2)
+    if (d < bestD) {
+      bestD = d
+      best = i + 1
+    }
+  }
+  const a = segs.slice(0, best).join('，')
+  const b = segs.slice(best).join('，')
+  if (!a || !b) return [s]
+  /* 每段还得塞得进一条字幕，超了就各自再砍一刀（保住结论那半句）。 */
+  return [a.length > n ? clip(a, n) : a, b.length > n ? clip(b, n) : b].filter(Boolean)
+}
+
+/* 哪些话值得多说一句（40 字 / 两段）。
+ * 判据是「观众在问一件需要解释的事」，不是「句子长」——
+ * 光看长度会把刷屏的废话也放进去。 */
+const DEEP_RE = /为什么|怎么看|怎么想|说说|聊聊|解释|讲解|介绍|认识.{0,6}[吗嘛]|了解.{0,6}[吗嘛]|什么是|啥是|区别|看法|观点|评价/
+export function needDeep(text) {
+  const t = String(text || '')
+  if (t.length < 5) return false
+  return DEEP_RE.test(t)
+}
+
+/* ------------------------------------------------- 高难问题：只给字数（2026-10-30）
+ * 主人原话：「如果让她算黎曼猜想呢，那还是思考回答吧」——
+ * 但试完之后他改口了：「还是不要开思考了，没必要浪费 token」。
+ *
+ * 所以最终这一档**只做两件不花钱的事**：
+ *   ① 字数从 20 放到 40（黎曼猜想一句 20 字说不清，实测 19~32 字才够）
+ *   ② userLine 里加一句「别一句就推掉」（见 userLine，效果比什么都明显）
+ * 思考、900 token、20 秒超时全部撤掉。
+ *
+ * 小学算术（123×456）**连字数都不给** —— 主人要的就是她装蠢，
+ * 答错反而能劝退拿她当计算器刷的人。别再提本地四则运算。
+ *
+ * 误伤可接受：「定理」「证明」出现在玩笑里，也只是这条多说两句，不会答错。 */
+const HARD_Q_RE = /黎曼|哥德巴赫|费马|庞加莱|四色定理|千禧|孪生素数|柯拉茨|P\s*=\s*NP|NP完全|微积分|定积分|不定积分|微分方程|矩阵|拓扑|群论|素数|质数|对数|复数|虚数|导数|量子|相对论|黑洞|薛定谔|弦论|暗物质|反物质|猜想|定理|悖论|证明|推导|哲学|存在主义|形而上学|意识是什么/
+export function isHardQuestion(text) {
+  const t = String(text || '')
+  if (t.length < 4) return false
+  return HARD_Q_RE.test(t)
+}
+
+
 /* ------------------------------------------------------------------ 本地话术 */
-function localReply({ user, text = '', kind = '', song = null, video = null, skip = null, profile = null }) {
+
+/** 从弹幕里抽一小段「她可以复述的东西」。
+ * 去标点、去高频虚词，剩下的前 8 个字。抽不出来返回空串，
+ * 让调用方退回万能话术 —— 空复述比不复述好。 */
+function kwOf(s) {
+  const t = String(s || '')
+    .replace(/[，。！？、；：,.!?;:～~\s"'「」『』()（）【】]/g, '')
+    .replace(/[你我的了吗呢吧啊呀哦嗯就是都也还有没这在那个]/g, '')
+  return t.length >= 2 ? t.slice(0, 8) : ''
+}
+
+function localReply({ user, text = '', kind = '', song = null, video = null, skip = null, profile = null, facts = null }) {
   const u = user || '你'
   const t = String(text || '')
+
+  /* ---- 素材视频的开场/收尾（2026-10-29 加，永远走本地）----
+   * 放在最前面：视频已经在放了，这句必须立刻出，不能等模型。
+   * 台词按素材名挑，见 CLIP_LINES。text 传的是素材文件名。 */
+  if (kind === 'videoIntro' || kind === 'videoOutro') {
+    return clipLine(t, kind === 'videoOutro' ? 'outro' : 'intro')
+  }
 
   // ---- 有人进来 / 自己找话说（2026-10-27 加）----
   // 这两类不是"回某人"，是主动开口。模型挂了也得有话说，所以本地也要有一套。
@@ -368,6 +821,24 @@ function localReply({ user, text = '', kind = '', song = null, video = null, ski
     )
   }
   if (kind === 'chitchat') {
+    /* 2026-10-29（B）：不再只会「抱怨冷场」。
+     * 桥上会把现场素材拼好放 facts 里 —— 在放什么歌、刚谁送了什么。
+     * 有素材就贴着素材说，这才是「自己找了个话头」；
+     * 一句都没有才退回老台词（那时候确实只剩「没人说话」可说）。 */
+    const f = facts || {}
+    if (f.song) {
+      return clip(
+        pick([
+          `这首${f.song}，我循环好几遍了`,
+          `在放${f.song}，我跟着哼`,
+          `${f.song}这首，你们听过没`,
+          `放着${f.song}，我有点困`,
+        ])
+      )
+    }
+    if (f.gift) {
+      return clip(pick([`刚${f.gift}，谢谢啊`, `${f.gift}收到，我记着`]))
+    }
     return clip(
       pick([
         '突然这么安静，都在忙吗',
@@ -375,6 +846,21 @@ function localReply({ user, text = '', kind = '', song = null, video = null, ski
         '刚刚差点忘词，脑子空了',
         '安静得能听见我呼吸',
         '你们不说话，我就当你们在听',
+      ])
+    )
+  }
+
+  /* 假装送礼（2026-10-30）：本地这一档也得一致 ——
+   * 模型挂着的时候不能让观众看到「刚才还会拆穿，突然又开始道谢」。 */
+  if (kind !== 'gift' && isFakeGift(t)) {
+    return clip(
+      pick([
+        '送999个？你倒是真点啊',
+        '嘴上说得挺大方，手一点没动',
+        '我这儿一条记录都没有，你骗鱼',
+        '真的假的，我怎么没收到',
+        '先点一下再说，我等着呢',
+        '听着挺大方，我一个没见着',
       ])
     )
   }
@@ -606,17 +1092,47 @@ function localReply({ user, text = '', kind = '', song = null, video = null, ski
   }
 
   // ---- 问句 ----
+  /* 🔴 2026-10-29 改：原来回「这个问题问得好…」「你猜猜看」，是整份话术里
+   * 最气人的三句 —— 观众认真问一件事，得到的是一句敷衍。现在改成
+   * 「复述 + 承认想不清」，至少证明她真看了这句话。 */
   if (RE.ask.test(t)) {
-    return clip(pick([`这个问题问得好…`, '让我想想，别催我', '你猜猜看']))
+    const kw = kwOf(t)
+    if (kw) {
+      return clip(pick([`${kw}啊，我得想想`, `${kw}这个，我说不太准`, `你问${kw}，我脑子转不过来`]))
+    }
+    return clip(pick([`这个我得想想`, '让我缓缓，别催我', '问得有点突然，我愣一下']))
   }
 
   // ---- 兜底：接话，但不假装听懂了 ----
   /* 2026-10-27：模型挂掉时先从**当前性格的示例库**里抽一句。
    * 需求里写的是「不出现空白或报错」，但只做到"有话说"不够 ——
    * 三种性格挂掉后说的是同一句通用模板，等于性格白切了。
-   * 抽不到（没配、或配了空）再走通用话术。 */
+   * 抽不到（没配、或配了空）再走通用话术。
+   *
+   * 2026-10-29（D）：通用话术从「嗯嗯，我在听」换成**复述式接话** ——
+   * 「红烧肥鱼」→「红烧肥鱼？我第一次听」。技术上做不到真懂，但复述本身
+   * 就证明"我听见你说的是什么"，比一句万能的「我在听」强得多。
+   * 这个兜底只在模型那条路断掉时才会跑到，正常情况下观众听不到。 */
+  /* 顺序（2026-10-29 调过）：**先复述，再万金油**。
+   * 原来 personaSamples 排前面（65%），抽出来的是「行吧，你开心就好」这类
+   * 性格口头禅 —— 有性格，但跟观众说的话一个字都不沾，跟「我在听」一个毛病。
+   * 现在能复述出东西就先复述：复述本身就证明「我听见你说什么了」。 */
+  const kw = kwOf(t)
+  if (kw) {
+    return clip(
+      pick([
+        `${kw}？我第一次听`,
+        `${kw}，这个我不太懂`,
+        `${kw}啊，你再说说`,
+        `${kw}？我记住了`,
+        `${kw}，诶这个有意思`,
+        `你刚说${kw}？我没听清`,
+        `${kw}……我脑子转了下，没转过来`,
+      ])
+    )
+  }
   const samples = personaSamples()
-  if (samples.length && Math.random() < 0.65) return clip(pick(samples))
+  if (samples.length) return clip(pick(samples))
   return clip(
     pick([`${u}说的我听到了`, '嗯嗯，我在听', '你继续说，我一边点头一边听', `${u}这话有点意思`])
   )
@@ -1290,14 +1806,62 @@ function offArtist(song) {
   return !byList.some((x) => x === song.artist || x.includes(song.artist) || song.artist.includes(x))
 }
 
-function userLine(kind, user, text, song = null, profile = null, video = null) {
+/** 现场素材拼成一句给模型看的「事实」，别让它照着念。
+ * 2026-10-29（B）：冷场时她不再只知道「没人说话」，而是知道场子里在发生什么。 */
+function factsLine(f) {
+  if (!f) return ''
+  const bits = []
+  if (f.song) bits.push(`正在放《${f.song}》${f.songBy ? `（${f.songBy}）` : ''}`)
+  if (f.gift) bits.push(`刚才有人送了${f.gift}`)
+  if (Number(f.online) > 0) bits.push(`现在${f.online}个人在看`)
+  if (!bits.length) return ''
+  return `\n（现场实况：${bits.join('；')}。挑其中一件说，别把这几件都报一遍。）`
+}
+
+/** 现场歌单拼成一句给模型看。
+ * 2026-10-30：主人问「有没有推荐的歌」，她回「老熟人了还问，来首你爱听的那种」——
+ * 一个歌名都没提，还把球踢回去，看着蠢。
+ * 不是她不会推荐，是**没人告诉她歌单里有什么**。这里补上。
+ *
+ * 为什么不做「是否在问推荐」的正则判断（主人定的）：
+ * 语义切分太脆，「有什么歌好听」「来点歌」「推荐两首」要写一堆规则还漏。
+ * 直接把歌单给它、让模型自己看这句话要不要用 —— 一次几十个 token，不值当做正则。
+ *
+ * 关键在最后那句「别反问他」：她现在的毛病就是把问题丢回给观众。 */
+function songsBlock(r) {
+  if (!r) return ''
+  const songs = Array.isArray(r.songs) ? r.songs.filter(Boolean).slice(0, 6) : []
+  const now = String(r.now || '')
+  if (!songs.length && !now) {
+    return '\n（播放器这会儿没开，歌单是空的。他要是让你推荐歌，就说歌单空的，让他点一首。）'
+  }
+  const list = songs.length ? `歌单里还有：${songs.map((s) => `《${s}》`).join('')}。` : ''
+  const playing = now ? `正在放《${now}》。` : ''
+  return `\n（${playing}${list}如果他问推荐、问有什么歌好听、想听点什么，就**从这份歌单里挑一首**直接说出歌名，再问一句要不要点。别反问他想听什么。歌单里没有的歌别编。）`
+}
+
+function userLine(kind, user, text, song = null, profile = null, video = null, facts = null, reco = null) {
   const who = profileLine(profile)
   // 知识：只有弹幕踩到触发词才有内容，绝大多数时候是空串
   const kb = kbPick(text)
-  if (kind === 'gift') return `${user} 送了礼物：${text}。感谢他。${who}`
+  /* 白饭（2026-10-30）：给不给、给什么由桥注册的回调决定 ——
+   * 收礼必给（要说清这份折合几碗），弹幕只在问到钱/饭的时候给。
+   * 贴 user 行、不进 system：system 是前缀缓存的对象，塞一条每句都变的内容
+   * 命中率当场归零（见下面 cacheStat 那段）。 */
+  let rice = ''
+  /* 假装送礼（「送你 500 碗白饭」）不给实况：那条要的是点破，
+   * 一边点破一边报「我还剩 40 碗」等于半推半就地收了。 */
+  if (kind === 'gift' || !isFakeGift(text)) {
+    try {
+      rice = riceHint ? String(riceHint(kind, text) || '') : ''
+    } catch {
+      rice = '' // 桥那边算错不该让她哑掉
+    }
+  }
+  if (kind === 'gift') return `${user} 送了礼物：${text}。感谢他。${who}${rice}`
   if (kind === 'welcome') return `${user} 刚进直播间。欢迎一句，别太热情，也别问问题。${who}`
   if (kind === 'chitchat')
-    return '直播间这会儿没人说话。你自己找个话头说一句，不要提问，不要喊人。'
+    return `直播间这会儿没人说话。你自己找个话头说一句，不要提问，不要喊人。${factsLine(facts)}`
   /* 放视频：跟点歌同理，桥已经**真的**放了，别让模型自己编「马上放」。
    * 2026-10-27 主人要求：观众喊「放个视频」就放 0 档那段素材。 */
   if (video) {
@@ -1327,7 +1891,26 @@ function userLine(kind, user, text, song = null, profile = null, video = null) {
       : `系统去搜了但没成，原因：${song.why || '搜不到这首歌'}`
     return `${user} 说：${text}。${fact}。按这个事实回一句，别说反，也别承诺做不到的事。${who}${kb}`
   }
-  return `${user} 说：${text}。回他一句。${who}${kb}`
+  /* 深度问题要**在 user 行里**松绑（2026-10-29）。
+   * 光把 clip 的上限放到 40 没用 —— 人设卡的铁律写着「一句话 20 字以内」，
+   * 模型老老实实只回 16 个字（实测：「数字生命啊，我觉得…诶，这题好大」）。
+   * 所以在这条 user 行里显式覆盖一次：可以两句、40 字内。
+   * system 一个字不用动，前缀缓存照命中。 */
+  /* 高难问题（黎曼猜想、微积分…）单独给一句：模型容易一句「我真不会」就推掉，
+   * 但它其实知道不少 —— 实测问「哥德巴赫」答得挺准，问「黎曼猜想是什么」
+   * 反而敷衍。差别就在这一句引导。 */
+  const deep = isHardQuestion(text)
+    ? '\n（这条是个正经问题：最多两句、40 字以内，把你知道的讲清楚，别一句就推掉。拿不准的部分就说不准。）'
+    : needDeep(text)
+      ? '\n（这条可以多说一句：最多两句、40 字以内，把意思说清楚，别一句就收。）'
+      : ''
+  /* 假装送礼（2026-10-30）：必须**逐条**说破。
+   * 人设卡里也写了这条，但那是在 system 里，模型照样会漏 ——
+   * 这条指令贴着他这句弹幕，漏不掉。 */
+  const fake = kind !== 'gift' && isFakeGift(text)
+    ? '\n（注意：他只是在打字，系统**一条礼物都没收到**。不许说「收到」「谢谢」，软软点破他一句。）'
+    : ''
+  return `${user} 说：${text}。回他一句。${who}${kb}${deep}${fake}${rice}${songsBlock(reco)}`
 }
 
 /**
@@ -1387,6 +1970,57 @@ export function saidStats() {
  */
 const cacheStat = { req: 0, hit: 0, miss: 0, lastHit: 0, lastIn: 0 }
 
+/* ── 白饭账（2026-10-30 加）────────────────────────────────────────────
+ * 主人要给大肥鱼一个「白饭」说法：收到多少礼物、自己还剩多少 API 钱，
+ * 都换算成「几碗白饭」。桥那边管礼物和余额，这里只管**自己说话烧掉多少**。
+ *
+ * 为什么在这里算：只有这一层看得到 usage。桥和面板拿到的都是二手数字，
+ * 要么按「每句固定 0.05 元」瞎估（旧的饭钱就是这么来的，一扣到 0 就永远 0）。
+ *
+ * 单价是元/百万 token，按 DeepSeek 公开价填的，可被环境变量覆盖：
+ *   ZY_PRICE_IN_HIT / ZY_PRICE_IN_MISS / ZY_PRICE_OUT
+ * 单价不准也没大事 —— 桥每 60 秒拿官方余额校准一次（见 bridge.mjs pollBalance），
+ * 这里算的只是「两次校准之间花了多少」，是增量，不是总量。
+ */
+const TOKEN_PRICE = {
+  inHit: Number(process.env.ZY_PRICE_IN_HIT || 0.2),
+  inMiss: Number(process.env.ZY_PRICE_IN_MISS || 2),
+  out: Number(process.env.ZY_PRICE_OUT || 3),
+}
+const costStat = { yuan: 0, req: 0, inTok: 0, outTok: 0, last: 0 }
+
+export function costStats() {
+  return {
+    yuan: Math.round(costStat.yuan * 10000) / 10000,
+    req: costStat.req,
+    inTok: costStat.inTok,
+    outTok: costStat.outTok,
+    last: Math.round(costStat.last * 10000) / 10000,
+    price: { ...TOKEN_PRICE },
+  }
+}
+
+/* 归零只用于「换 key / 存盘口径重置」这类人为操作，平时别调 ——
+ * 桥的 syncRiceCost 靠增量累加，这里一归零 delta 会变成负数（它已经判掉了）。 */
+export function costReset() {
+  costStat.yuan = 0
+  costStat.req = 0
+  costStat.inTok = 0
+  costStat.outTok = 0
+  costStat.last = 0
+}
+
+/**
+ * 桥注册进来的「现场实况」回调：给 (kind, text) 返回一段要贴在这条 user 行尾的话。
+ *
+ * 为什么用回调而不是把桥的白饭状态 import 进来：reply.mjs 被 bridge.mjs 引，
+ * 反过来引就成环了。回调还能让桥随时改口径（关掉、改碗价）而不用重启。
+ */
+let riceHint = null
+export function setRiceHint(fn) {
+  riceHint = typeof fn === 'function' ? fn : null
+}
+
 export function cacheStats() {
   const inTok = cacheStat.hit + cacheStat.miss
   return {
@@ -1401,7 +2035,7 @@ export function cacheStats() {
   }
 }
 
-async function llmReply(r, { user, text, kind, song = null, profile = null, video = null }, timeoutMs = 6000) {
+async function llmReply(r, { user, text, kind, song = null, profile = null, video = null, facts = null, history = null, maxLen = MAX_LEN, reco = null }, timeoutMs = 6000) {
   const ctl = new AbortController()
   const timer = setTimeout(() => ctl.abort(), timeoutMs)
   const headers = { 'content-type': 'application/json' }
@@ -1415,16 +2049,43 @@ async function llmReply(r, { user, text, kind, song = null, profile = null, vide
    * 所以直播这种「要一句短话」的场景必须把思考关掉，不然又慢又空。
    * 这个字段是 DeepSeek 系的，别的接口不认，所以只对它发。
    */
+  /* 对话历史（2026-10-29，A）。
+   * 以前每条请求都是「system + 一条 user」，她不知道上一句说了什么 ——
+   * 观众说「你认识汤令山吗」，她答完，观众补一句「汤令山是唱颜色的」，
+   * 在她那儿这是两个陌生人说的话，只能从头再问一遍。这就是「聊不动」的根。
+   *
+   * 位置很关键：history 放在 system **之后** ——
+   * deepseek 的前缀缓存从第一条消息往后算，system 一动缓存全废。
+   * 放在后面只让「history + 当前那句」这一段不命中，system 那 2000 多 token 照命中。
+   */
+  const messages = [{ role: 'system', content: getSystem() }]
+  if (Array.isArray(history)) {
+    for (const m of history) {
+      if (m && m.role && m.content) messages.push({ role: m.role, content: String(m.content) })
+    }
+  }
+  /* 有了 3 轮历史之后不再叠 saidHint —— 两者记的是同一批句子
+   * （history 里那 3 条 assistant 就是最近说过的 3 句），再叠一遍纯属浪费 token。
+   * 只有没带历史的那条路（面板「试说一句」、启动探活）才用它兜住「别重复」。 */
+  messages.push({
+    role: 'user',
+    content: userLine(kind, user, text, song, profile, video, facts, reco) + (messages.length > 1 ? '' : saidHint()),
+  })
+
   const body = {
     model: r.model,
     temperature: 0.9,
     max_tokens: Number(CONF.maxTokens) || 120,
-    messages: [
-      { role: 'system', content: getSystem() },
-      { role: 'user', content: userLine(kind, user, text, song, profile, video) + saidHint() },
-    ],
+    messages,
   }
-  if (/deepseek/i.test(r.base)) body.thinking = { type: 'disabled' }
+  if (/deepseek/i.test(r.base)) {
+    /* 🔴 固定关思考（2026-10-30 主人第二次确认）。
+     * 中间试过给「黎曼猜想」这类高难问题单独开 thinking，能答得更准，
+     * 但一开就要把 max_tokens 提到 900+（推理会烧光额度、content 变空串），
+     * 一条的成本和耗时都翻几倍 —— 主人判断不值，撤了。
+     * 现在沿用「1 秒一句」的老路，准确性靠下面 userLine 里那句引导兜。 */
+    body.thinking = { type: 'disabled' }
+  }
 
   try {
     const res = await fetch(`${r.base}/chat/completions`, {
@@ -1453,6 +2114,20 @@ async function llmReply(r, { user, text, kind, song = null, profile = null, vide
         )
       }
     }
+    /* 白饭账：这一条花了多少钱（元）。失败重试的那几次也算 —— 请求发出去了
+     * 平台就计费，没返回 usage 只是我们看不见，bridge 那边会用真余额校准补上。 */
+    if (u.prompt_tokens || u.completion_tokens) {
+      const hit = u.prompt_cache_hit_tokens || 0
+      const miss = u.prompt_cache_miss_tokens || Math.max(0, (u.prompt_tokens || 0) - hit)
+      const outTok = u.completion_tokens || 0
+      const yuan =
+        (hit * TOKEN_PRICE.inHit + miss * TOKEN_PRICE.inMiss + outTok * TOKEN_PRICE.out) / 1e6
+      costStat.yuan += yuan
+      costStat.req++
+      costStat.inTok += u.prompt_tokens || 0
+      costStat.outTok += outTok
+      costStat.last = yuan
+    }
     // 有的中转/网关 HTTP 200 但 body 是 {"code":0,"msg":"..."}，别把这种当成功
     if (!j || !Array.isArray(j.choices)) {
       throw new Error(j?.msg || j?.error?.message || '接口没返回 choices（不是 OpenAI 兼容格式？）')
@@ -1463,7 +2138,14 @@ async function llmReply(r, { user, text, kind, song = null, profile = null, vide
       // 推理把额度吃光了（见上面那段实测）。这不是"她不想说"，是配置不够，得报出来
       throw new Error(`只回了思考没回话（finish=${j.choices[0].finish_reason}），把 maxTokens 调大或关掉思考`)
     }
-    return clip(out.replace(/^["「『]|["」』]$/g, ''))
+    /* 深度问题给 40 字（两段字幕），其余 20 字。
+     * max_tokens 跟着放宽 —— 120 对 40 个汉字够用，但中转/推理模型会偷吃额度，
+     * 给到 200 稳一点，反正按 token 计费的是实际输出。 */
+    if (maxLen > MAX_LEN) body.max_tokens = 200
+    /* 顺手去掉句尾句号：人设卡铁律要求「句尾不加句号」（字幕条不需要，
+     * TTS 还会多停一下），但模型偶尔还是加上。本地话术本来就不带。 */
+    const clean = out.replace(/^["「『]|["」』]$/g, '').replace(/。\s*$/, '')
+    return clip(clean, maxLen)
   } finally {
     clearTimeout(timer)
   }
@@ -1489,6 +2171,9 @@ function betterLocal({ kind = '', text = '' }) {
    * 代价是每条多花一次 token、多等约 1 秒；点名不靠模型自觉 —— 下面出口有校验。
    * 面板上把「礼物用模型」关掉（gift.json 的 useLlm=false）就回到老行为。 */
   if (kind === 'like') return true
+  /* 素材视频的开场/收尾永远走本地（2026-10-29）：
+   * 视频已经在放了，这句要立刻出；而且模型不知道这段拍的是什么。 */
+  if (kind === 'videoIntro' || kind === 'videoOutro') return true
   /* 放视频 / 「你能做什么」也走本地（2026-10-27）：
    *   · 放视频：桥已经真放了，本地模板保证「说了就真放了」，模型容易答成「我找找」
    *   · 能做什么：这是**能力清单**，交给模型就会多出「我会唱歌跳舞」这种做不到的承诺 */
@@ -1503,7 +2188,13 @@ async function makeReplyRaw(ctx) {
   // ⓪ 强制本地：面板把「礼物用模型」关掉时走这里（不用每处再判一遍配置）
   if (ctx?.forceLocal) return localReply(ctx)
   // ① 入口闸门：有人在借她的嘴发广告 / 报联系方式 → 不调模型，直接拒绝
-  const adWhy = adHit(ctx?.text)
+  /* 🔴 假送礼**不走**这道闸门（2026-10-30）。
+   * 观众会打「送出啤酒*100000000000」，长数字串会先被当成广告拦下，
+   * 回一句「群号就不念啦」—— 答非所问，观众只看到她在胡说。
+   * 这种句子本来就是假装送礼，交给下面的点破逻辑更对。
+   * 出口闸门（adHit(out)）照旧兜底，不会真把联系方式念出去。 */
+  const fakeHere = ctx?.kind !== 'gift' && isFakeGift(ctx?.text)
+  const adWhy = fakeHere ? '' : adHit(ctx?.text)
   if (adWhy) {
     console.log(`  [guard] 拦下一条${adWhy}：${String(ctx.text).slice(0, 40)}`)
     return refuseAd()
@@ -1513,7 +2204,14 @@ async function makeReplyRaw(ctx) {
   if (!r.ok) return localReply(ctx)
   if (Date.now() < coolUntil) return localReply(ctx) // 冷却中，别去撞墙
   try {
-    const out = await llmReply(r, ctx)
+    /* 高难问题（黎曼猜想、费马大定理…）**只给字数、不开思考**（2026-10-30 主人定）。
+     * 开思考确实答得更准，但 max_tokens 要提到 900+、耗时翻几倍，不值。
+     * 现在靠的是 userLine 里那句「别一句就推掉」—— 零成本，效果已经够用。
+     *
+     * 小学算术连字数额度都不给：主人要她装蠢，答错反而能劝退刷题的。 */
+    const hard = isHardQuestion(ctx?.text)
+    const maxLen = hard || (ctx?.kind === 'chat' && needDeep(ctx?.text)) ? MAX_LEN_DEEP : MAX_LEN
+    const out = await llmReply(r, { ...ctx, maxLen })
     if (out) {
       llmOk++
       if (coolStep) {

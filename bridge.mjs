@@ -24,11 +24,19 @@ import { spawn, exec } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import {
   makeReply, replyMode, probeLLM, llmConfigured, cacheStats, llmHealth,
-  isSongRequest, songAsk, isSongHelp, SONG_TIP, personaInfo,
+  /* 点歌：正则快路 + 模型兜底（2026-10-30）。
+   * songIntent 是**唯一**判定入口；isSongRequest 只留给排队用（同步、不花 token）。
+   * 旧的 songAsk / isSongHelp 不要再从这儿直接调 —— 那等于绕过模型兜底。 */
+  isSongRequest, songIntent, looksSongish, songLlmStats, SONG_TIP, personaInfo,
   kbInfo, kbSet, kbPick, skinInfo,
   isVideoRequest,
   isSkipRequest,
+  /* speakSplit：长回复拆两段念（2026-10-29，C3）。 */
+  speakSplit,
   setReplyMode, replyModeText,
+  /* 白饭（2026-10-30）：costStats 是模型那一侧记的**真实 token 账单**，
+   * setRiceHint 把「手里还有几碗」塞进 user 行 —— 不进 system，前缀缓存不受影响。 */
+  costStats, setRiceHint,
 } from './reply.mjs'
 
 const DIR = path.dirname(fileURLToPath(import.meta.url))
@@ -56,6 +64,15 @@ const MCP_EXE = String(
 )
 const DEMO = has('demo')
 const SHOW_MEMBER = has('member') // 进场消息默认不刷屏
+/* 弹幕长度上限（2026-10-31 主人定 50 字）。
+ *
+ * 原来一个字都不截：有人往里粘几千字，整段进 prompt → 一次烧掉大几百 token，
+ * 而字幕条只有 21 个字宽、她最多回 20 个字。等于花钱买一堆用不上的字。
+ * 50 字够装下正常弹幕（直播里超过 50 字的基本是粘贴/刷屏），
+ * 截完加个省略号，模型看得懂是「他说了一大段」。
+ * 只截**弹幕**，礼物名 / 视频文件名 / 进场语不碰。 */
+const CHAT_TEXT_MAX = 50
+const clipChatText = (s) => (s.length > CHAT_TEXT_MAX ? s.slice(0, CHAT_TEXT_MAX) + '…' : s)
 const LOG_FILE = has('no-log') ? null : path.join(DIR, 'events.jsonl')
 const HB_FILE = has('no-log') ? null : path.join(DIR, 'hb.log')
 const RID_RAW = String(arg('rid', '') || '')
@@ -337,9 +354,9 @@ function normalizeRaw(d) {
   const kind = classify(d)
   switch (kind) {
     case 'chat': {
-      const text = String(G(d, 'content') || '').trim()
-      if (!text) return null
-      return { kind, user: nick(d), text, gift: false, show: true }
+      const raw = String(G(d, 'content') || '').trim()
+      if (!raw) return null
+      return { kind, user: nick(d), text: clipChatText(raw), gift: false, show: true }
     }
     case 'gift': {
       const g = G(d, 'gift') || {}
@@ -410,6 +427,8 @@ const clients = new Set()
 let lastHb = null
 let lastOverlayAt = 0 // 画面最近一次来拉 /state.json 的时间（0 = 从没来过）
 let stat = { online: 0, chat: 0, gift: 0, member: 0, like: 0, total: 0, replied: 0, dup: 0 }
+let lastEventAt = Date.now()      // 最后收到「真实事件」的时刻（自动硬重连兜底用）
+let lastForceReconnectAt = 0      // 上次自动硬重连的时刻（冷却防抖用）
 /* 最后一次收到礼物事件的时刻。2026-10-27 加的「礼物通道自检」——
  * 那天抖音 cookie 在 17:11 被刷成了游客态，从此礼物一条都收不到，
  * 而弹幕/进场/点赞全都正常，光看统计根本发现不了（只有「收到礼物 0」这一个信号）。
@@ -417,6 +436,9 @@ let stat = { online: 0, chat: 0, gift: 0, member: 0, like: 0, total: 0, replied:
  * 注意：别叫 giftSeen —— 下面那句「礼物去重表」已经占了这个名字。 */
 let lastGiftAt = 0
 let giftEvents = 0
+/* 最近一份礼物的名字（2026-10-29 加）。冷场素材要用 —— 她得知道
+ * 「刚刚有人送了小心心」才能聊到这件事，而不是只会说「没人说话」。 */
+let lastGiftName = ''
 let giftWarned = false // 断流警告只报一次，别每分钟刷一行
 const START = Date.now()
 const recent = [] // 最近弹幕，给 /state.json 用（原生渲染器读这个）
@@ -484,6 +506,388 @@ function addMoney(n) {
   saveMoney()
   return money
 }
+
+/* ── 白饭（2026-10-30 加）───────────────────────────────────────────────
+ * 上面的「饭钱」是假的：开局 17.54、每句固定扣 0.05，跟真实账单没关系，
+ * 而且一扣到 0 就永远显示 0，这个数就没有意义了（现在 money.json 的 left 就是 0）。
+ *
+ * 白饭换成**真账**：一碗 = 一元（可配），三笔钱统一成碗 ——
+ *   · 手里还有：DeepSeek 官方余额（/user/balance，60 秒拉一次，免费只读）
+ *                减去「上次拉取之后本地估算花掉的」（见 syncRiceCost）
+ *   · 今晚吃进：礼物名 → 抖币 → 元。MCP 不给价格，所以查 cache/gift-price.json
+ *   · 今晚烧掉：reply.mjs 按 usage 记的真 token 成本（costStats）
+ *
+ * 为什么「本地估 + 定期真拉」两条腿：只靠拉余额，两次拉取之间她花了多少看不见，
+ * 数字会一格一格跳；只靠本地估，单价一变、缓存命中率一变就会越走越偏。
+ *
+ * 存 cache/rice.json。跨零点换天（giftYuan / apiYuan 归零），跟对话账本同一套判断。
+ */
+const RICE_FILE = path.join(DIR, 'cache', 'rice.json')
+const GIFT_PRICE_FILE = path.join(DIR, 'cache', 'gift-price.json')
+/* 抖币 → 元。**20 抖币 = 1 元**（2026-10-30 主人定的口径）。
+ *
+ * 注意这不是充值价（充值是 1 元 10 抖币），是**主播到手价**：
+ * 平台抽走一半，100 抖币的礼物主播只拿 5 块。
+ * 白饭讲的是「我能吃几碗饭」，所以必须按到手算，按充值价算等于给自己多记一倍收入。
+ * 想改口径：ZY_YUAN_PER_DOU=0.1 起桥。 */
+const YUAN_PER_DOU = Number(process.env.ZY_YUAN_PER_DOU || 0.05)
+/* 一碗白饭多少钱。1 元好算：余额 14.77 元 = 14.7 碗，小心心 0.1 元 = 一口饭。 */
+const DEFAULT_YUAN_PER_BOWL = Number(process.env.ZY_RICE_BOWL || 1)
+
+let giftPrices = loadGiftPrices()
+let rice = loadRice()
+
+function dayStr(t = Date.now()) {
+  const d = new Date(t)
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+function loadGiftPrices() {
+  try {
+    const j = JSON.parse(fs.readFileSync(GIFT_PRICE_FILE, 'utf8'))
+    const p = j && typeof j.prices === 'object' ? j.prices : {}
+    const clean = {}
+    for (const [k, v] of Object.entries(p)) {
+      const n = Number(v)
+      if (k && Number.isFinite(n) && n >= 0) clean[String(k).trim()] = n
+    }
+    return { prices: clean, tierFallback: j?.tierFallback || {}, at: Date.now() }
+  } catch {
+    /* 文件不在 —— 不是故障。价格表是**可选覆盖**：没有就按档位兜底，
+     * 别因为少一个 json 就让整场礼物算成 0。 */
+    return { prices: {}, tierFallback: {}, at: 0 }
+  }
+}
+
+/** 价格表改了不用重启桥：每次算钱前看一眼文件改没改（stat 很便宜，礼物也不是每秒来）。 */
+function giftPricesFresh() {
+  try {
+    const st = fs.statSync(GIFT_PRICE_FILE)
+    if (st.mtimeMs !== giftPrices.mtime) {
+      giftPrices = loadGiftPrices()
+      giftPrices.mtime = st.mtimeMs
+      log(`  [rice] 价格表已重载：${Object.keys(giftPrices.prices).length} 个礼物`)
+    }
+  } catch {
+    // 没这个文件就一直用内存里那份
+  }
+  return giftPrices
+}
+
+function loadRice() {
+  let j = null
+  try {
+    j = JSON.parse(fs.readFileSync(RICE_FILE, 'utf8'))
+  } catch {
+    // 第一次跑就是这条路径
+  }
+  const per = Number(j?.yuanPerBowl)
+  return {
+    on: j?.on !== false,
+    yuanPerBowl: Number.isFinite(per) && per > 0 ? per : DEFAULT_YUAN_PER_BOWL,
+    day: String(j?.day || dayStr()),
+    giftYuan: r2(Number(j?.giftYuan) || 0),
+    /* apiYuan / apiSince **不圆整**（见 syncRiceCost 里那段踩坑记录）。 */
+    apiYuan: Number(j?.apiYuan) || 0,
+    /* balanceYuan = 最后一次**真拉**到的余额；apiSince = 那次拉取之后新烧的。
+     * 手里还有 = balanceYuan − apiSince。拉取成功就把 apiSince 清零对齐真值。 */
+    balanceYuan: Number.isFinite(Number(j?.balanceYuan)) ? r2(Number(j.balanceYuan)) : null,
+    apiSince: r2(Number(j?.apiSince) || 0),
+    balanceAt: Number(j?.balanceAt) || 0,
+    sessionAt: Number(j?.sessionAt) || 0, // 本场从哪一刻开始（开播/手动清零时刻）
+    costSeen: Number(j?.costSeen) || 0, // 上次同步时 costStats().yuan 的快照
+    at: Number(j?.at) || 0,
+  }
+}
+
+let riceTimer = null
+function saveRiceSoon() {
+  rice.at = Date.now()
+  if (riceTimer) return
+  riceTimer = setTimeout(() => {
+    riceTimer = null
+    saveRice()
+  }, 1500)
+  if (riceTimer.unref) riceTimer.unref()
+}
+
+function saveRice() {
+  try {
+    fs.mkdirSync(path.dirname(RICE_FILE), { recursive: true })
+    fs.writeFileSync(RICE_FILE, JSON.stringify(rice, null, 2), 'utf8')
+  } catch (e) {
+    log('  [rice] 存盘失败：', e?.message || e)
+  }
+}
+
+/** 跨零点：礼物和 token 两边都归零，余额不动（钱还在账上）。 */
+function riceRollDay() {
+  const d = dayStr()
+  if (rice.day === d) return false
+  rice.day = d
+  rice.giftYuan = 0
+  rice.apiYuan = 0
+  saveRiceSoon()
+  return true
+}
+
+/**
+ * 开新的一场：收入清零（余额不动 —— 钱是账户里的，跟场次无关）。
+ *
+ * 什么时候调：抖音状态从 ended/offline 变成 live 的那一刻（真·重新开播）。
+ * **桥重启不重置** —— 重启时 prev 是 unknown，走不到这儿，所以本场收入还在。
+ * 这跟画面右上角「本场 02:07」是两套口径（那个按进程算），但收入按「这一场直播」算
+ * 才对：主播关心的是这场挣了多少，不是进程活了多久。
+ * 想手动清：POST /rice?reset=1
+ */
+function riceNewSession() {
+  rice.giftYuan = 0
+  rice.sessionAt = Date.now()
+  saveRiceSoon()
+  log('  🍚 新的一场，本场收入清零')
+}
+
+/** 礼物名 → 抖币。先精确、再包含（「送出小心心」也算）、最后按 media 的档位兜底。 */
+function giftDou(giftName) {
+  const g = String(giftName || '').trim()
+  const p = giftPricesFresh()
+  if (!g) return 0
+  if (Number.isFinite(p.prices[g])) return p.prices[g]
+  /* 只允许**正向**包含：礼物名里带着表里的名字（「送出小心心」→ 小心心）。
+   * 🔴 绝对不许反向（表里的名字包含礼物名）。2026-10-30 就是这么炸的：
+   * MCP 给的礼物名是「抖音」，反向匹配咬到「抖音一号」⇒ 10001 抖币，
+   * 一晚两份凭空多出 1001 碗白饭，账本直接上天。
+   * 单字名字也不参与模糊匹配（「心」能咬中一堆）。 */
+  const hit = Object.keys(p.prices).find(
+    (k) => k.length >= 2 && k !== g && g.includes(k)
+  )
+  if (hit) return p.prices[hit]
+  /* 认不出名字的礼物（活动礼物、新礼物、或者 MCP 把名字丢了）：
+   * 按它在 media.json 里的档位给个代表价。宁可粗，也别算成 0 ——
+   * 观众送了东西、账上却一分没进，主人对不上账。 */
+  const tier = String(tierOfGift(g) || 1)
+  const fb = p.tierFallback || {}
+  const v = Number(fb[tier])
+  return Number.isFinite(v) ? v : 1
+}
+
+/* 连击记账（2026-10-30 加）。
+ * 🔴 `comboCount` 是**这一串的累计数**，不是这一条新增了几个：
+ *     1 → 2 → 3 → 3 → 4 …
+ * 直接按它加，一串 5 连击会被算成 1+2+3+4+5=15 个（实测把当天的账放大了 3 倍）。
+ * 所以记「这个人这个礼物上一个数到几」，只加**差值**；8 秒没动静就算新的一串。
+ *
+ * 顺带把「上游每笔礼物发两遍」也兜住了：那条重复事件带的是同一个 count，
+ * 差值 = 0，一条都进不来。 */
+const RICE_COMBO_GAP = 8000
+const riceCombos = new Map() // uid|gift → { n, at }
+
+/** 收礼记账。uid/giftName/comboCount 直接来自事件。返回这一笔新增多少元。 */
+function riceGift(uid, giftName, comboCount = 1) {
+  riceRollDay()
+  const key = `${uid || ''}|${giftName || ''}`
+  const now = Date.now()
+  const cnt = Math.max(1, Number(comboCount) || 1)
+  const prev = riceCombos.get(key)
+  let add = cnt
+  if (prev && now - prev.at < RICE_COMBO_GAP && cnt >= prev.n) add = cnt - prev.n
+  riceCombos.set(key, { n: cnt, at: now })
+  if (riceCombos.size > 500) {
+    for (const [k, v] of riceCombos) if (now - v.at > 120000) riceCombos.delete(k)
+  }
+  if (add <= 0) return 0
+  const yuan = r2(giftDou(giftName) * add * YUAN_PER_DOU)
+  rice.giftYuan = r2(rice.giftYuan + yuan)
+  saveRiceSoon()
+  return yuan
+}
+
+/** 把 reply.mjs 记的 token 成本同步进来。5 秒一次，delta 累加。 */
+function syncRiceCost() {
+  let c = null
+  try {
+    c = costStats()
+  } catch {
+    return
+  }
+  const total = Number(c?.yuan) || 0
+  if (!(total > 0)) return
+  /* 重启之后 costStats 从 0 开始，而存档里的 costSeen 是上一场的大数 ——
+   * 这时候 delta 会是负数。判一下：变小了就当成「新一轮」，重新对齐，不补记。 */
+  const delta = total - rice.costSeen
+  rice.costSeen = total
+  if (!(delta > 0)) return
+  riceRollDay()
+  /* 🔴 这里**不能** r2 之后再累加。2026-10-30 踩过：每 5 秒的增量只有
+   * 0.0002 元，r2 四舍五入到分 ⇒ 每次都写回 0.00，累加十次还是 0，
+   * 「今晚烧掉」永远显示 0 碗（账单那边明明在扣钱）。
+   * 先按全精度累加，只在**显示**和 **giftYuan** 那一侧圆整。 */
+  rice.apiYuan += delta
+  rice.apiSince += delta
+  saveRiceSoon()
+}
+
+/** 拉 DeepSeek 真实余额。失败就静默 —— 拉不到不该影响直播，本地估算继续走。 */
+let balanceBusy = false
+async function pollBalance() {
+  if (balanceBusy) return
+  let base = '',
+    key = ''
+  try {
+    const j = JSON.parse(fs.readFileSync(path.join(DIR, 'llm.json'), 'utf8'))
+    base = String(j.base || '')
+    key = String(j.key || '')
+  } catch {}
+  if (!base || !key) return
+  /* 只有官方口能查余额（中转没有这个接口）。不是 deepseek.com 就别去撞，
+   * 省得每 60 秒在日志里刷一行 404。 */
+  if (!/deepseek\.com/i.test(base)) return
+  balanceBusy = true
+  try {
+    const ctl = new AbortController()
+    const timer = setTimeout(() => ctl.abort(), 8000)
+    const res = await fetch(`${base.replace(/\/v1\/?$/, '')}/user/balance`, {
+      signal: ctl.signal,
+      headers: { authorization: `Bearer ${key}` },
+    })
+    clearTimeout(timer)
+    if (!res.ok) return
+    const j = await res.json()
+    const info = (j?.balance_infos || [])[0] || {}
+    const v = Number(info.total_balance)
+    if (!Number.isFinite(v)) return
+    rice.balanceYuan = r2(v)
+    rice.balanceAt = Date.now()
+    rice.apiSince = 0 // 对齐真值：之前的本地估算到此为止
+    saveRiceSoon()
+  } catch {
+    // 断网 / 超时 / 中转 —— 都当没拉到，下次再试
+  } finally {
+    balanceBusy = false
+  }
+}
+
+/** 手里还剩多少元（真余额 − 拉取后的本地消耗）。没拉到过余额就返回 null。 */
+function riceLeftYuan() {
+  if (rice.balanceYuan == null) return null
+  return Math.max(0, r2(rice.balanceYuan - rice.apiSince))
+}
+
+/**
+ * 元 → 人话。单位太小/太大都不好懂，所以分四段：
+ *   <1 碗：按「口」算（一碗饭大概十口，0.1 元 = 一口）
+ *   1–89 碗：直接报碗数
+ *   90–1094 碗：换算成「够吃几个月」（一天三碗 = 一个月 90 碗）
+ *   ≥1095 碗：换算成「够吃几年」（一年 1095 碗）
+ * 不做这层换算的话，嘉年华 3000 碗观众只会「哦」，换成「够吃两年八个月」才有画面。
+ */
+function bowlsText(yuan) {
+  const b = (Number(yuan) || 0) / (rice.yuanPerBowl || 1)
+  if (!(b > 0)) return '0 碗'
+  /* 0.05 元（一个小心心）= 半口。按 20 抖币 1 元算，最小的礼物连一口都不到，
+   * 硬报「1 口饭」等于把她收到的钱说大一倍 —— 这个梗要真诚才好玩。 */
+  if (b < 1) {
+    const kou = b * 10
+    if (kou < 0.75) return '半口饭'
+    return `${Math.round(kou)} 口饭`
+  }
+  if (b < 90) return `${Math.round(b)} 碗`
+  if (b < 1095) return `够吃 ${Math.round(b / 90)} 个月`
+  return `够吃 ${(b / 1095).toFixed(1)} 年`
+}
+
+/** 浮层用的短写法：一百碗以内留一位小数（14.7），再大就取整（3000）。 */
+function bowlsShort(yuan) {
+  const b = (Number(yuan) || 0) / (rice.yuanPerBowl || 1)
+  if (!(b > 0)) return '0.0'
+  if (b < 100) return (Math.round(b * 10) / 10).toFixed(1)
+  return String(Math.round(b))
+}
+
+function riceState() {
+  riceRollDay()
+  const left = riceLeftYuan()
+  const inB = r2(rice.giftYuan / (rice.yuanPerBowl || 1))
+  const outB = r2(rice.apiYuan / (rice.yuanPerBowl || 1))
+  return {
+    on: rice.on,
+    perBowl: rice.yuanPerBowl,
+    /* left 是**碗**，不是元 —— 画面直接写「白饭 14.7 碗」。
+     * 从没拉到过余额时给 null，让画面退回旧字段，别显示一个假的 0。 */
+    left: left == null ? null : Number(bowlsShort(left)),
+    leftText: left == null ? '' : bowlsText(left),
+    balanceYuan: left,
+    /* inSession = **本场**收到几碗（不是「今天」）。
+     * 主人 2026-10-30 23:26 定的口径：报本场，跟直播间左上角的音浪同一个范围。
+     * inToday / outToday 是老字段名，留着是因为可能有别的地方在读，别再往新的地方用它。 */
+    inSession: inB,
+    inSessionText: bowlsText(rice.giftYuan),
+    inToday: inB,
+    outToday: outB,
+    inText: bowlsText(rice.giftYuan),
+    outText: bowlsText(rice.apiYuan),
+    net: r2(inB - outB),
+    netText: bowlsText(Math.abs(rice.giftYuan - rice.apiYuan)),
+    balanceAt: rice.balanceAt,
+    sessionAt: rice.sessionAt || 0,
+    day: rice.day,
+  }
+}
+
+/**
+ * 给她一句「现场实况」—— 只在**该说**的时候塞进 user 行。
+ * 收礼必给（要算出这份折合几碗）；弹幕只有问到钱/饭/穷/余额才给。
+ * 不塞进 system：那里是前缀缓存的对象，塞一条每句都变的内容，命中率当场归零。
+ */
+function riceHintFor(kind, text) {
+  if (!rice.on) return ''
+  const st = riceState()
+  if (st.balanceYuan == null && !st.inToday) return ''
+  const left = st.leftText ? `你手里还剩大约 ${st.leftText}（白饭，一碗=一块钱）` : ''
+  if (kind === 'gift') {
+    /* 礼物名从事件文案里反解：「送出「玫瑰」×5」。为什么要反解而不是直接把
+     * giftName 传进来：userLine 只拿得到这句话，为两个字段改一路签名不值当。
+     * 反解不到（MCP 把名字丢了）就当 1 抖币，别因为算不出钱就整句不提示。 */
+    const s = String(text || '')
+    const name = (s.match(/「(.+?)」/) || [])[1] || s
+    const cnt = Number((s.match(/×(\d+)/) || [])[1]) || 1
+    const yuan = r2(giftDou(name) * cnt * YUAN_PER_DOU)
+    /* 0 元的礼物（天鹅羽翼、为你闪耀这类免费礼物）不能报「折合 0 碗」——
+     * 观众听着像在嫌弃。改成说明它是白送的，饭不算它。 */
+    const parts = [
+      yuan > 0 ? `这一份折合 ${bowlsText(yuan)}` : '这一份是免费礼物，不产生音浪（饭不算它）',
+    ]
+    if (left) parts.push(left)
+    /* 🔴 「必须先叫出他的名字」这句是 2026-10-30 补的，血的教训：
+     * 加了白饭之后模型跑去算账，忘了点名（实测「人气票也收到啦，这碗饭我记着呢」），
+     * 直接被 reply.mjs 的点名闸门打回本地话术。饭是锦上添花，点名才是礼物感谢的本体。 */
+    return (
+      `（${parts.join('；')}。规矩：这句话里**必须先叫出他的名字**，饭提不提都行 —— ` +
+      '想提就顺口带一句，别整句都在算账，也别报小数。）'
+    )
+  }
+  if (!/白饭|饭碗|饭钱|几碗|多少钱|余额|还剩|穷|破产|养得起|赚|亏|成本|烧钱/.test(String(text || ''))) return ''
+  return `（现场实况：${left || '余额还没拉到'}；**本场**观众喂了 ${st.inSessionText}，你自己说话烧了 ${st.outText}。问到这个就照实说，别编数。）`
+}
+
+setRiceHint(riceHintFor)
+
+/* 5 秒同步一次 token 成本，60 秒拉一次真余额。
+ * 定时器 unref：别拦着进程退出（她关了窗口进程要能走）。 */
+const riceSync = setInterval(() => {
+  try {
+    syncRiceCost()
+  } catch {}
+}, 5000)
+if (riceSync.unref) riceSync.unref()
+const ricePoll = setInterval(() => {
+  pollBalance().catch(() => {})
+}, 60000)
+if (ricePoll.unref) ricePoll.unref()
+setTimeout(() => {
+  syncRiceCost()
+  pollBalance().catch(() => {})
+}, 4000).unref?.()
 
 /* ── 用户记忆（2026-10-27 加）──────────────────────────────────────────
  * 主人要「按用户记档案」：昵称、首次/最近时间、送礼记录、互动次数、手动备注。
@@ -708,12 +1112,16 @@ function saveGiftCfg() {
   }
 }
 
-/** 模板渲染。变量：{user} 昵称、{gift} 礼物名、{count} 数量 */
+/** 模板渲染。变量：{user} 昵称、{gift} 礼物名、{count} 数量、{rice} 折合几碗白饭 */
 function renderGiftTpl(tpl, { user, gift, count }) {
+  const riceTxt = bowlsText(r2(giftDou(gift) * (Number(count) || 1) * YUAN_PER_DOU))
   const t = String(tpl || '')
     .replace(/\{user\}/g, user || '你')
     .replace(/\{gift\}/g, gift || '礼物')
     .replace(/\{count\}/g, String(count || 1))
+    /* {rice}：把礼物折成白饭（2026-10-30）。填在模板里比塞人设卡稳 ——
+     * 模板是主人自己写的，数字由桥算，模型改不了数。 */
+    .replace(/\{rice\}/g, riceTxt)
     .replace(/\s+/g, ' ')
     .trim()
   /* 礼物名读不到时模板会变成「谢谢XX的礼物」这种还算通顺的句子；
@@ -791,6 +1199,29 @@ const MEDIA_GIFT_MAP = {
   嘉年华: 4, 浪漫马车: 4, 火箭飞船: 4, 星际: 4, 独角兽: 4,
 }
 
+/* ── 声线（2026-10-30 搬进设置页）────────────────────────────────────
+ * 以前 voice/rate 是写死的常量（REPLY_TTS_VOICE 环境变量兜底），改一次要
+ * 重启整个桥。现在存在 cache/media.json 的 `tts` 段里，合成时**现读**，
+ * 改完下一句就生效。环境变量退化成「第一次起桥时的初始值」，不再压着设置页。
+ *
+ * 校验用正则而不是白名单：微软那边加新声线时，这里不用跟着改代码。
+ * 但必须挡住乱填 —— voice 名错会让 edge-tts 每次都抛异常，她直接变哑巴。
+ */
+const VOICE_RE = /^[a-z]{2,3}-[A-Z]{2}(-[a-z]{2,10})?-[A-Za-z]{3,20}Neural$/
+const RATE_RE = /^[+-]?\d{1,3}%$/
+const PITCH_RE = /^[+-]?\d{1,3}Hz$/
+
+/* 默认声线：晓晓（2026-10-30 主人试听后拍板，之前是晓伊）。
+ * 语速 -8% 是 2026-10-27 定下的（+8% 被说太快）。 */
+const TTS_VOICE_DEFAULT = (() => {
+  const v = String(process.env.REPLY_TTS_VOICE || '')
+  return VOICE_RE.test(v) ? v : 'zh-CN-XiaoxiaoNeural'
+})()
+const TTS_RATE_DEFAULT = (() => {
+  const r = String(process.env.REPLY_TTS_RATE || '')
+  return RATE_RE.test(r) ? r : '-8%'
+})()
+
 const MEDIA_DEFAULTS = {
   on: true, // 总开关：关掉后礼物只发感谢，不播媒体
   /* 音乐总开关（2026-10-28）。跟上面的 on 是两件事：on 管「电脑展示区的素材」，
@@ -844,6 +1275,12 @@ const MEDIA_DEFAULTS = {
    * 之所以放在 media.json 里，是因为「电脑展示区」和「声音」本来就是同一套
    * 播放链路，分两个文件存迟早对不上。 */
   audio: { voice: 100, media: 100, music: 100, duck: 60 },
+  /* 声线（2026-10-30）。跟上面 audio.voice（音量）是两件事：
+   *   voice = 用哪个嗓子（edge-tts 的音色名）
+   *   rate  = 语速，pitch = 音高。三个一起决定「听起来是谁」。
+   * 存这儿而不是单独一个 tts.json：设置页「声音」这一页改的就是它，
+   * 一个文件存一套声音参数，出问题时只看一处。 */
+  tts: { voice: TTS_VOICE_DEFAULT, rate: TTS_RATE_DEFAULT, pitch: '+0Hz' },
 }
 
 const MEDIA_KINDS = {
@@ -901,6 +1338,13 @@ function loadMediaCfg() {
           out.audio[k] = Math.max(0, Math.min(100, Math.round(Number(j.audio[k]))))
         }
       }
+    }
+    /* 声线（2026-10-30）：文件里的值只认格式对的，坏值保持默认 ——
+     * 手改 media.json 写错一个字母不该让她彻底哑掉。 */
+    if (j.tts && typeof j.tts === 'object') {
+      if (typeof j.tts.voice === 'string' && VOICE_RE.test(j.tts.voice)) out.tts.voice = j.tts.voice
+      if (typeof j.tts.rate === 'string' && RATE_RE.test(j.tts.rate)) out.tts.rate = j.tts.rate
+      if (typeof j.tts.pitch === 'string' && PITCH_RE.test(j.tts.pitch)) out.tts.pitch = j.tts.pitch
     }
   } catch {
     /* 没有配置文件就用默认 —— 第一次跑就是这条路径 */
@@ -1177,6 +1621,13 @@ function mediaBegin(item, meta) {
   clearEndTimer()
   MEDIA.endTimer = setTimeout(() => mediaFinish(MEDIA.cur && MEDIA.cur.seq, '超时'), maxMs + 2500)
   if (MEDIA.endTimer.unref) MEDIA.endTimer.unref()
+
+  /* 素材视频开场说一句（2026-10-29 主人要的）。
+   * 只在**闲时自己放**时排 —— 观众点播那一路 replyWorker 本来就会回一句
+   * 「行，放一段」，再来一句开场等于同一件事说两遍，听着像卡带。 */
+  if (tier === 0 && !meta.request && !meta.silent && REPLY_ON && !livePaused) {
+    queueReply({ kind: 'videoIntro', text: item.name, user: '', at: Date.now() })
+  }
 }
 
 /** 结束当前这一份，并把队列里的下一份顶上来。seq 不匹配说明已经换人了，忽略。 */
@@ -1190,6 +1641,16 @@ function mediaFinish(seq, why) {
   /* 闲时视频收工 → 音乐接着放。礼物媒体的 duck 由 scheduleUnduck 自己恢复。 */
   if (done.tier === 0) resumeMusicAfterMedia()
   if (why) mediaLog(`■ ${done.tier === 0 ? '闲时' : `档位${done.tier}`} 结束（${why}）`, 'end')
+  /* 素材视频收尾一句（2026-10-29 主人要的）。
+   * 三个「不说」：① 不是正常播完（超时 / 被她说话打断）—— 观众还没看完就
+   * 评价，比不评价更怪；② 紧跟着还有下一段；③ 已经下播了。
+   *
+   * ⚠️ 别写成 `why === '播完'`：画面（native/overlay.py:371）回的是
+   * **「画面播完」**，桥自己的兜底超时才是「超时」。用 includes 判，
+   * 两边谁改一个字都不会静默失效。 */
+  if (done.tier === 0 && String(why || '').includes('播完') && !MEDIA.queue.length && REPLY_ON && !livePaused) {
+    queueReply({ kind: 'videoOutro', text: done.name, user: '' })
+  }
   if (MEDIA.queue.length) {
     const nx = MEDIA.queue.shift()
     mediaBegin(nx.item, nx.meta)
@@ -1468,7 +1929,9 @@ function mediaOut() {  const scan = scanMedia()
  * 直播里短句重复率极高，命中缓存就是 0 延迟（见 tools/tts.py 头注释）。
  *
  * 关掉：--no-tts 或环境变量 REPLY_TTS=0
- * 换音色：REPLY_TTS_VOICE=zh-CN-XiaoxiaoNeural
+ * 换音色：**设置页 → 声音 → 声线**（存 cache/media.json 的 tts 段，下一句生效）。
+ *         环境变量 REPLY_TTS_VOICE / REPLY_TTS_RATE 只剩「第一次起桥的初始值」，
+ *         不再压着设置页 —— 否则设置里改了没反应，排查起来很绕。
  *
  * 🔴 demo 模式默认**不出声**（2026-10-27 加）：拿 --demo 验链路时如果还开麦，
  *    这台机器上就真的会念「谢谢 K 的抖音一号」—— 主人正在直播，观众全听见了。
@@ -1476,8 +1939,17 @@ function mediaOut() {  const scan = scanMedia()
  */
 const TTS_ON = !has('no-tts') && String(process.env.REPLY_TTS ?? '1') !== '0'
   && !(DEMO && !has('speak'))
-const TTS_VOICE = String(process.env.REPLY_TTS_VOICE || 'zh-CN-XiaoyiNeural')
-const TTS_RATE = String(process.env.REPLY_TTS_RATE || '-8%')
+
+/* 当前生效的声线三件套。**每次合成现读** mediaCfg —— 设置页保存后下一句就变，
+ * 不用重启桥，也不用重启 tts 常驻进程（它本来就每条命令都收 voice/rate/pitch）。 */
+function ttsCfg() {
+  const t = (mediaCfg && mediaCfg.tts) || {}
+  return {
+    voice: VOICE_RE.test(t.voice || '') ? t.voice : TTS_VOICE_DEFAULT,
+    rate: RATE_RE.test(t.rate || '') ? t.rate : TTS_RATE_DEFAULT,
+    pitch: PITCH_RE.test(t.pitch || '') ? t.pitch : '+0Hz',
+  }
+}
 
 /** 优先用项目里的 .venv（edge-tts 装在那儿），没有才退回系统 python。
  *
@@ -2160,6 +2632,18 @@ function boxQueueSettle(nowTitle, nowId) {
 /* ⚠️ 别塞进 box 对象里：boxState() 每次都整个换一个新对象，塞进去就丢了，
  * 结果「播放中」这个判断永远成立，日志每 1.5 秒刷一行。 */
 let boxLastPlaying = null
+/* 当前这首是**什么时候**换上的（2026-10-29）。
+ *
+ * 换歌那一瞬间，播放器页面已经把 currentId 换成新歌、但 audio 元素里还是上一首
+ * （它已经 ended：currentTime == duration、paused == true）。页面每 2 秒上报一次，
+ * 正好把这个「新歌 + 上一首的末尾 + 没在放」的组合报上来 —— 于是桥看到
+ * 「停在末尾」→ 热榜垫歌走 play → **把这首刚起播的歌顶掉**。
+ * 20:53 猎户座点的《苦茶子》就这么没了，观众原话「不是我的歌你给我吃了啊」。
+ *
+ * 页面那边已经改了（换歌先清掉旧 audio），这里再兜一层：6 秒内换上的歌，
+ * 一律不算「播放器空着」。宁可晚 6 秒垫热榜，也不能吃掉观众点的歌。 */
+let boxTrackAt = 0
+let boxTrackId = ''
 
 /** 调插件接口。连不上 / 401 / 不是 JSON 都折成 {ok:false, why}，绝不抛。 */
 async function boxJson(pathname, { method = 'GET', body, timeout = 3000 } = {}) {
@@ -2249,6 +2733,10 @@ function boxToMusic() {
     trackId: String(n.trackId || ''),
     /* 这首是不是观众点的。false = 热榜/自动续播 → 画面不显示，只后台放。 */
     hot: !requestedIds.has(String(n.trackId || '')),
+  }
+  if (music.trackId && music.trackId !== boxTrackId) {
+    boxTrackId = music.trackId
+    boxTrackAt = Date.now()
   }
   if (music.title && (music.title !== prevTitle || music.playing !== boxLastPlaying)) {
     log(`  ♫ ${music.title}${music.artist ? ' - ' + music.artist : ''}${music.playing ? '' : '（暂停）'}`)
@@ -3000,6 +3488,22 @@ let hotAt = 0
 let hotWhy = ''
 let hotLoaded = false // 惰性读盘：第一次真要补歌时才去读，省得启动流程到处插
 
+/** 热榜下发前的最后一道闸（2026-10-29）。
+ *
+ *  `play` 的语义是**换掉当前曲**，判断错一次观众点的歌就彻底没了
+ *  （20:53 猎户座的《苦茶子》被顶掉，观众当场问「我的歌呢」）。
+ *  所以在真要发 play 之前，现场再问一次播放器：只要有歌在，就降级成排队尾。
+ *  成本只有一次 /state，而且只有「打算 play」的时候才付。 */
+async function hotCmdFor(started, track) {
+  if (started) return { type: 'queue_add', tracks: [track] }
+  const chk = await boxState().catch(() => null)
+  if (chk && chk.ok && chk.now && chk.now.trackId) {
+    log(`  ♫ 热榜复核：播放器里是《${chk.now.name || '?'}》，改成排队尾，不顶掉它`)
+    return { type: 'queue_add', tracks: [track] }
+  }
+  return { type: 'play', track }
+}
+
 function todayTag() {
   const d = new Date()
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
@@ -3162,8 +3666,12 @@ async function fillHot() {
      * 这时候拿 play 把歌跳走就是捣乱。同理闲时视频压出来的暂停也不碰（musicPausedByMedia）。 */
     const now0 = box.now
     const atEnd = Boolean(now0 && now0.durationSec > 0 && now0.positionSec >= now0.durationSec - 3)
+    /* 🔴 刚换上的歌不算「播放器空着」（2026-10-29，详见 boxTrackAt 的注释）。
+     * 换歌那一两秒里页面报上来的是「新歌的 id + 上一首的末尾 + 没在放」，
+     * 照字面判断就是「停在末尾」→ 下面走 play → 把这首刚起播的歌顶掉。 */
+    const justSwitched = boxTrackAt > 0 && Date.now() - boxTrackAt < 6000
     const stopped = !(now0 && now0.trackId)
-      || (now0.playing === false && atEnd && !musicPausedByMedia)
+      || (now0.playing === false && atEnd && !musicPausedByMedia && !justSwitched)
     let started = !stopped
     let need = hotNeed()
     let tries = 0
@@ -3196,7 +3704,7 @@ async function fillHot() {
         }
         use = alt
       }
-      const cmd = started ? { type: 'queue_add', tracks: [use] } : { type: 'play', track: use }
+      const cmd = await hotCmdFor(started, use)
       const r = await boxJson('/bridge/command', { method: 'POST', body: cmd, timeout: 6000 })
       if (!r.ok || r.queued === false) {
         hotWhy = r.why || '命令没递进去'
@@ -3221,7 +3729,7 @@ async function fillHot() {
     if (need > 0 && trials.length) {
       for (const track of trials) {
         if (need <= 0) break
-        const cmd = started ? { type: 'queue_add', tracks: [track] } : { type: 'play', track }
+        const cmd = await hotCmdFor(started, track)
         const r = await boxJson('/bridge/command', { method: 'POST', body: cmd, timeout: 6000 })
         if (!r.ok || r.queued === false) {
           hotWhy = r.why || '命令没递进去'
@@ -3384,7 +3892,7 @@ async function refreshQueue(force = false) {
    * 观众早就走了。宁可晚点更新列表，也不能让人等着。
    * 唯一的例外是**第一次**：没有列表的话点歌台就是空的，
    * 而直播里永远都有下一条弹幕，一直等下去就永远抓不到。 */
-  if (queue.at && (replying || chatLatest || songQueue.length || giftQueue.length)) return
+  if (queue.at && (replying || chatQueue.length || songQueue.length || giftQueue.length)) return
   /* 闸门。force 只用来「第一次抓」，但也不能无限快 ——
    * 抓失败时 list 一直是空的，force 每次都成立，原来就是这里把歌单刷成幻灯片的。 */
   const gap = force && queue.fails < 3 ? QUEUE_FLOOR : QUEUE_GAP
@@ -3505,11 +4013,12 @@ async function ttsSynth(text) {
   if (!text.trim()) return { ok: false }
   ttsBusy = true
   try {
+    const c = ttsCfg()
     TTS_SVC.start()
-    const r = await TTS_SVC.cmd({ text, voice: TTS_VOICE, rate: TTS_RATE }, 25000)
+    const r = await TTS_SVC.cmd({ text, voice: c.voice, rate: c.rate, pitch: c.pitch }, 25000)
     if (r && r.ok) return r
     // 常驻进程挂了就退回一次性调用 —— 不能因为一个 bug 让她哑掉
-    const one = await pyOnce('tts.py', ['--text', text, '--voice', TTS_VOICE, `--rate=${TTS_RATE}`], 20000)
+    const one = await pyOnce('tts.py', ['--text', text, '--voice', c.voice, `--rate=${c.rate}`, `--pitch=${c.pitch}`], 20000)
     if (one && one.ok) return one
     log(`  [tts] 合成失败，只出字幕：${r?.why || one?.error || '没返回'}`)
     return { ok: false }
@@ -3574,12 +4083,17 @@ function broadcastStats() {
  *   观众看到的是「她在答非所问」，而且队列永远排不完，每条都要一次模型 + 一次 TTS。
  *   现在分成两条队列：
  *     · 礼物：先进先出，最多 2 条。礼物少、必须点名，丢了就是事故
- *     · 其他（聊天/欢迎/自言自语）：**只留最新一条**，新弹幕直接顶掉还没轮到的那条
- *   另外同一个人 60 秒内重复同一句话只回一次，刷屏刷不动。
+ *     · 其他（聊天/欢迎/自言自语）：只留最新一条
+ *
+ * 🔴 2026-10-29 又改回来：聊天改成 **3 条 FIFO**。
+ *   单槽那个方案在「没有对话历史」的时候还能用，加了 3 轮历史之后立刻露馅 ——
+ *   她答完 A，B 被 C 顶掉，历史里就是 C 直接接 A 的回答，比没有历史还乱。
+ *   3 条是折中：够按顺序接三个人，又不会排到十几秒前的话。
+ *   同一个人重复同一句话的去重窗口也从 60 秒缩到 15 秒（见 SAME_TEXT_MS）。
  */
 const giftQueue = [] // 礼物：FIFO，最多 2 条
 /* 点歌：单独排队（2026-10-27 加）。
- * 原来点歌和闲聊共用 chatLatest，后面的闲聊会把它顶掉 ——
+ * 原来点歌和闲聊共用同一个槽，后面的闲聊会把它顶掉 ——
  * 观众明明点了歌、她一个字都没回、歌也没换，就是这个原因。
  * 点歌是要真去操作播放器的，不能像闲聊那样「算了不回了」。 */
 const songQueue = [] // 上限见 SONG_QUEUE_MAX（6），满了会打日志
@@ -3599,7 +4113,15 @@ const likeQueue = []
 let likeThankedTotal = 0 // 上次谢的时候累计多少个赞了
 let likeThanksAt = 0
 
-let chatLatest = null // 聊天：只留最新一条
+/* 聊天队列（🔴 2026-10-29 改：单槽 → 3 条 FIFO）。
+ *
+ * 原来只留最新一条，新弹幕直接顶掉还没轮到的那条。直播里弹幕一密，
+ * 大部分观众根本没被回过，而且被顶掉的那条**一句话都不留**。
+ * 加了 3 轮对话历史之后这个坑更明显：她答完 A，B 被 C 顶掉，
+ * 历史里就是 C 直接接 A 的回答，看着像答非所问 —— 比没有历史还乱。
+ * 3 条是折中：够她按顺序接三个人，又不至于排到十几秒前的话。 */
+const CHAT_QUEUE_MAX = 3
+const chatQueue = [] // 聊天：FIFO，最多 3 条
 let replying = false // 回复线程在不在跑（单线程，同一时刻只回一条）
 let lastChatAt = 0 // 上一条聊天回复的开始时间，两条之间至少隔 CHAT_GAP
 /* 两条聊天之间的间隔。原来是 5 秒（「别像播报」），2026-10-27 主人定成 2.5 秒，
@@ -3620,7 +4142,156 @@ function setChatGap(ms) {
   CHAT_GAP = v
   return { ok: true, ms: CHAT_GAP, sec: CHAT_GAP / 1000 }
 }
+/* 同人同句的去重窗口。2026-10-29：60 秒 → 15 秒（主人定）。
+ * 只用来挡「一个人狂刷同一句」，不该管正常重复。 */
+const SAME_TEXT_MS = 15000
 const saidRecent = new Map() // "人|话" → 最后一次的时间，防复读
+
+/* ------------------------------------------------------------ 对话历史（A）
+ * 2026-10-29 加。3 轮 = 3 组「观众说 + 她说」，最多 6 条消息。
+ *
+ * 为什么放桥这儿、不放 reply.mjs：
+ *   reply.mjs 是「话术引擎」，无状态，谁调都一样。
+ *   历史是**这一场直播**的状态（跟队列、去重表一个性质），
+ *   而且只有桥知道「这句话到底说没说出口」。
+ *
+ * 只记 chat / gift / chitchat。welcome（进场）和 like（点赞）不进 ——
+ * 量大、信息少，塞进去只会把真正的对话挤出去。
+ */
+const DIALOG_ROUNDS = 3
+const dialog = [] // [{role:'user'|'assistant', content}]
+
+/** 一条 ctx 翻成「历史里该长什么样」。
+ * 不能直接复用 userLine()：那里全是给模型的指令（「按这个事实回一句，别说反」），
+ * 回放给模型看会把它自己绕晕。历史只留「谁说了什么」。 */
+function dialogUserMsg(ctx) {
+  if (!ctx) return ''
+  if (ctx.kind === 'gift') return `${ctx.user || '有人'} 送了礼物：${ctx.text || ''}`
+  if (ctx.kind === 'chitchat') return '（直播间冷场，你自己开了个话头）'
+  if (ctx.kind === 'videoIntro' || ctx.kind === 'videoOutro') return ''
+  if (!ctx.text) return ''
+  return `${ctx.user || '有人'}：${ctx.text}`
+}
+
+/** 她说出口了 → 记一轮。只留最近 DIALOG_ROUNDS 组。 */
+function rememberDialog(ctx, said) {
+  const u = dialogUserMsg(ctx)
+  if (!u || !said) return
+  dialog.push({ role: 'user', content: u })
+  dialog.push({ role: 'assistant', content: said })
+  while (dialog.length > DIALOG_ROUNDS * 2) dialog.shift()
+}
+
+/* ------------------------------------------------------------ 对话账本
+ * 2026-10-29 主人要的：按天记「谁说了什么 / 她回了什么 / 为什么没回」。
+ *
+ * 为什么另开文件、不往 events.jsonl 里加：
+ *   events.jsonl 是**上游原始事件**（房间统计、进场、点赞全量，一天 1MB+），
+ *   只在排障时翻。账本只记对话，一天 100KB 上下，随手就能看。
+ *   混在一起的话，想数「今天回了多少条」得先滤掉一半垃圾。
+ *
+ * 一行一条，append-only。写失败绝不能让直播挂 —— 这里所有异常都吞掉，
+ * 只在第一次失败时喊一声然后彻底关掉。
+ */
+const LOG_DIR = path.join(DIR, 'logs')
+let logDayAt = ''
+let logBroken = false
+
+const pad2 = (n) => String(n).padStart(2, '0')
+function dayOf(t) {
+  const d = new Date(t)
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`
+}
+function hmsOf(t) {
+  const d = new Date(t)
+  return `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`
+}
+
+/**
+ * 记一条。
+ * @param {object} rec {kind, user, uid, text, reply, tts, dur, parts, drop}
+ *   drop 非空 = **这条没回**（队列满 / 同句去重 / 排太久），此时 reply 是空串。
+ */
+function chatLog(rec) {
+  if (logBroken) return
+  /* 进场不记（2026-10-30 主人明确要求）。
+   * 第一版理解错了，只挡了上游的 member 事件，结果欢迎语走正常回复流程，
+   * 照样被记 —— 实测一天 665 条，占账本 38%，真正的对话全被淹了。
+   * 统一在这里挡：所有落点都过这个函数，改一处就够。 */
+  if (rec.kind === 'welcome') return
+  try {
+    const now = Date.now()
+    const day = dayOf(now)
+    /* 跨零点自动换文件：按**写入时**的日期判断，不用定时任务，
+     * 直播到凌晨三点也不会把今天的算到昨天去。 */
+    if (day !== logDayAt) {
+      fs.mkdirSync(LOG_DIR, { recursive: true })
+      logDayAt = day
+    }
+    fs.appendFileSync(path.join(LOG_DIR, `${day}.jsonl`), JSON.stringify({ t: now, ts: hmsOf(now), ...rec }) + '\n')
+  } catch (e) {
+    logBroken = true
+    log('  [log] 对话账本写不进去，后面不记了：' + (e?.message || e))
+  }
+}
+
+/* ------------------------------------------------------------ 现场歌单
+ * 2026-10-30 主人：「问她有没有推荐的歌曲，她不会真的推荐，避开不回有点蠢」。
+ *
+ * 她其实知道歌单里有什么（`queue.list`），但这份信息以前**只在冷场时给**
+ * （见 buildFacts）。平时聊天 user 行里一片空白，模型只能说
+ * 「老熟人了还问，来首你爱听的那种」—— 一个歌名都提不出来。
+ *
+ * 主人定的做法：**不做「是否在问推荐」的语义判断**。正则切分太脆，
+ * 「推荐两首」「有什么歌好听」「来点歌」要写一堆规则还漏；
+ * 直接把歌单塞进每条聊天，让模型自己看这句话要不要用。
+ * 一次几十个 token，比养一套正则值。
+ */
+function buildReco(ctx) {
+  /* 只有聊天要歌单。礼物 / 欢迎 / 点赞 / 点歌 / 视频梗话都不需要，别白花 token。 */
+  if ((ctx?.kind || 'chat') !== 'chat') return null
+  const now = music && music.found ? String(music.title || '') : ''
+  const list = Array.isArray(queue.list) ? queue.list.filter(Boolean) : []
+  /* 歌单里常常也含当前这首，排掉 —— 推荐「正在放的这首」没意义。 */
+  const pool = list.filter((s) => String(s) !== now)
+  if (!pool.length && !now) return null
+  return { songs: pool.slice(0, 6), now }
+}
+
+/* ------------------------------------------------------------ 冷场素材（B）
+ * 2026-10-29 加。原来冷场她只会说「突然这么安静」—— 因为她**什么都不知道**。
+ * 现在把现场能看见的拼给她：在放什么歌、刚谁送了什么、几个人在看。
+ *
+ * 同一个素材 10 分钟内不重复（主人定）。不卡的话，一首歌放三分钟她能提四次，
+ * 立刻变成报幕的。 */
+const FACT_REPEAT_MS = 10 * 60000
+const factUsed = new Map() // 素材键 -> 上次用到的时刻
+
+function factFresh(key) {
+  if (!key) return false
+  const t = factUsed.get(key) || 0
+  if (Date.now() - t < FACT_REPEAT_MS) return false
+  factUsed.set(key, Date.now())
+  if (factUsed.size > 200) {
+    const cut = Date.now() - FACT_REPEAT_MS
+    for (const [k, v] of factUsed) if (v < cut) factUsed.delete(k)
+  }
+  return true
+}
+
+/** 这一轮的「现场实况」。全用过了就返回 null，让话术退回老台词。 */
+function buildFacts() {
+  const f = { song: '', songBy: '', gift: '', online: stat.online }
+  if (music && music.found && music.title && factFresh('song|' + music.title)) {
+    f.song = music.title
+    f.songBy = music.artist || ''
+  }
+  if (lastGiftName && Date.now() - lastGiftAt < 5 * 60000 && factFresh('gift|' + lastGiftName)) {
+    f.gift = lastGiftName
+  }
+  if (!f.song && !f.gift) return null
+  return f
+}
 
 /* 点歌队列上限。
  * 🔴 2026-10-28 凌晨：原来是写死的 3，而且超了**一声不响** `shift()` 掉最老的。
@@ -3639,15 +4310,27 @@ function queueReply(ctx) {
     const key = `${ctx.user || ''}|${String(ctx.text || '').slice(0, 40)}`
     const isSong = isSongRequest(ctx.text)
     const last = saidRecent.get(key) || 0
-    if (Date.now() - last < 60000) {
-      /* 同一句 60 秒内不重复回。点歌这种情况尤其容易让人误会 ——
-       * 点了没反应，其实是被当成重复顶掉了。留一行日志，别让它无声无息。 */
-      if (isSong) log(`  🎵 点歌去重：${ctx.user} 一分钟内已经点过「${ctx.text}」，这条不重复处理`)
+    /* 🔴 2026-10-29 主人定：60 秒 → 15 秒。
+     * 60 秒那道闸门本意是挡刷屏，实际把太多正常的话也吃掉了 ——
+     * 观众一句「好听」隔半分钟再说一次，她当没看见。
+     * 15 秒足够挡住「一个人狂刷同一句」，正常聊天不会在半分钟内重复同一句。 */
+    if (Date.now() - last < SAME_TEXT_MS) {
+      /* 被去重掉也是一条「没回」，得落账本 —— 否则事后只看到观众说了话、
+       * 没有回复，分不清是去重、队列满、还是上游压根没给。 */
+      chatLog({
+        kind: ctx.kind || 'chat',
+        user: ctx.user || '',
+        uid: ctx.uid || '',
+        text: ctx.text || '',
+        reply: '',
+        drop: `同句 ${SAME_TEXT_MS / 1000} 秒内重复`,
+      })
+      if (isSong) log(`  🎵 点歌去重：${ctx.user} ${SAME_TEXT_MS / 1000} 秒内已经点过「${ctx.text}」，这条不重复处理`)
       return
     }
     saidRecent.set(key, Date.now())
     if (saidRecent.size > 300) {
-      const cut = Date.now() - 60000
+      const cut = Date.now() - SAME_TEXT_MS * 4
       for (const [k, t] of saidRecent) if (t < cut) saidRecent.delete(k)
     }
     if (isSong) {
@@ -3655,33 +4338,70 @@ function queueReply(ctx) {
       while (songQueue.length >= SONG_QUEUE_MAX) {
         const gone = songQueue.shift()
         log(`  🎵 点歌排到 ${SONG_QUEUE_MAX} 条满了，丢掉最早那条：${gone.user || '?'}「${gone.text}」`)
+        chatLog({ kind: 'chat', user: gone.user || '', uid: gone.uid || '', text: gone.text || '', reply: '', drop: `点歌队列满 ${SONG_QUEUE_MAX} 条` })
       }
       songQueue.push(ctx)
       if (songQueue.length > 1) {
         log(`  🎵 点歌排队 ${songQueue.length} 条，还在等：${songQueue.map((x) => x.text).join(' / ')}`)
       }
+    } else if (ctx.kind === 'chat' && looksSongish(ctx.text)) {
+      /* 正则没认出来、但**像**点歌的句子（2026-10-30 加）。
+       * 这里只能同步判，不能等模型 —— 排队要立刻做决定。
+       * 所以宁可先放进点歌队列（6 格、优先级高），让 replyWorker 里的
+       * songIntent 去问模型；判成不是点歌就照常当聊天回，只是插了个队。
+       * 反过来放聊天队列的代价大得多：聊天队列只有 3 格，真人点歌被当聊天丢掉
+       * 就是「点了没点上」——今天要修的就是这个。 */
+      while (songQueue.length >= SONG_QUEUE_MAX) {
+        const gone = songQueue.shift()
+        log(`  🎵 点歌队列满了，丢掉最早那条：${gone.user || '?'}「${gone.text}」`)
+        chatLog({ kind: 'chat', user: gone.user || '', uid: gone.uid || '', text: gone.text || '', reply: '', drop: `点歌队列满 ${SONG_QUEUE_MAX} 条` })
+      }
+      songQueue.push(ctx)
+      log(`  🎵 像点歌但正则没认出来，先排进点歌队列待定：${ctx.user || '?'}「${ctx.text}」`)
     } else {
-      // 顶掉还没轮到的那条：观众要的是「她现在在理我」，不是「她五秒前理了别人」
-      chatLatest = ctx
+      /* 满了丢最老的，但**必须打日志** —— 静默丢是最难查的故障
+       * （2026-10-28 点歌队列就是这么翻车的：主人问「是不是说话太快被过滤了」）。 */
+      if (chatQueue.length >= CHAT_QUEUE_MAX) {
+        const gone = chatQueue.shift()
+        log(`  💬 聊天排满 ${CHAT_QUEUE_MAX} 条，丢掉最早那条：${gone.user || '?'}「${String(gone.text || '').slice(0, 20)}」`)
+        chatLog({
+          kind: gone.kind || 'chat',
+          user: gone.user || '',
+          uid: gone.uid || '',
+          text: gone.text || '',
+          reply: '',
+          drop: `聊天队列满 ${CHAT_QUEUE_MAX} 条`,
+        })
+      }
+      chatQueue.push(ctx)
     }
   } else {
-    if (giftQueue.length >= 2) giftQueue.shift()
+    /* 礼物队列只有 2 格，满了照样要丢 —— 而且是**礼物**，更得留痕：
+     * 送钱的人没被感谢，事后只有账本能证明发生过。 */
+    if (giftQueue.length >= 2) {
+      const gone = giftQueue.shift()
+      log(`  🎁 礼物排队满了，丢掉最早那条：${gone.user || '?'}「${gone.text}」`)
+      chatLog({ kind: 'gift', user: gone.user || '', uid: gone.uid || '', text: gone.text || '', reply: '', drop: '礼物队列满 2 条' })
+    }
     giftQueue.push(ctx)
   }
   if (!replying) replyWorker()
 }
 
-/** 下一个该回什么。礼物 > 点歌 > 点赞 > 聊天。
+/** 下一个该回什么。礼物 > 点歌 > 聊天 > 点赞。
  *  礼物优先是因为送钱的人不能等；点歌排在聊天前面是因为它要真去切歌，
- *  晚一步观众听到的就是「点了歌但放的是下一首别的」；
- *  点赞排在聊天前面，是因为它被节流过了，攒很久才轮到一次，不该被闲聊挤掉。 */
+ *  晚一步观众听到的就是「点了歌但放的是下一首别的」。
+ *
+ *  🔴 2026-10-29 主人定：**聊天排到点赞前面**。
+ *  原来是 点赞 > 聊天，理由「点赞被节流过，攒很久才轮一次」。
+ *  但实际观感是：有人说话她被晾着，去谢一个飘过去的爱心。
+ *  点赞本来就不是「有人在等回应」，晚几秒没人在意；聊天晚 5 秒人可能就走了。 */
 function nextCtx() {
   if (giftQueue.length) return giftQueue.shift()
   if (songQueue.length) return songQueue.shift()
+  if (chatQueue.length) return chatQueue.shift()
   if (likeQueue.length) return likeQueue.shift()
-  const c = chatLatest
-  chatLatest = null
-  return c
+  return null
 }
 
 async function replyWorker() {
@@ -3689,6 +4409,14 @@ async function replyWorker() {
   while (true) {
     const ctx = nextCtx()
     if (!ctx) break
+    /* 视频开场话有时效（2026-10-29）。replyWorker 是串行的，
+     * 前面压着一条点歌就能卡十几秒 —— 等轮到它，视频已经放一半了，
+     * 这时候再说「这段我私藏的」观众只会莫名其妙。超过 8 秒直接丢。 */
+    if (ctx.kind === 'videoIntro' && ctx.at && Date.now() - ctx.at > 8000) {
+      log('  🖥 开场话排太久（视频已放一半），跳过')
+      chatLog({ kind: 'videoIntro', user: '', text: ctx.text || '', reply: '', drop: '排太久，视频已放一半' })
+      continue
+    }
     // 两条聊天之间留个空档，不然连着说是「播报」不是「聊天」
     if (ctx.kind !== 'gift') {
       const wait = lastChatAt + CHAT_GAP - Date.now()
@@ -3720,20 +4448,38 @@ async function replyWorker() {
 
     /* 点歌：真去放（2026-10-27 加，2026-10-27 晚换成插件）。
      * 之前只回了句「好嘞，这就放」——观众看着歌名没变，等于被骗。
-     * 现在先真的放/排队，再生成回复，回复里才能说「切到《xxx》」而不是空口白话。 */
-    if (ctx.kind !== 'gift' && isSongRequest(ctx.text)) {
+     * 现在先真的放/排队，再生成回复，回复里才能说「切到《xxx》」而不是空口白话。
+     *
+     * 🔴 2026-10-30：判定换成 `songIntent`（正则快路 + 模型兜底）。
+     * 以前这里直接 `isSongRequest(ctx.text)`，纯正则 —— 「点一首《雨爱》」这种
+     * 换个人说法就整句漏掉，一次搜索都没发，她还回「排第二首啦」。
+     * 现在正则没命中、但像点歌的会问一次模型（1.8 秒上限）。
+     * ⚠️ 这里必须 await：它是整条链路**唯一**决定「到底切不切歌」的地方。 */
+    const intent = ctx.kind === 'gift'
+      ? null
+      /* 只有真人弹幕才值得问模型。视频开场/收尾、主动搭话那些 ctx.text 是文件名，
+       * 像「唱歌合集.mp4」这种一问就中，会把正在放的歌切掉。 */
+      : await songIntent(ctx.text, { allowLlm: ctx.kind === 'chat' })
+    if (intent && intent.isSong) {
       /* 点歌写法（2026-10-27 主人定）：**点歌，歌名，歌手（可不填）**。
        * 歌手不是必填，但它能显著提高搜索命中率 —— 同名歌太多了，
        * 只拿「孤勇者」去搜，插件可能挑到翻唱；带上「陈奕迅」就准得多。 */
-      const ask = songAsk(ctx.text)
+      const ask = { title: intent.title, artist: intent.artist }
       const want = ask.title
       const q = ask.artist ? `${want} ${ask.artist}` : want
       /* 有人在问「怎么点歌」—— 不搜歌，让 reply.mjs 直接教格式。
        * 不单独拦的话，「怎么点歌」会被当成点了一首叫「怎么」的歌。 */
-      if (isSongHelp(ctx.text)) {
+      if (intent.help) {
         ctx.song = { name: '', help: true }
         log('  🎵 有人在问点歌格式，直接教他')
       } else {
+      /* 模型兜底判成点歌的，日志要留痕 —— 事后查「为什么这条搜了」
+       * 全靠这一行，不然只看到一条 🎵 点歌，不知道是正则还是模型认的。 */
+      if (intent.via === 'llm') {
+        log(`  🎵 正则没认出来，模型判定是点歌：「${want || '（没说歌名）'}」← ${ctx.text}`)
+      } else if (intent.via !== 'regex') {
+        log(`  🎵 判定走 ${intent.via}，按点歌处理：「${want || '（没说歌名）'}」`)
+      }
       /* 第一优先：单身汉播放器（真搜索 + 真队列，能指定放哪一首）。
        * 它不在（没装 / DSH 没开 / 音乐界面没开）才回落到 QQ 音乐那套翻歌。 */
       const boxR = want ? await boxRequestSong(want, ask.artist) : { ok: false, why: '没听出歌名' }
@@ -3799,14 +4545,31 @@ async function replyWorker() {
       /* 面板里填了感谢模板就直接用 —— 不走模型。
        * 好处：① 主人写什么就说什么，不会被模型改写；② 零延迟、零 token；
        * ③ 模板里的 {user} 一定替换对了，不会出现「谢谢undefined」。 */
-      text = ctx.forceText ? String(ctx.forceText) : await makeReply(ctx)
+      text = ctx.forceText
+        ? String(ctx.forceText)
+        : await makeReply({
+            ...ctx,
+            /* 3 轮对话历史（A）+ 现场实况（B）。2026-10-29。
+             * facts 只在冷场时组装 —— factFresh() 会消耗"新鲜度"，
+             * 每句都调的话，素材会被普通回复吃光，真冷场时反而没得说。 */
+            history: dialog.slice(),
+            facts: ctx.kind === 'chitchat' ? buildFacts() : null,
+            /* 现场歌单：让她能真推荐出一首歌名，而不是反问观众想听什么。 */
+            reco: buildReco(ctx),
+          })
     } catch (e) {
       log('  [reply] 出错：', e?.message || e)
+      chatLog({ kind: ctx.kind || 'chat', user: ctx.user || '', uid: ctx.uid || '', text: ctx.text || '', reply: '', drop: '生成出错：' + String(e?.message || e).slice(0, 40) })
       continue
     }
-    if (!text) continue
+    if (!text) {
+      chatLog({ kind: ctx.kind || 'chat', user: ctx.user || '', uid: ctx.uid || '', text: ctx.text || '', reply: '', drop: '没生成出话' })
+      continue
+    }
     stat.replied++
-    spendMoney() // 饭钱：每开一次口扣 0.05
+    /* 以前这里 spendMoney()（假账：每句固定 -0.05）。2026-10-30 换成白饭后废掉 ——
+     * 真实的钱由 reply.mjs 按 usage 记进 costStats，再由 syncRiceCost 折算成碗。
+     * 留着那句会变成「两套账各扣各的」，数字永远对不上。 */
 
     /* 闲时视频还在放就先收掉 —— 她开口的时候不该有别人的声音在旁边抢戏。
      * 放在 ttsSynth 之前：只在「真要出声」的这一条路上让位，纯字幕不走这儿。
@@ -3851,17 +4614,47 @@ async function replyWorker() {
      * 550 句里有 65 句是这样）。
      * 播放器本身是串行的（见 playFile 注释：player 自己会播完再收下一条），
      * 所以根本不用在这里挡 —— 合成了丢给播放器，它会排队播。 */
-    const syn = await ttsSynth(text)
-    const dur = syn.ok ? Number(syn.dur) || 0 : 0
-
+    /* C3：长回复拆两段说（2026-10-29 主人定）。
+     * 字幕条一次只放得下 21 字，40 字的回答得分两次上屏。
+     * 第一段出声后要等它**差不多念完**再上第二段 —— 不等的话字幕先跳到
+     * 后半句、声音还在念前半句，观众看着就是错位。
+     *
+     * 单段的（绝大多数）走的还是原来那条路，一个字都没变。 */
+    const parts = speakSplit(text)
+    let dur = 0
+    for (let i = 0; i < parts.length; i++) {
+      const syn = await ttsSynth(parts[i])
+      const d = syn.ok ? Number(syn.dur) || 0 : 0
+      dur += d
+      const isLast = i === parts.length - 1
+      setMood('idle') // 说话期间回待机（还没有"张嘴说话"的素材），字幕会盖住状态
+      /* say 逐段更新：/state.json 的字幕读它，前端要跟着当前这段走。 */
+      say = { text: parts[i], until: Date.now() + Math.max(2500, d * 1000 + 600) }
+      broadcast('say', { text: parts[i], dur: d, pending: !isLast, part: i + 1, parts: parts.length })
+      if (d > 0) playFile(syn)
+      /* 段间缓冲：合成有零点几秒延迟，播放器又是串行的，正好接上不卡壳。 */
+      if (!isLast) await sleep(Math.max(900, d * 1000 + 120))
+    }
     let hold = Math.max(4200, text.length * 340)
     if (dur > 0) hold = Math.max(hold, dur * 1000 + 900)
-    say = { text, until: Date.now() + hold }
-    setMood('idle') // 说话期间回待机（还没有"张嘴说话"的素材），字幕会盖住状态
-    broadcast('say', { text, dur, pending: false })
-    log(`  🗣 ${text}`)
+    say = { text: parts.length ? parts[parts.length - 1] : text, until: Date.now() + hold }
+    log(`  🗣 ${text}${parts.length > 1 ? `（拆 ${parts.length} 段）` : ''}`)
+    /* 说出口了才进历史 —— 观众听到的那一版才算数（2026-10-29，A）。 */
+    rememberDialog(ctx, text)
+    /* 落账本（2026-10-29）：谁说的、她回了什么、出没出声、拆没拆段。
+     * 点歌和点播单独标出来 —— 它们在本体里都是 kind:'chat'，
+     * 不分的话账本里翻不出「今天点了哪些歌」，只能靠 text 猜。 */
+    chatLog({
+      kind: ctx.song ? 'song' : ctx.video ? 'video' : (ctx.kind || 'chat'),
+      user: ctx.user || '',
+      uid: ctx.uid || '',
+      text: ctx.text || '',
+      reply: text,
+      tts: dur > 0,
+      dur: Number(dur.toFixed(1)),
+      parts: parts.length,
+    })
     broadcastStats()
-    if (dur > 0) playFile(syn)
 
     await sleep(Math.max(1400, hold * 0.55))
   }
@@ -4029,6 +4822,7 @@ function pushEvent(d) {
     return
   }
   stat.total++
+  lastEventAt = Date.now()
   if (!n) {
     /* 认不出来的事件以前是**静默丢弃**的。主人问「我发的弹幕怎么没显示」时，
      * 光看日志分不清是「上游没给」还是「给了但我们没认出来」——这两件事
@@ -4063,6 +4857,12 @@ function pushEvent(d) {
      * 判据是「弹幕/进场在流，礼物却一条都没有」（见 giftHealth()）。 */
     lastGiftAt = Date.now()
     giftEvents++
+    lastGiftName = n.giftName ? `${n.user || ''}送的${n.giftName}`.replace(/^送的/, '') : ''
+    /* 白饭记账（2026-10-30）：礼物折成钱进「今天收入」。
+     * 放在这儿而不是感谢流程里 —— 被队列挤掉、被她拒谢的礼物，钱也是真收到了。
+     * 传 uid 进去是为了连击合并（见 riceGift 上面那段）。 */
+    n.giftYuan = riceGift(n.uid, n.giftName, n.giftCount)
+    if (n.giftYuan > 0) log(`  🍚 ${n.user || '?'} 的${n.giftName || '礼物'}×${n.giftCount || 1} ≈ ${bowlsText(n.giftYuan)}`)
   }
   if (n.kind === 'member') {
     stat.member++
@@ -4367,6 +5167,9 @@ async function pollLiveOnce() {
     // 如果监听其实还活着，这里会报「已在运行」，catch 掉就行 —— 别去 stop，
     // 那会把正在用的监听顶掉。
     if (prev === 'ended' || prev === 'offline') {
+      /* 真·重新开播 → 本场收入清零（2026-10-30）。只看 ended/offline 转 live：
+       * 桥重启时 prev 是 unknown，不该把这一场已经收到的钱抹掉。 */
+      riceNewSession()
       mcp.call('start_live_listen', { web_rid: RID }).catch(() => {})
     }
   } else if (prev === 'live') {
@@ -4384,6 +5187,24 @@ function startLiveWatch() {
   }
   pollLiveOnce().catch(() => {})
   setInterval(() => pollLiveOnce().catch(() => {}), LIVE_POLL).unref?.()
+  /* 自动硬重连兜底（2026-10-29）：桥先启动、房间还没活时，start_live_listen 会
+   * 「先返回 success 再后台建连」，LISTEN_OK 被置真但 WS 没连上 ⇒ 监听假活。开播后
+   * [live] 处理器会再调一次，但去重逻辑（房间没变、监听还活着）会跳过 ⇒ 永远收不到
+   * 弹幕。这里周期性查：「监听灯绿 + 房间在播 + 有在线心跳 + 却 90s 零事件」就强制重连。
+   * 不碰冷清房间（stat.online<=0 可能真没人），也不在房间没播时瞎重连。 */
+  const LISTEN_DEAD_SEC = 90
+  const FORCE_COOLDOWN_SEC = 120
+  setInterval(() => {
+    if (DEMO) return
+    if (!RID || !LISTEN_OK || LIVE.status !== 'live') return
+    if (stat.online <= 0) return
+    if (Date.now() - lastEventAt < LISTEN_DEAD_SEC * 1000) return
+    if (Date.now() - lastForceReconnectAt < FORCE_COOLDOWN_SEC * 1000) return
+    lastForceReconnectAt = Date.now()
+    log(`  ⚠ 监听灯绿着但 ${LISTEN_DEAD_SEC}s 零弹幕（在线 ${stat.online}），自动硬重连`)
+    attachRoom(ROOM_TARGET, { force: true }).catch((e) =>
+      log('  自动硬重连失败：' + (e?.message || e)))
+  }, 30000).unref?.()
   log(`直播状态：每 ${Math.round(LIVE_POLL / 1000)} 秒问一次抖音（0 未开播 / 2 直播中 / 4 已结束）`)
 }
 
@@ -4401,8 +5222,8 @@ const DEMO_FEED = [
 ]
 function demoLoop() {
   /* ZY_DEMO_QUIET=1 关掉自动喂料，只留 /demo 手动注入。
-   * 排查单条链路时必须有这个 —— 自动喂料每 2~3 秒顶掉一次 chatLatest，
-   * 手动塞进去的那条还没轮到就被冲掉了（2026-10-27 验「放视频」时踩到）。 */
+   * 排查单条链路时必须有这个 —— 自动喂料每 2~3 秒塞一条，聊天队列（3 条）
+   * 一直满着，手动塞进去的那条还没轮到就被挤掉了（2026-10-27 验「放视频」时踩到）。 */
   if (String(process.env.ZY_DEMO_QUIET ?? '') === '1') {
     log('demo 自动喂料关掉了（ZY_DEMO_QUIET=1），只用 /demo?chat=1 注入')
     return
@@ -4622,6 +5443,24 @@ function readPetGeom() {
 }
 const LAYOUT_KEYS = ['stats', 'songs', 'banner', 'character', 'monitor', 'danmaku', 'subtitle']
 
+/* 样式自定义（2026-10-29）：每组件可选 card/fg/pri 三个颜色 + 几段常显文字。
+ * 字段名跟 editor.html 的 STYLE_SPEC、native/render.py 的 apply_layout() 三处一致。
+ * 校验思路跟下面 bg.color 一样：不合法的整个丢掉 = 回落主题，绝不把坏值送进 render.py。 */
+const LAYOUT_HEX = /^#[0-9a-fA-F]{3,8}$/
+const LAYOUT_TXT = (v, cap = 60) => {
+  if (typeof v !== 'string') return undefined
+  const s = v.trim().slice(0, cap)
+  return s || undefined
+}
+const STYLE_SPEC = {
+  banner:   { col: ['pri'],               txt: ['text'] },
+  stats:    { col: ['card', 'fg', 'pri'], txt: ['title', 'live'], labels: true },
+  songs:    { col: ['card', 'fg', 'pri'], txt: ['title'] },
+  monitor:  { col: ['card', 'fg'],        txt: ['idle'] },
+  danmaku:  { col: ['fg'],                txt: [] },
+  subtitle: { col: ['card', 'fg'],        txt: [] },
+}
+
 function sanitizeLayout(b) {
   if (!b || typeof b !== 'object' || Array.isArray(b)) return { ok: false, error: '要一个 JSON 对象' }
   const src = b.items
@@ -4649,6 +5488,21 @@ function sanitizeLayout(b) {
      * 这份版式是不是已经按新素材换算过了；编辑器保存时丢掉这个字段，
      * 画面就会以为还是旧版式，又按新基准换算一次，人越存越大。 */
     if (k === 'character' && typeof v.pet === 'string' && /^pet\d*$/.test(v.pet)) o.pet = v.pet
+    /* 样式自定义（2026-10-29）：颜色正则不对、文字空的，直接不带 = 回落主题 */
+    const spec = STYLE_SPEC[k]
+    if (spec) {
+      for (const s of spec.col) {
+        if (typeof v[s] === 'string' && LAYOUT_HEX.test(v[s])) o[s] = v[s]
+      }
+      for (const s of spec.txt) {
+        const t = LAYOUT_TXT(v[s])
+        if (t) o[s] = t
+      }
+      if (spec.labels && Array.isArray(v.labels)) {
+        const labels = v.labels.slice(0, 3).map((x) => LAYOUT_TXT(x, 20) || '')
+        if (labels.some(Boolean)) o.labels = labels
+      }
+    }
     items[k] = o
   }
   if (!Object.keys(items).length) return { ok: false, error: 'items 里没有一个认识的组件' }
@@ -4666,6 +5520,82 @@ function sanitizeLayout(b) {
   return {
     ok: true,
     data: { version: 1, theme: b.theme === 'light' ? 'light' : 'dark', bg, items },
+  }
+}
+
+/* ---- 多场景（2026-11-01 加）------------------------------------------
+ * 一份 layout.json 只能装一个版式，主人要按场景切（聊天 / 打游戏 / 睡觉）：
+ *   cache/layouts/<id>.json    每个场景一份完整版式
+ *   cache/layouts/index.json   { active:'<id>', list:[{id,name,at}] }
+ *
+ * 🔴 layout.json 永远是「当前生效那份的镜像」。render.py 只认它、也只 stat 它，
+ *    所以切场景 = 把场景文件原子覆盖到 layout.json —— Python 那边一个字都不用改。
+ *    反过来，任何一次写 layout.json（保存版式 / 换皮套）都要镜像回生效场景，
+ *    否则「切走再切回来」就把刚改的丢了。
+ */
+const SCENE_DIR = path.join(DIR, 'cache', 'layouts')
+const SCENE_INDEX = path.join(SCENE_DIR, 'index.json')
+const SCENE_ID = /^[a-z0-9][a-z0-9_-]{0,31}$/
+
+/* 原子写：render.py 每 0.5 秒 stat 一次 layout.json，写一半被读到会解析失败
+ * （它会退回上一份，但下一次 mtime 变了才重试 —— 表现是「拖了没反应」）。 */
+function atomicWrite(file, text) {
+  fs.mkdirSync(path.dirname(file), { recursive: true })
+  const tmp = file + '.tmp'
+  fs.writeFileSync(tmp, text, 'utf8')
+  fs.renameSync(tmp, file)
+}
+
+function sceneIndex() {
+  try {
+    const j = JSON.parse(fs.readFileSync(SCENE_INDEX, 'utf8'))
+    if (j && Array.isArray(j.list)) {
+      j.list = j.list.filter((s) => s && SCENE_ID.test(String(s.id)))
+      j.active = SCENE_ID.test(String(j.active)) ? j.active : ''
+      return { active: j.active, list: j.list }
+    }
+  } catch { /* 还没有索引，下面兜底 */ }
+  return { active: '', list: [] }
+}
+function writeSceneIndex(idx) {
+  atomicWrite(SCENE_INDEX, JSON.stringify(idx, null, 2))
+}
+const sceneFile = (id) => path.join(SCENE_DIR, id + '.json')
+
+/* 首次使用（或者主人删光了）时，把现在生效的 layout.json 收编成「默认场景」。
+ * 不做这一步的后果：场景列表空着，编辑器那个下拉框没东西可选，看着像坏了。 */
+function ensureScenes() {
+  const idx = sceneIndex()
+  if (idx.list.length) return idx
+  let cur = null
+  try { cur = JSON.parse(fs.readFileSync(LAYOUT_PATH, 'utf8')) } catch { /* 没有就算了 */ }
+  if (!cur) return idx
+  const one = { id: 'default', name: '默认场景', at: Date.now() }
+  try {
+    atomicWrite(sceneFile('default'), JSON.stringify(cur, null, 2))
+  } catch (e) {
+    log(`  [layout] 收编默认场景失败：${String((e && e.message) || e).slice(0, 120)}`)
+    return idx
+  }
+  idx.list = [one]
+  idx.active = 'default'
+  try { writeSceneIndex(idx) } catch { /* 写不进索引也别拦着画面用 */ }
+  log('  [layout] 把现有版式收编成场景「默认场景」')
+  return idx
+}
+
+/* 写生效版式：layout.json + 镜像回当前场景（场景文件失败不致命，只记一笔） */
+function writeLiveLayout(data) {
+  const text = JSON.stringify(data, null, 2)
+  atomicWrite(LAYOUT_PATH, text)
+  const idx = sceneIndex()
+  if (!idx.active) return
+  try {
+    atomicWrite(sceneFile(idx.active), text)
+    const s = idx.list.find((x) => x.id === idx.active)
+    if (s) { s.at = Date.now(); writeSceneIndex(idx) }
+  } catch (e) {
+    log(`  [layout] 镜像到场景 ${idx.active} 失败：${String((e && e.message) || e).slice(0, 120)}`)
   }
 }
 
@@ -4869,6 +5799,20 @@ async function dyRoute(p, u, req) {
       if (mediaCfg.audio.music !== before.music) applyMusicVolume()
       if (mediaCfg.audio.duck !== before.duck) log(`  ♫ 说话时音乐压到 ${mediaCfg.audio.duck}%`)
     }
+    /* 声线（2026-10-30）：跟音量分开存 mediaCfg.tts。
+     * 只认格式对的值 —— voice 写错一个字母，edge-tts 每句都抛异常，
+     * 她就彻底哑了；与其收下坏值不如当场拒收，界面还显示原来那副嗓子。 */
+    if (b.tts && typeof b.tts === 'object') {
+      const t = mediaCfg.tts
+      const before = { ...t }
+      if (typeof b.tts.voice === 'string' && VOICE_RE.test(b.tts.voice)) t.voice = b.tts.voice
+      if (typeof b.tts.rate === 'string' && RATE_RE.test(b.tts.rate)) t.rate = b.tts.rate
+      if (typeof b.tts.pitch === 'string' && PITCH_RE.test(b.tts.pitch)) t.pitch = b.tts.pitch
+      if (t.voice !== before.voice || t.rate !== before.rate || t.pitch !== before.pitch) {
+        log(`  🎙 声线：${before.voice} ${before.rate} ${before.pitch} → ${t.voice} ${t.rate} ${t.pitch}` +
+          '（下一句生效；新组合的缓存要重新合成）')
+      }
+    }
     /* 背景音乐总开关（2026-10-28）：面板启动页那个开关走这里。
      * 交给 setMusicOn 而不是直接改 mediaCfg —— 关掉要顺带把播放器按停、清空快照，
      * 只改一个布尔值的话，声音还在响，面板却显示"关着"。 */
@@ -4921,7 +5865,7 @@ async function dyRoute(p, u, req) {
     MEDIA.cur = null
     MEDIA.queue.length = 0
     if (wasIdle && tier !== 0) resumeMusicAfterMedia()
-    mediaBegin(item, { tier, user: '试播', gift: '' })
+    mediaBegin(item, { tier, user: '试播', gift: '', silent: true })
     return { ok: true, ...mediaOut() }
   }
 
@@ -5420,13 +6364,15 @@ async function dyRoute(p, u, req) {
     const clean = sanitizeLayout(b)
     if (!clean.ok) return clean
     try {
-      fs.mkdirSync(path.dirname(LAYOUT_PATH), { recursive: true })
-      const tmp = LAYOUT_PATH + '.tmp'
-      fs.writeFileSync(tmp, JSON.stringify(clean.data, null, 2), 'utf8')
-      fs.renameSync(tmp, LAYOUT_PATH)
-      log(`  [layout] 版式已保存（${Object.keys(clean.data.items).length} 个组件，主题 ${clean.data.theme}）`)
+      ensureScenes()                       // 保证有生效场景，下面镜像才有地方去
+      writeLiveLayout(clean.data)
+      const idx = sceneIndex()
+      const cur = idx.list.find((s) => s.id === idx.active)
+      log(`  [layout] 版式已保存（${Object.keys(clean.data.items).length} 个组件，主题 ${clean.data.theme}`
+        + (cur ? `，场景「${cur.name}」` : '') + '）')
       return { ok: true, at: new Date().toISOString(), theme: clean.data.theme,
-               bg: clean.data.bg.type, items: Object.keys(clean.data.items).length }
+               bg: clean.data.bg.type, items: Object.keys(clean.data.items).length,
+               scene: cur ? { id: cur.id, name: cur.name } : null }
     } catch (e) {
       return { ok: false, error: '写不进去：' + String((e && e.message) || e).slice(0, 200) }
     }
@@ -5473,10 +6419,111 @@ async function dyRoute(p, u, req) {
   if (p === '/layout') {
     try {
       const raw = fs.readFileSync(LAYOUT_PATH, 'utf8')
-      return { ok: true, layout: JSON.parse(raw), path: LAYOUT_PATH }
+      const idx = sceneIndex()
+      const cur = idx.list.find((s) => s.id === idx.active)
+      return { ok: true, layout: JSON.parse(raw), path: LAYOUT_PATH,
+               scene: cur ? { id: cur.id, name: cur.name } : null }
     } catch (e) {
       return { ok: false, error: '还没有版式文件（画面正在用内置默认版式）', path: LAYOUT_PATH }
     }
+  }
+
+  /* ── 多场景（2026-11-01）─────────────────────────────────────────────
+   *   GET  /layout/scenes               {active, list:[{id,name,at,items}]}
+   *   POST /layout/scenes  {name,layout?} 另存为新场景并立刻生效
+   *   POST /layout/scene/activate {id}    切场景（覆盖 layout.json）
+   *   POST /layout/scene/delete   {id}    删场景（删的正好是生效那份时不清 layout.json，
+   *                                       画面继续用现在的样子，不黑屏）
+   */
+  if (p === '/layout/scenes' && req.method === 'GET') {
+    const idx = ensureScenes()
+    return {
+      ok: true,
+      active: idx.active,
+      list: idx.list.map((s) => ({ id: s.id, name: s.name, at: s.at || 0 })),
+      dir: SCENE_DIR,
+    }
+  }
+
+  if (p === '/layout/scenes' && req.method === 'POST') {
+    const b = await readJson(req)
+    /* 没带 layout 就收当前画面这份 —— 「把现在这个存成一个新场景」也说得通 */
+    let data = null
+    if (b && b.layout) {
+      const clean = sanitizeLayout(b.layout)
+      if (!clean.ok) return clean
+      data = clean.data
+    } else {
+      try { data = JSON.parse(fs.readFileSync(LAYOUT_PATH, 'utf8')) } catch { /* 下面报错 */ }
+      if (!data) return { ok: false, error: '还没有版式文件，先在编辑器里拖一下再另存' }
+    }
+    let name = String((b && b.name) || '').replace(/[\r\n\t]/g, ' ').trim().slice(0, 24)
+    if (!name) name = '场景 ' + new Date().toLocaleString('zh-CN', { hour12: false }).slice(5, 16)
+    const idx = ensureScenes()
+    // id 只用小写字母数字：它就是文件名，中文/空格放进去只会给自己找麻烦
+    let id = 's' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5)
+    while (idx.list.some((s) => s.id === id)) id = 's' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5)
+    if (idx.list.some((s) => s.name === name)) {
+      // 同名不新建，直接覆盖那一份：主人连点两下「另存为」不该攒出一串同名场景
+      const same = idx.list.find((s) => s.name === name)
+      id = same.id
+    } else {
+      idx.list.push({ id, name, at: Date.now() })
+    }
+    try {
+      atomicWrite(sceneFile(id), JSON.stringify(data, null, 2))
+      idx.active = id
+      writeSceneIndex(idx)
+      writeLiveLayout(data)   // 另存 = 顺手切过去，省得主人再点一次
+      log(`  [layout] 新场景「${name}」（${id}），已生效`)
+      return { ok: true, id, name, active: id }
+    } catch (e) {
+      return { ok: false, error: '写不进去：' + String((e && e.message) || e).slice(0, 200) }
+    }
+  }
+
+  if (p === '/layout/scene/activate' && req.method === 'POST') {
+    const b = await readJson(req)
+    const id = String((b && b.id) || '')
+    if (!SCENE_ID.test(id)) return { ok: false, error: '场景 id 不对：' + id.slice(0, 40) }
+    const idx = ensureScenes()
+    const s = idx.list.find((x) => x.id === id)
+    if (!s) return { ok: false, error: '没有这个场景：' + id }
+    let data
+    try {
+      data = JSON.parse(fs.readFileSync(sceneFile(id), 'utf8'))
+    } catch (e) {
+      return { ok: false, error: `读不了场景文件 ${id}.json：` + String((e && e.message) || e).slice(0, 160) }
+    }
+    // 再洗一遍：场景文件是人手也能改的，坏值别送进 render.py
+    const clean = sanitizeLayout(data)
+    if (!clean.ok) return { ok: false, error: `场景「${s.name}」的内容不合法：` + clean.error }
+    try {
+      idx.active = id
+      writeSceneIndex(idx)
+      writeLiveLayout(clean.data)   // 原子覆盖 layout.json → render.py 自己会发现
+      log(`  [layout] 切到场景「${s.name}」（${Object.keys(clean.data.items).length} 个组件）`)
+      return { ok: true, active: id, name: s.name }
+    } catch (e) {
+      return { ok: false, error: '写不进去：' + String((e && e.message) || e).slice(0, 200) }
+    }
+  }
+
+  if (p === '/layout/scene/delete' && req.method === 'POST') {
+    const b = await readJson(req)
+    const id = String((b && b.id) || '')
+    if (!SCENE_ID.test(id)) return { ok: false, error: '场景 id 不对：' + id.slice(0, 40) }
+    const idx = ensureScenes()
+    const s = idx.list.find((x) => x.id === id)
+    if (!s) return { ok: false, error: '没有这个场景：' + id }
+    if (idx.list.length <= 1) return { ok: false, error: '只剩这一个场景了，删掉就没得切了' }
+    try { fs.unlinkSync(sceneFile(id)) } catch { /* 文件本来就不在也算删掉 */ }
+    idx.list = idx.list.filter((x) => x.id !== id)
+    const wasActive = idx.active === id
+    if (wasActive) idx.active = ''     // layout.json 原样留着，画面不跟着变
+    writeSceneIndex(idx)
+    log(`  [layout] 删掉场景「${s.name}」（${id}）${wasActive ? '，画面继续用当前版式' : ''}`)
+    return { ok: true, active: idx.active, wasActive }
   }
 
   /* ── 皮套形象（2026-10-28）─────────────────────────────────────────
@@ -5529,10 +6576,10 @@ async function dyRoute(p, u, req) {
     if (!L.items.character || typeof L.items.character !== 'object') L.items.character = {}
     L.items.character.pet = name
     try {
-      fs.mkdirSync(path.dirname(LAYOUT_PATH), { recursive: true })
-      const tmp = LAYOUT_PATH + '.tmp'
-      fs.writeFileSync(tmp, JSON.stringify(L, null, 2), 'utf8')
-      fs.renameSync(tmp, LAYOUT_PATH)
+      /* 🔴 换皮套也是改版式的一种：必须经 writeLiveLayout 镜像回生效场景，
+       *    否则切到别的场景再切回来，「皮套」这一项会退回旧的。 */
+      ensureScenes()
+      writeLiveLayout(L)
       log(`  🎭 形象切到 ${name}（坐标由画面进程换算）`)
       return { ok: true, cur: name, note: '画面进程会在 1 秒内换算坐标并换人' }
     } catch (e) {
@@ -5613,6 +6660,34 @@ const server = http.createServer(async (req, res) => {
       }
     }
     res.end(JSON.stringify({ ok: true, ...money, cost: MONEY_COST }))
+    return
+  }
+
+  if (p === '/rice') {
+    /* 白饭（2026-10-30）。
+     *   curl "127.0.0.1:18081/rice"                  看账（碗/元都有）
+     *   curl "127.0.0.1:18081/rice?poll=1"           立刻去拉一次真余额
+     *   curl "127.0.0.1:18081/rice?bowl=2"           一碗按 2 元算
+     *   curl "127.0.0.1:18081/rice?on=0"             关掉（画面退回旧字段，话术里也不提）
+     *   curl "127.0.0.1:18081/rice?reset=1"          本场收入清零（画面立刻变 0 碗）
+     *
+     * **故意不给「加法」**：这里的数应该完全来自真余额和真 token，能手加就说明它会说谎。
+     * 想手动改数请改 API 账户余额，那才是真的。 */
+    res.setHeader('access-control-allow-origin', '*')
+    res.setHeader('content-type', 'application/json; charset=utf-8')
+    const bowl = u.searchParams.get('bowl')
+    const on = u.searchParams.get('on')
+    if (bowl != null && Number(bowl) > 0) {
+      rice.yuanPerBowl = r2(Number(bowl))
+      saveRiceSoon()
+    }
+    if (on != null) {
+      rice.on = on === '1' || on === 'true'
+      saveRiceSoon()
+    }
+    if (u.searchParams.get('reset') === '1') riceNewSession()
+    if (u.searchParams.get('poll') === '1') await pollBalance()
+    res.end(JSON.stringify({ ok: true, ...riceState(), cost: costStats() }))
     return
   }
 
@@ -5697,11 +6772,16 @@ const server = http.createServer(async (req, res) => {
       giftAgoSec: giftHealth().lastAgoSec,
       like: stat.like,
       replied: stat.replied,
-      // 饭钱：右下角那个数。每开口一次 -0.05，存盘，重启接着上次的。
+      /* 饭钱（**旧账，2026-10-30 起不再往下扣**）：开局 17.54、每句 -0.05 的假数，
+       * 留着只因为 music.html / 老面板还在读 money / token 这两个字段。
+       * 画面右下角现在读下面的 rice，不读它。 */
       money: money.left,
       moneySpent: money.spent,
       // 老字段留着：music.html / 面板还有地方读 token，别让它们读不到
       token: money.left,
+      /* 白饭（2026-10-30）：画面右下角那个「白饭 14.7 碗」就是它。
+       * left 是**碗**（可能是 null = 余额还没拉到），inToday/outToday 也是碗。 */
+      rice: riceState(),
       // 点歌台：**只放观众点的歌**（2026-10-28 改）。热榜只在后台放，不进画面。
       // 以前这里读整个队列快照，热榜和点歌混在一起，显示的顺序跟播放器实际顺序
       // 对不上（主人：「下一首播放的跟实际显示的还是不一样」）。
@@ -5771,6 +6851,77 @@ const server = http.createServer(async (req, res) => {
     return
   }
 
+  /* ── TTS 试听（2026-10-30）──────────────────────────────────────
+   *   POST /tts/preview {voice?, rate?, pitch?, text?}
+   * 只合成、**不播**，返回 URL 让设置页自己用 <audio> 放。
+   * 为什么不直接 playFile：那样声音会从本机扬声器直接进直播伴侣
+   * （设置页控制不了音量/重放），而且合成失败时页面完全看不出来 ——
+   * 主人的感受只是「点了没反应」。
+   * ⚠️ 就算走页面播放，声音仍然从本机扬声器出，直播中观众照样能听见。
+   */
+  if (p === '/tts/preview' && req.method === 'POST') {
+    /* ⚠️ 这条在主 HTTP 处理器里（不在 dyRoute 白名单里），必须自己写响应。
+     * 直接 `return {...}` 的话没人发结果 —— 页面等 25 秒超时，
+     * 日志里却明明有「试听合成成功」，最难查的那种。 */
+    const sendJson = (o) => {
+      const body = JSON.stringify(o)
+      res.writeHead(200, {
+        'content-type': 'application/json; charset=utf-8',
+        'access-control-allow-origin': '*',
+        'cache-control': 'no-store',
+        'content-length': Buffer.byteLength(body),
+      })
+      res.end(body)
+    }
+    const b = await readJson(req)
+    const cur = ttsCfg()
+    const voice = VOICE_RE.test(String(b.voice || '')) ? String(b.voice) : cur.voice
+    const rate = RATE_RE.test(String(b.rate || '')) ? String(b.rate) : cur.rate
+    const pitch = PITCH_RE.test(String(b.pitch || '')) ? String(b.pitch) : cur.pitch
+    const text = String(b.text || '大家好呀，我是大肥鱼，今天也要开开心心的').trim().slice(0, 80)
+    if (!text) { sendJson({ ok: false, error: '没有文本' }); return }
+    /* 文件名把 voice/语速/音高/文本哈希都带上：换任何一个都是新文件，
+     * 同一组合重复试听就直接命中（秒回，不再烧一次微软的接口）。 */
+    const tag = (s) => String(s).replace('%', 'p').replace('+', 'P').replace('-', 'N').replace(/[^A-Za-z0-9]/g, '')
+    let hv = 5381
+    for (let i = 0; i < text.length; i++) hv = ((hv << 5) + hv + text.charCodeAt(i)) | 0
+    const name = `pv-${tag(voice).slice(0, 20)}-${tag(rate)}-${tag(pitch)}-${(hv >>> 0).toString(36)}.mp3`
+    const dir = path.join(DIR, 'cache', 'tts-preview')
+    const out = path.join(dir, name)
+    try { fs.mkdirSync(dir, { recursive: true }) } catch {}
+    TTS_SVC.start()
+    let r = await TTS_SVC.cmd({ text, voice, rate, pitch, out }, 25000)
+    if (!r || !r.ok) {
+      r = await pyOnce('tts.py',
+        ['--text', text, '--voice', voice, `--rate=${rate}`, `--pitch=${pitch}`, '--out', out], 20000)
+    }
+    if (!r || !r.ok) {
+      log(`  [tts] 试听合成失败：${r?.why || r?.error || '没返回'}`)
+      sendJson({ ok: false, error: r?.why || r?.error || '合成失败' })
+      return
+    }
+    log(`  🎙 试听 ${voice} ${rate} ${pitch} · ${Number(r.dur).toFixed(1)}s${r.cached ? '（缓存）' : `（合成 ${r.ms}ms）`}`)
+    sendJson({
+      ok: true, url: `/cache/tts-preview/${name}`, dur: r.dur, cached: !!r.cached,
+      ms: r.ms || 0, voice, rate, pitch, text,
+    })
+    return
+  }
+
+  /* 试听音频本体。走 :18082 时是 server 的静态服务发，这条给直连 :18081 用。 */
+  if (p === '/tts/preview.mp3') {
+    const name = String(u.searchParams.get('n') || '')
+    const fp = path.join(DIR, 'cache', 'tts-preview', path.basename(name))
+    if (!/^pv-[A-Za-z0-9.-]{4,80}\.mp3$/.test(name) || !fs.existsSync(fp)) {
+      res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' })
+      res.end('404')
+      return
+    }
+    res.writeHead(200, { 'content-type': 'audio/mpeg', 'cache-control': 'no-store' })
+    res.end(fs.readFileSync(fp))
+    return
+  }
+
   if (p === '/media') {
     /* 音乐控制面板（music.html）和画面都读这里。
      *   curl 127.0.0.1:18081/media                  → 当前在放什么
@@ -5835,6 +6986,10 @@ const server = http.createServer(async (req, res) => {
         // 缓存账本：rate=累计命中率，last=最近一条，prefix=人设字数。
         // 看这个比看平台按天聚合的数字准 —— 平台那个混着冷启和别的工具。
         cache: cacheStats(),
+        /* 点歌兜底的账本（2026-10-30）：ask=问过模型几次、yes/no=判成几是几否、
+         * fail=超时/坏 JSON、cool=模型在退避所以没问、last=最近一次判了啥。
+         * 「点了没点上」这类问题，先看这里 —— 分得清是正则漏了、模型判否、还是模型挂了。 */
+        songLlm: songLlmStats(),
         // 直播状态：status=live/ended/offline/unknown，paused=是否已暂停自动回复
         live: {
           status: LIVE.status,
@@ -5846,7 +7001,11 @@ const server = http.createServer(async (req, res) => {
           fails: LIVE.fails,
           why: LIVE.why || null,
         },
-        tts: TTS_ON ? `${TTS_VOICE} ${TTS_RATE}` : '关着',
+        tts: TTS_ON
+          ? `${ttsCfg().voice} ${ttsCfg().rate} ${ttsCfg().pitch}`
+          : '关着',
+        /* 结构化的那一份，给设置页和排查用（字符串那份留着，日志页在读） */
+        ttsCfg: TTS_ON ? ttsCfg() : null,
         /* 音乐这一段 2026-10-28 改了语义：
          *   on        = 背景音乐总开关（面板启动页那个开关），关掉也照样报字段
          *   forcedOff = 起桥时被 --no-music / ZY_MUSIC=0 强制关的（面板打不开）
@@ -6182,7 +7341,7 @@ server.on('error', (e) => {
 async function main() {
   // 回复引擎先自报家门：配了 key 不等于能用，探一次比事后猜「她怎么说话变呆了」强
   log(`回复模式：${REPLY_ON ? replyMode : '关掉了（--no-reply）'}`)
-  log(`语音：${TTS_ON ? `${TTS_VOICE} ${TTS_RATE}（edge-tts，缓存命中即 0 延迟）` : '关掉了（--no-tts）'}`)
+  log(`语音：${TTS_ON ? `${ttsCfg().voice} ${ttsCfg().rate} ${ttsCfg().pitch}（edge-tts，缓存命中即 0 延迟 · 设置页可改）` : '关掉了（--no-tts）'}`)
   log(`音乐：${musicOn
     ? '接管本机 QQ 音乐 / 单身汉播放器（画面显示曲目 + 说话自动闪避）'
     : MUSIC_FORCED_OFF

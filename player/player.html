@@ -208,6 +208,17 @@ function syncVol() {
 /* ── 放一首：先取直链，再交给 audio ─────────────────────────────── */
 async function playTrack(track) {
   paintTrack(track)
+  /* 🔴 先把上一首的 audio 清干净，再去取直链（2026-10-29）。
+   * paintTrack 已经把 currentId 换成新歌，可 au 里还是上一首 —— 它已经 ended：
+   * currentTime == duration、paused == true。而 report() 每 2 秒上报一次，
+   * 正好会在这个「取直链」的窗口（0.3~2 秒）里把
+   * 「新歌的 id + 上一首的末尾 + 没在放」报上去 ——
+   * 桥看到「停在末尾」就判定播放器空着，热榜垫歌走 play 直接把这首新歌顶掉。
+   * （20:53 观众点的《苦茶子》就是这么没的，人家当场问「我的歌呢」。）
+   * 清掉 src 之后 duration 变 NaN（上报按 0 算）、currentTime 归 0，atEnd 永不成立。 */
+  try { au.pause() } catch {}
+  au.removeAttribute('src')
+  try { au.load() } catch {}
   let u
   try {
     u = await api('/url?id=' + encodeURIComponent(currentSongId) + '&quality=exhigh')

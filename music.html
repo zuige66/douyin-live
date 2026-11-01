@@ -124,6 +124,28 @@
     max-width:88vw;text-align:center;
   }
   .toast.show{opacity:1;transform:translate(-50%,0)}
+
+  /* ── 播放列表（2026-10-31 加） ──
+     数据是 /state.json 的 queue.list：接下来要放的歌，不是历史。
+     sec 是「排了多久」，不是歌曲时长 —— 所以那列写等的时长，不是 3:19。 */
+  .listcard{margin-top:12px}
+  .lhead{display:flex;align-items:baseline;gap:8px;margin-bottom:10px}
+  .lhead h2{font-size:15px;font-weight:600;letter-spacing:-.1px}
+  .lcount{font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}
+  .llist{list-style:none;display:flex;flex-direction:column;gap:2px}
+  .lrow{display:flex;align-items:center;gap:10px;padding:8px 6px;border-radius:var(--r-btn)}
+  .lrow:hover{background:var(--surface-2)}
+  .lidx{width:18px;flex:none;text-align:right;font-size:12px;color:var(--muted);
+        font-variant-numeric:tabular-nums}
+  .lnm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+       font-size:14px;color:var(--on-surface)}
+  .ltag{flex:none;font-size:11px;font-weight:500;padding:2px 7px;border-radius:var(--r-tag);
+        background:var(--surface-3);color:var(--on-variant)}
+  .ltag.hot{background:var(--surface-3);color:var(--muted)}
+  .ltag.mine{background:var(--primary-c);color:var(--on-primary-c)}
+  .lsec{flex:none;font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums;
+        min-width:38px;text-align:right}
+  .lempty{font-size:13px;color:var(--muted);padding:6px 6px 2px}
 </style>
 </head>
 <body>
@@ -173,6 +195,15 @@
       <span class="volv" id="volv">100%</span>
     </div>
   </div>
+
+  <div class="card listcard">
+    <div class="lhead">
+      <h2>播放列表</h2>
+      <span class="lcount" id="lcount"></span>
+    </div>
+    <ul class="llist" id="llist"></ul>
+    <div class="lempty" id="lempty">队列空着</div>
+  </div>
 </div>
 
 <div class="toast" id="toast"></div>
@@ -186,6 +217,7 @@ const el = {
   prog: $('prog'), fill: $('fill'), knob: $('knob'), tPos: $('tPos'), tDur: $('tDur'),
   play: $('play'), playIcon: $('playIcon'), prev: $('prev'), next: $('next'),
   vol: $('vol'), volv: $('volv'), toast: $('toast'),
+  llist: $('llist'), lempty: $('lempty'), lcount: $('lcount'),
 };
 const ICON_PLAY = 'M8 5v14l11-7z';
 const ICON_PAUSE = 'M7 5h4v14H7zm6 0h4v14h-4z';
@@ -260,6 +292,56 @@ function paintLive(l) {
   el.liveChip.textContent = l.text || (st === 'live' ? '直播中' : '已下播');
 }
 
+/* 播放列表（2026-10-31 加）。数据来自 /state.json 的 queue：
+ *   total = 真人点的（不含热榜垫的）首数
+ *   list  = **接下来要放的**，不含正在放的这首
+ *   sec   = 这首歌排了多久（不是时长！见 bridge.mjs 那边 (now - at)/1000）
+ * 所以右边那列是「等了 2:15」，不是「时长 3:19」。
+ * 歌名是观众打的，必须转义，否则一个 <img onerror> 就能在控制台里执行。 */
+const esc = (s) =>
+  String(s == null ? '' : s).replace(/[&<>"']/g, (c) =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])
+  );
+
+let lastQKey = '';
+
+function paintQueue(q) {
+  const list = q && Array.isArray(q.list) ? q.list : [];
+  /* 队列没变就别重画 —— 每秒重建 DOM 会让 hover 和滚动位置一直闪。 */
+  const key = list.map((s) => s.name + '|' + s.hot + '|' + s.sec).join(',');
+  if (key === lastQKey) return;
+  lastQKey = key;
+
+  const mine = Number(q && q.total) || 0;
+  el.lcount.textContent = list.length
+    ? `${list.length} 首${mine ? ` · 点歌 ${mine}` : ''}`
+    : '';
+
+  if (!list.length) {
+    el.llist.innerHTML = '';
+    el.llist.style.display = 'none';
+    el.lempty.style.display = '';
+    el.lempty.textContent = (q && q.why) || '队列空着，放完这首就接热榜';
+    return;
+  }
+
+  el.llist.style.display = '';
+  el.lempty.style.display = 'none';
+  el.llist.innerHTML = list
+    .map((s, i) => {
+      const tag = s.hot
+        ? '<span class="ltag hot">热榜</span>'
+        : '<span class="ltag mine">点歌</span>';
+      const wait = Math.max(0, Number(s.sec) || 0);
+      return (
+        `<li class="lrow"><span class="lidx">${i + 1}</span>` +
+        `<span class="lnm" title="${esc(s.name)}">${esc(s.name)}</span>${tag}` +
+        `<span class="lsec" title="已排队 ${mmss(wait)}">${mmss(wait)}</span></li>`
+      );
+    })
+    .join('');
+}
+
 async function refresh() {
   try {
     const r = await fetch(API + '/media', { cache: 'no-store' });
@@ -278,6 +360,7 @@ async function refreshLive() {
     const r = await fetch(API + '/state.json', { cache: 'no-store' });
     const j = await r.json();
     paintLive(j.live);
+    paintQueue(j.queue);
   } catch {}
 }
 
@@ -287,6 +370,8 @@ async function cmd(name, extra = '') {
     const j = await r.json();
     if (j.music) paint(j.music);
     if (j.ok === false) toast(j.why || '没成功');
+    /* 切完马上刷一次列表，不然要等下一个 3 秒周期才看到变化 */
+    refreshLive();
     return j;
   } catch (e) {
     toast('连不上桥');
@@ -329,7 +414,8 @@ try {
 refresh();
 refreshLive();
 setInterval(refresh, 1000);
-setInterval(refreshLive, 5000);
+/* 5 秒太钝：点完歌要盯着列表看有没有进去。3 秒够用，请求也就一个小 JSON。 */
+setInterval(refreshLive, 3000);
 </script>
 </body>
 </html>

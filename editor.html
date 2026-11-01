@@ -35,13 +35,21 @@ input[type=checkbox],input[type=range]{accent-color:var(--primary)}
 #top{
   flex:0 0 auto;display:flex;align-items:center;gap:8px;padding:10px 14px;
   background:var(--surface-1);border-bottom:1px solid var(--surface-3);z-index:20;
+  /* 窄窗口下整条横向滚动，而不是把按钮压成竖排（2026-11-01） */
+  overflow-x:auto;overflow-y:hidden;scrollbar-width:thin;
 }
+#top > *{flex:0 0 auto}
+#top .sep{flex:0 0 auto}
+#top .spacer{flex:1 1 auto}
 #top .brand{font-weight:600;font-size:14px;letter-spacing:-.2px;margin-right:2px}
 #top .brand small{font-weight:400;color:var(--muted);margin-left:6px;font-size:12px}
 #top .sep{width:1px;height:20px;background:var(--surface-3);margin:0 4px}
 .btn{padding:7px 14px;border:none;background:var(--surface-3);border-radius:var(--r-btn);
   color:var(--on-surface);font-size:12.5px;font-weight:600;transition:background .15s,transform .1s;
-  display:inline-flex;align-items:center;gap:6px;text-decoration:none}
+  display:inline-flex;align-items:center;gap:6px;text-decoration:none;
+  /* 2026-11-01：顶栏越塞越满，窄窗口下 flex 会把按钮压扁，「另存为…」被挤成竖排。
+     一律不换行、不压缩，宽度不够就让整条顶栏横向滚动。 */
+  white-space:nowrap;flex:0 0 auto}
 .btn:hover{background:var(--surface-4)}
 .btn:active{transform:scale(.98)}
 .btn.primary{background:var(--primary);color:var(--on-primary)}
@@ -52,6 +60,22 @@ input[type=checkbox],input[type=range]{accent-color:var(--primary)}
 .btn[disabled]{opacity:.35;pointer-events:none}
 .spacer{flex:1}
 #zoomWrap{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:12px}
+/* 场景选择（2026-11-01）：顶栏那个下拉框。用原生 select 而不是自绘菜单 ——
+   它要能在直播中一眼看清、点两下就切，不该为了好看牺牲手感。 */
+#scnWrap{display:flex;align-items:center;gap:6px;color:var(--muted);font-size:12px}
+#scnSel{max-width:180px;padding:7px 10px;border:1px solid var(--surface-3);
+  border-radius:var(--r-btn);background:var(--surface-2);color:var(--on-surface);
+  font-size:12.5px;font-weight:600;outline:none;cursor:pointer}
+#scnSel:focus{border-color:var(--primary)}
+#scnSel.live{border-color:var(--primary);background:var(--primary-c);color:var(--on-primary-c)}
+#scnWrap,#zoomWrap{white-space:nowrap}
+/* 窄窗口（含嵌进后台外壳、旁边还有侧栏的时候）先把「缩放 50%」这几个字让出去，
+   缩放滑杆本身留着 —— 它比那几个字有用。 */
+@media (max-width:1400px){
+  #zoomWrap > span:first-child,#zoomTxt{display:none}
+  #zoom{width:64px!important}
+  #scnSel{max-width:140px}
+}
 
 /* ── 三栏 ── */
 main{flex:1;display:flex;min-height:0}
@@ -61,6 +85,12 @@ aside{flex:0 0 auto;background:var(--surface-1);display:flex;flex-direction:colu
 .pane{padding:14px}
 .pane h3{margin:0 0 10px;font-size:11px;font-weight:700;letter-spacing:.8px;color:var(--muted)}
 .hint{color:var(--muted);font-size:11.5px;line-height:1.7;margin:10px 0 0}
+/* 「画布 · 背景与配色」折叠节：原生 details，零 JS */
+details.fold summary{cursor:pointer;list-style:none;display:flex;align-items:center;gap:6px;
+  margin:0 0 10px;font-size:11px;font-weight:700;letter-spacing:.8px;color:var(--muted)}
+details.fold summary::-webkit-details-marker{display:none}
+details.fold summary::before{content:'▸';transition:transform .15s;display:inline-block}
+details.fold[open] summary::before{transform:rotate(90deg)}
 
 /* 组件列表 */
 #comps{display:flex;flex-direction:column;gap:2px}
@@ -148,8 +178,8 @@ aside{flex:0 0 auto;background:var(--surface-1);display:flex;flex-direction:colu
 .t-monitor .shell{position:absolute;left:0;right:0;top:0;height:87.5%;
   background:#302B3C;border:1px solid rgba(255,255,255,.25);border-radius:1.6em;padding:2.9%}
 .t-monitor .scr{position:absolute;inset:0;border-radius:1em;overflow:hidden;
-  background:linear-gradient(135deg,#14121b,#241d33);display:flex;align-items:center;
-  justify-content:center;color:rgba(202,196,208,.55);font-family:var(--font);font-size:2.6em}
+  background:#211D2C;display:flex;align-items:center;
+  justify-content:center;color:rgba(255,255,255,.51);font-family:var(--font);font-size:2.6em}
 .t-monitor .neck{position:absolute;left:50%;transform:translateX(-50%);bottom:12.5%;width:9%;height:6.7%;
   background:#464056}
 .t-monitor .foot{position:absolute;left:50%;transform:translateX(-50%);bottom:0;width:42%;height:3.6%;
@@ -185,8 +215,12 @@ aside{flex:0 0 auto;background:var(--surface-1);display:flex;flex-direction:colu
 .mini button:hover{background:var(--surface-3);color:var(--on-surface)}
 .chk{display:flex;align-items:center;gap:8px;color:var(--on-variant);font-size:12.5px;
   margin:12px 0 2px;cursor:pointer}
+/* 样式区：颜色槽行尾的「主题」小勾 —— 勾上=跟随深/浅配色，不勾=用左边选的颜色 */
+.fld .follow{flex:0 0 auto;display:flex;align-items:center;gap:4px;color:var(--muted);
+  font-size:11px;cursor:pointer;margin:0}
+.fld.w56 label{flex-basis:56px}
 .hr{height:1px;background:var(--surface-3);margin:14px 0}
-.empty{color:var(--muted);padding:18px 2px;text-align:center;line-height:1.9;font-size:12.5px}
+.empty{color:var(--muted);padding:4px 2px;text-align:center;line-height:1.8;font-size:11.5px}
 .warnbox{background:var(--warn-c);border-radius:var(--r-btn);padding:10px 12px;color:var(--warn);
   font-size:11.5px;line-height:1.7;margin-top:10px}
 
@@ -222,6 +256,13 @@ body.preview #previewHint{display:block}
   <a class="btn ghost" href="/" title="回控制台">←</a>
   <div class="brand">画面编辑器<small>1920×1080</small></div>
   <div class="sep"></div>
+  <div id="scnWrap">
+    <span>场景</span>
+    <select id="scnSel" title="直播画面正在用的版式；换一个就立刻切过去"></select>
+    <button class="btn ghost" id="scnNew" title="把现在编辑的样子存成一个新场景（存完就用它）">另存为…</button>
+    <button class="btn ghost" id="scnDel" title="删掉当前场景（画面不会跟着变）">删</button>
+  </div>
+  <div class="sep"></div>
   <button class="btn" id="undoBtn" title="Ctrl+Z">撤销</button>
   <button class="btn" id="redoBtn" title="Ctrl+Shift+Z">重做</button>
   <div class="sep"></div>
@@ -235,8 +276,9 @@ body.preview #previewHint{display:block}
     <button class="btn ghost" id="fitBtn">适配</button>
   </div>
   <div class="sep"></div>
-  <button class="btn" id="reloadBtn" title="丢掉本地改动，重新从画面读">重新载入</button>
-  <button class="btn primary" id="saveBtn" title="Ctrl+S">保存到画面</button>
+  <button class="btn ghost" id="draftBtn" title="把刷新前没保存的改动捡回来" style="display:none">恢复草稿</button>
+  <button class="btn" id="reloadBtn" title="丢掉没保存的改动，回到画面正在用的版式">重新载入</button>
+  <button class="btn primary" id="saveBtn" title="Ctrl+S · 只有点这里才会推到直播画面">保存并推送</button>
   <span class="sync" id="sync">读取中…</span>
   <button class="btn" id="previewBtn">预览</button>
 </header>
@@ -246,7 +288,7 @@ body.preview #previewHint{display:block}
     <section class="pane">
       <h3>组件 · 点一行选中</h3>
       <div id="comps"></div>
-      <div class="hint">想加新组件（倒计时、关注引导…）<br>找 agent 写绘制函数再登记到这里。</div>
+      <div class="hint">想加新组件找 agent 登记到这里。</div>
     </section>
   </aside>
 
@@ -271,14 +313,11 @@ body.preview #previewHint{display:block}
       <h3>选中的组件</h3>
       <div id="props"></div>
     </section>
-    <section class="pane">
-      <h3>背景</h3>
+    <details class="pane fold" open>
+      <summary>画布 · 背景与配色</summary>
       <div id="bgPane"></div>
-    </section>
-    <section class="pane">
-      <h3>配色</h3>
       <div id="themePane"></div>
-    </section>
+    </details>
   </aside>
 </main>
 
@@ -313,6 +352,29 @@ const COMPS = [
   { key:'subtitle',  name:'字幕条',     icon:'≡', w:900, x:510,  y:960  },
 ];
 const BYKEY = Object.fromEntries(COMPS.map(c => [c.key, c]));
+
+/* ── 样式自定义（2026-10-29）──
+   每个组件可以改两样东西：颜色槽（card 卡片底色 / fg 主文字色 / pri 强调色）+
+   常显文字（标语、标题、状态字…）。不设置 = 跟随主题 / 用默认字，老版式零变化。
+   🔴 字段名跟 bridge.mjs 的 sanitizeLayout()、native/render.py 的 apply_layout()
+   三处一致 —— 动这里记得另外两处。颜色一律 #RRGGBB 或 #RRGGBBAA。 */
+const COL_SLOTS = { card: ['卡片底色', '#2E263F'], fg: ['文字色', '#E6E1E5'], pri: ['强调色', '#D0BCFF'] };
+const TXT_LABEL = { text: '标语文字', title: '标题', live: '状态字', idle: '待机字' };
+const TXT_DEF = {
+  banner:  { text: '刷礼物有惊喜' },
+  stats:   { title: '本场数据', live: '直播中', labels: ['收到弹幕', '收到礼物', '已回复'] },
+  songs:   { title: '点歌台' },
+  monitor: { idle: '待机中' },
+};
+const STYLE_SPEC = {
+  banner:   { col: ['pri'],                 txt: ['text'] },
+  stats:    { col: ['card', 'fg', 'pri'],   txt: ['title', 'live'], labels: true },
+  songs:    { col: ['card', 'fg', 'pri'],   txt: ['title'] },
+  monitor:  { col: ['card', 'fg'],          txt: ['idle'] },
+  danmaku:  { col: ['fg'],                  txt: [] },
+  subtitle: { col: ['card', 'fg'],          txt: [] },
+  /* 皮套是纯图片，没有字也没有底色，不开放 */
+};
 
 /* 高度公式 —— 🔴 必须跟 native/render.py 的 comp_h() 一字不差，
    否则编辑器里看到的框和真画面差一截，拖出来的坐标就是错的。 */
@@ -378,6 +440,21 @@ function normalize(src) {
     /* 皮套用哪套素材 —— 原样带回去。丢了它画面会以为还是旧版式，
        下次重启又按新基准换算一遍，人越存越大。 */
     if (c.key === 'character' && typeof v.pet === 'string' && /^pet\d*$/.test(v.pet)) o.pet = v.pet;
+    /* 样式自定义（2026-10-29）：颜色槽 + 常显文字。这里轻校验只为预览不炸，
+       桥的 sanitizeLayout() 还会再验一遍；不认识的值直接不带回去 = 回落主题。 */
+    const spec = STYLE_SPEC[c.key];
+    if (spec) {
+      for (const k of spec.col) {
+        if (typeof v[k] === 'string' && /^#[0-9a-fA-F]{3,8}$/.test(v[k])) o[k] = v[k];
+      }
+      for (const k of spec.txt) {
+        if (typeof v[k] === 'string' && v[k].trim()) o[k] = v[k].trim().slice(0, 60);
+      }
+      if (spec.labels && Array.isArray(v.labels)) {
+        const labels = v.labels.slice(0, 3).map(x => typeof x === 'string' ? x.trim().slice(0, 20) : '');
+        if (labels.some(Boolean)) o.labels = labels;
+      }
+    }
     out.items[c.key] = o;
   }
   return out;
@@ -454,31 +531,36 @@ function tr(k, x, y, text, size, color, extra) {
     'font-size:' + (size * k) + 'px;color:' + color + ';' + (extra || '') + '">' + text + '</span>';
 }
 
-/* 各组件的外观（预览用）。坐标抄 native/render.py，基准宽 452。 */
+/* 各组件的外观（预览用）。坐标抄 native/render.py，基准宽 452。
+   2026-10-29 起：常显文字和颜色从组件配置读（it.text / it.card / it.fg / it.pri），
+   没配置就回落到跟真画面一样的默认字 / 主题 CSS 变量 —— 两边看齐，不再分叉。 */
 function htmlOf(key, it) {
   switch (key) {
     case 'banner':
       return '<div class="t-banner" style="width:100%;height:100%;font-size:' + (it.size || 50) + 'px;' +
+        'color:' + (it.pri || 'var(--pri)') + ';' +
         'justify-content:' + (it.align === 'left' ? 'flex-start' : it.align === 'right' ? 'flex-end' : 'center') + '">' +
-        '刷礼物有惊喜</div>';
+        esc(it.text || TXT_DEF.banner.text) + '</div>';
     case 'stats': {
       /* 横排三格：坐标抄 native/render.py 的 stats_geom()（28 / 92 / 156）。
          **这里不乘 k** —— 真画面的内边距是固定像素，不跟卡片宽度缩放；
          乘了 k 之后 594 宽的卡在预览里会比真画面松一大截。 */
+      const card = '<div class="card"' + (it.card ? ' style="background:' + it.card + '"' : '') + '>';
       const cell = (it.w - 56) / 3;
+      const labs = (it.labels || TXT_DEF.stats.labels).map((s, i) => s || TXT_DEF.stats.labels[i]);
       const vals = ['1,284', '37', '1,190'];
-      const labs = ['收到弹幕', '收到礼物', '已回复'];
       /* 数字字号跟 render.py 一样按格宽收：卡片拖窄到 400 时 48 号会压到隔壁格。
          雅黑粗体的「1,284」约 2.8px/号 宽，所以按最宽的那个反算。 */
       let nsz = 48;
       while (nsz > 26 && 2.8 * nsz > cell - 24) nsz -= 2;
-      let s = '<div class="card">';
-      s += tx(1, 28, 28, '本场数据', 30, 'var(--ink)', 'font-weight:700');
-      s += tr(1, 28, 36, '直播中', 21, 'var(--dim)');
-      s += '<i class="c-dot" style="right:100px;top:47px;width:8px;height:8px"></i>';
+      let s = card;
+      s += tx(1, 28, 28, it.title || TXT_DEF.stats.title, 30, it.fg || 'var(--ink)', 'font-weight:700');
+      s += tr(1, 28, 36, it.live || TXT_DEF.stats.live, 21, 'var(--dim)');
+      s += '<i class="c-dot" style="right:100px;top:47px;width:8px;height:8px;' +
+        (it.pri ? 'background:' + it.pri : '') + '"></i>';
       for (let i = 0; i < 3; i++) {
         const x = 28 + cell * i;
-        s += tx(1, x, 92, vals[i], nsz, 'var(--ink)',
+        s += tx(1, x, 92, vals[i], nsz, it.fg || 'var(--ink)',
           'font-weight:700;width:' + cell + 'px;text-align:center');
         s += tx(1, x, 156, labs[i], 23, 'var(--dim)',
           'width:' + cell + 'px;text-align:center');
@@ -488,15 +570,15 @@ function htmlOf(key, it) {
     case 'songs': {
       /* 坐标同样抄 render.py：28 / 84 / 140（细线）/ 154 起排队。
          22:2x 砍掉「正在播放」标签、歌手名、点歌格式块之后只剩四段。 */
-      let s = '<div class="card">';
-      s += tx(1, 28, 28, '点歌台', 30, 'var(--ink)', 'font-weight:700');
+      let s = '<div class="card"' + (it.card ? ' style="background:' + it.card + '"' : '') + '>';
+      s += tx(1, 28, 28, it.title || TXT_DEF.songs.title, 30, it.fg || 'var(--ink)', 'font-weight:700');
       s += tr(1, 28, 36, '12 首排队', 21, 'var(--dim)');
-      s += tx(1, 28, 84, 'I Really Like You', 34, 'var(--ink)', 'font-weight:700');
+      s += tx(1, 28, 84, 'I Really Like You', 34, it.fg || 'var(--ink)', 'font-weight:700');
       s += '<div class="c-hr" style="left:28px;right:28px;top:140px"></div>';
       ['晴天', '海阔天空', '鱼仔'].forEach(function (t, i) {
         const y = 154 + i * 58, first = i === 0;
-        s += tx(1, 28, y + 6, String(i + 1), 24, first ? 'var(--pri)' : 'var(--faint)');
-        s += tx(1, 68, y, t, 28, first ? 'var(--pri)' : 'var(--ink)',
+        s += tx(1, 28, y + 6, String(i + 1), 24, first ? (it.pri || 'var(--pri)') : 'var(--faint)');
+        s += tx(1, 68, y, t, 28, first ? (it.pri || 'var(--pri)') : (it.fg || 'var(--ink)'),
           first ? 'font-weight:700' : '');
       });
       return s + '</div>';
@@ -505,16 +587,19 @@ function htmlOf(key, it) {
       return '<div class="t-character"><img src="' + assetUrl(PET_STILL) + '" alt=""></div>';
     case 'monitor':
       return '<div class="t-monitor" style="position:absolute;inset:0">' +
-        '<div class="shell"><div class="scr">素材播放区</div></div>' +
+        '<div class="shell"' + (it.card ? ' style="background:' + it.card + '"' : '') + '>' +
+        '<div class="scr"' + (it.fg ? ' style="color:' + it.fg + '"' : '') + '>' +
+        esc(it.idle || TXT_DEF.monitor.idle) + '</div></div>' +
         '<div class="neck"></div><div class="foot"></div></div>';
     case 'danmaku':
-      return '<div class="t-danmaku">' +
+      return '<div class="t-danmaku"' + (it.fg ? ' style="color:' + it.fg + '"' : '') + '>' +
         '<div class="dm"><b>夜色</b>这歌真好听</div>' +
         '<div class="dm sys"><b>阿伟</b>已点：晴天</div>' +
         '<div class="dm"><b>枫</b>主播声音好听</div></div>';
     case 'subtitle':
       return '<div class="t-subtitle" style="position:absolute;inset:0">' +
-        '<div class="bar">谢谢老板的礼物，爱你哟～</div></div>';
+        '<div class="bar" style="' + (it.card ? 'background:' + it.card + ';' : '') +
+        (it.fg ? 'color:' + it.fg : '') + '">谢谢老板的礼物，爱你哟～</div></div>';
     default: return '';
   }
 }
@@ -549,7 +634,7 @@ function renderComps() {
     row.onclick = function (e) {
       if (e.target.dataset.eye) {
         it.visible = !it.visible;
-        pushHistory(); renderItems(); renderComps(); renderProps(); autoSave();
+        pushHistory(); renderItems(); renderComps(); renderProps(); markDirty();
         return;
       }
       select(c.key);
@@ -561,7 +646,7 @@ function renderComps() {
 function renderProps() {
   const host = $('#props');
   if (!selKey) {
-    host.innerHTML = '<div class="empty">点画面上任意组件<br>或左边那七行里的任意一行</div>';
+    host.innerHTML = '<div class="empty">点画面或左边的组件行，开始编辑</div>';
     return;
   }
   const c = BYKEY[selKey], it = scene.items[selKey];
@@ -585,12 +670,44 @@ function renderProps() {
       '<button data-align="cx">水平居中</button>' +
       '<button data-align="cy">垂直居中</button>' +
       '<button data-align="reset">回到默认位</button>' +
-      '<button data-align="under">贴到卡片下面</button>' +
+      /* 「贴到卡片下面」只有点歌台有上一张卡 —— 别的组件干脆不渲染，省一次没用的点击 */
+      (selKey === 'songs' ? '<button data-align="under">贴到卡片下面</button>' : '') +
     '</div>' +
     '<label class="chk"><input type="checkbox" data-k="visible"' + (it.visible ? ' checked' : '') + '>显示这个组件</label>' +
     extra +
-    '<div class="hint">高度不用调：由内容算出来（点歌台 = 正在播放 + 3 首 + 提示两行），拖矮了会叠字。</div>';
+    stylePaneHTML(c, it) +
+    '<div class="hint">高度不用调：由内容算出来，拖矮了会叠字。</div>';
   bindProps();
+}
+
+/* 样式区（2026-10-29）：常显文字 + 颜色槽。颜色勾着「主题」时 picker 禁用
+   并显示深色主题的值当占位 —— 真实颜色由预览里的 CSS 变量说话。 */
+function stylePaneHTML(c, it) {
+  const spec = STYLE_SPEC[c.key];
+  if (!spec) return '';
+  let s = '<div class="hr"></div><h3>样式</h3>';
+  for (const k of spec.txt) {
+    s += '<div class="fld w56"><label>' + TXT_LABEL[k] + '</label>' +
+      '<input type="text" data-txt="' + k + '" maxlength="60" placeholder="' +
+      esc(TXT_DEF[c.key][k]) + '" value="' + esc(it[k] == null ? '' : it[k]) + '"></div>';
+  }
+  if (spec.labels) {
+    for (let i = 0; i < 3; i++) {
+      s += '<div class="fld w56"><label>标签' + (i + 1) + '</label>' +
+        '<input type="text" data-lb="' + i + '" maxlength="20" placeholder="' +
+        esc(TXT_DEF.stats.labels[i]) + '" value="' + esc(((it.labels || [])[i]) || '') + '"></div>';
+    }
+  }
+  for (const k of spec.col) {
+    const following = it[k] == null;
+    s += '<div class="fld"><label>' + COL_SLOTS[k][0] + '</label>' +
+      '<input type="color" data-col="' + k + '" value="' + (it[k] || COL_SLOTS[k][1]) + '"' +
+      (following ? ' disabled title="正在跟随主题"' : '') + '>' +
+      '<label class="follow"><input type="checkbox" data-follow="' + k + '"' +
+      (following ? ' checked' : '') + '>主题</label></div>';
+  }
+  s += '<div class="hint">留空用默认字；颜色勾「主题」跟深/浅配色，取消勾选就能自定义。</div>';
+  return s;
 }
 
 function bindProps() {
@@ -600,7 +717,7 @@ function bindProps() {
     inp.addEventListener('input', function () {
       if (key === 'visible') {
         it.visible = inp.checked;
-        renderItems(); renderComps(); autoSave(); return;
+        renderItems(); renderComps(); markDirty(); return;
       }
       let v = Number(inp.value);
       if (!Number.isFinite(v)) return;
@@ -615,7 +732,7 @@ function bindProps() {
         el.style.height = H_(selKey, it.y, it.w) + 'px';
         el.style.fontSize = (10 * it.w / BYKEY[selKey].w) + 'px';
       }
-      updateSel(); autoSave();
+      updateSel(); markDirty();
     });
     inp.addEventListener('change', function () { pushHistory(); });
   });
@@ -627,16 +744,58 @@ function bindProps() {
       if (a === 'reset') { const d = BYKEY[selKey]; it.x = d.x; it.y = d.y; it.w = d.w; }
       if (a === 'under') {
         // 「贴到上一个卡片下面」：点歌台跟本场数据卡要保持 24px 间距，
-        // 手算很容易差几像素，给个一键。
+        // 手算很容易差几像素，给个一键。（按钮只在点歌台渲染，不用再拦）
         if (selKey === 'songs') {
           const a1 = scene.items.stats;
           it.y = a1.y + H_('stats', a1.y, a1.w) + 24;
-        } else {
-          toast('只有点歌台有「上一个卡片」');
         }
       }
-      pushHistory(); renderItems(); renderProps(); autoSave();
+      pushHistory(); renderItems(); renderProps(); markDirty();
     };
+  });
+  /* ── 样式区（2026-10-29）：文字留空=回落默认字，颜色取消勾「主题」=自定义。
+     输入过程只重画画布（renderItems），不重渲染面板 —— 不然打一个字失一次焦。 */
+  const box = $('#props');
+  box.querySelectorAll('[data-txt]').forEach(function (inp) {
+    const k = inp.dataset.txt;
+    inp.addEventListener('input', function () {
+      const s = inp.value.trim().slice(0, 60);
+      if (s) it[k] = s; else delete it[k];
+      renderItems(); markDirty();
+    });
+    inp.addEventListener('change', function () { pushHistory(); });
+  });
+  box.querySelectorAll('[data-lb]').forEach(function (inp) {
+    const i = +inp.dataset.lb;
+    inp.addEventListener('input', function () {
+      const labels = (it.labels || []).slice(0, 3);
+      while (labels.length < 3) labels.push('');
+      labels[i] = inp.value.trim().slice(0, 20);
+      if (labels.some(Boolean)) it.labels = labels; else delete it.labels;
+      renderItems(); markDirty();
+    });
+    inp.addEventListener('change', function () { pushHistory(); });
+  });
+  box.querySelectorAll('[data-col]').forEach(function (inp) {
+    const k = inp.dataset.col;
+    inp.addEventListener('input', function () {
+      it[k] = inp.value;
+      renderItems(); markDirty();
+    });
+    inp.addEventListener('change', function () { pushHistory(); });
+  });
+  box.querySelectorAll('[data-follow]').forEach(function (chk) {
+    const k = chk.dataset.follow;
+    chk.addEventListener('change', function () {
+      const inp = box.querySelector('[data-col="' + k + '"]');
+      if (chk.checked) {
+        delete it[k];
+      } else {
+        it[k] = inp.value;   // 从「跟随」切过来：先用占位色起步，用户再调
+      }
+      inp.disabled = chk.checked;
+      renderItems(); markDirty();
+    });
   });
 }
 
@@ -661,20 +820,20 @@ function renderBgPane() {
     '<input id="bgFile" type="file" accept="image/png,image/jpeg,image/webp" hidden>' +
     '<div class="hint">图片按「铺满裁切」放到 1920×1080。<br>新图直接存进 assets/，下次还在。</div>';
 
-  $('#bgType').onchange = function (e) { b.type = e.target.value; pushHistory(); renderBg(); autoSave(); };
+  $('#bgType').onchange = function (e) { b.type = e.target.value; pushHistory(); renderBg(); markDirty(); };
   $('#bgPick').onchange = function (e) {
     b.image = e.target.value; b.type = 'image';
-    pushHistory(); renderBg(); renderBgPane(); autoSave();
+    pushHistory(); renderBg(); renderBgPane(); markDirty();
   };
   $('#bgDim').oninput = function (e) {
     b.dim = Number(e.target.value);
     $('#bgDimTxt').textContent = Math.round(b.dim * 100) + '%';
     renderBg();
   };
-  $('#bgDim').onchange = function () { pushHistory(); autoSave(); };
+  $('#bgDim').onchange = function () { pushHistory(); markDirty(); };
   $('#bgColor').oninput = function (e) { b.color = e.target.value; renderBg(); };
-  $('#bgColor').onchange = function () { pushHistory(); autoSave(); };
-  $('#bgRefresh').onclick = function () { loadBgList(true); };
+  $('#bgColor').onchange = function () { pushHistory(); markDirty(); };
+  $('#bgRefresh').onclick = function () { loadBgList(); };
   $('#bgUpload').onclick = function () { $('#bgFile').click(); };
   $('#bgFile').onchange = function (e) {
     const f = e.target.files[0];
@@ -693,7 +852,7 @@ function renderThemePane() {
     '<div class="hint">换浅色底图时，深紫卡片会像贴纸、浅紫标语几乎看不见 —— 切到浅色就正常了。</div>';
   $('#themeSel').onchange = function (e) {
     scene.theme = e.target.value;
-    pushHistory(); renderBg(); renderItems(); autoSave();
+    pushHistory(); renderBg(); renderItems(); markDirty();
   };
 }
 
@@ -842,7 +1001,7 @@ document.addEventListener('pointerup', function () {
   showGuides([], []);
   drag = null;
   renderProps();     // 位置/宽度那两个数字要跟着更新
-  autoSave();
+  markDirty();
 });
 
 /* ── 缩放 ── */
@@ -863,21 +1022,31 @@ function fitScale() {
 /* ══════════════════════════════════════════════════════════════════════
  * 存 / 读
  * ══════════════════════════════════════════════════════════════════════ */
-let saveTimer = null;
+/* ── 草稿 / 推送（2026-11-01 改）───────────────────────────────────────
+ * 原来这里叫 autoSave：改一下就 400ms 后自动 POST /layout，直播画面立刻跟着变。
+ * 主人原话「编辑页面不要马上刷新到直播窗口，改成保存后才刷新」—— 所以现在：
+ *   改 → 只写 localStorage（刷新不丢）+ 顶栏亮「未保存」
+ *   点「保存并推送」/ Ctrl+S → 才 POST /layout，画面 1 秒内跟着变
+ * 好处不只是「不乱闪」：拖到一半的样子不会再被观众看见。
+ */
+function markDirty() {
+  try { localStorage.setItem(LS_KEY, snap()); } catch (e) { /* 隐私模式可能写不了 */ }
+  setSync('dirty', '未保存 · Ctrl+S 推送');
+  showDraft(false);   // 自己动手的时候别再劝「恢复草稿」，那会让人以为存错了
+}
+
+/* 草稿按钮：只在「刷新后发现有比画面新的草稿」时出现。
+   刷新=重置（主人的要求），但按错 F5 不该赔掉半小时的活。 */
+function showDraft(on) {
+  const b = $('#draftBtn');
+  if (b) b.style.display = on ? '' : 'none';
+}
+
 /* 同步状态：'ok' 已落盘 / 'dirty' 还没存 / 'err' 存不进去 */
 function setSync(state, text) {
   const el = $('#sync');
   el.className = 'sync' + (state === 'ok' ? '' : ' ' + state);
   el.textContent = text;
-}
-
-/* autoSave：拖完、改完自动存一次（400ms 防抖）。改坏了还有撤销和「重新载入」兜底，
-   所以不弹确认 —— 直播中多一次弹窗就多一次手忙脚乱。 */
-function autoSave() {
-  try { localStorage.setItem(LS_KEY, snap()); } catch (e) { /* 隐私模式可能写不了 */ }
-  setSync('dirty', '未保存…');
-  clearTimeout(saveTimer);
-  saveTimer = setTimeout(function () { save(true); }, 400);
 }
 
 async function save(quiet) {
@@ -890,8 +1059,14 @@ async function save(quiet) {
     const j = await r.json();
     if (j.ok) {
       const t = new Date().toLocaleTimeString('zh-CN', { hour12: false });
-      setSync('ok', '已同步 ' + t);
-      if (!quiet) toast('已保存 · 画面 1 秒内跟着变');
+      /* 存成功之后把草稿对齐成「等于画面」—— 这样刷新时就不会再亮「恢复草稿」，
+         而且 localStorage 里那份也不会比画面旧。 */
+      try { localStorage.setItem(LS_KEY, snap()); } catch (e) { /* 忽略 */ }
+      showDraft(false);
+      sceneId = (j.scene && j.scene.id) || sceneId;
+      setSync('ok', '已推送 ' + t + (j.scene ? ' · ' + j.scene.name : ''));
+      if (!quiet) toast('已推送 · 画面 1 秒内跟着变');
+      loadScenes(true);          // 场景的「最后保存时间」跟着刷新
       return true;
     }
     setSync('err', '保存失败');
@@ -932,32 +1107,104 @@ async function loadFromBridge(showToast) {
       scene = normalize(j.layout);
       await loadPet();          // 先问清楚是哪套素材，再画框 —— 反了框会按旧比例算
       pushHistory(); renderAll();
-      setSync('ok', '已同步');
-      if (showToast) toast('已从画面重新载入');
+      if (j.scene) { sceneId = j.scene.id; paintScnName(j.scene.name); }
+      setSync('ok', '已同步' + (j.scene ? ' · ' + j.scene.name : ''));
+      if (showToast) toast('已回到画面正在用的版式');
       return true;
     }
     setSync('err', '还没有版式文件');
-    if (showToast) toast(j.error || '还没有版式文件', 3000);
+    console.log('[编辑器] 还没有版式文件：' + (j.error || ''));
   } catch (e) {
     setSync('err', '读不到桥');
-    if (showToast) toast('读不到桥，先用本地草稿', 3000);
+    // 右上角胶囊已经把状态说清楚了，别再弹 toast 打架；细节进 console 排查用
+    console.log('[编辑器] 读不到桥：' + (e && e.message || e));
   }
   return false;
 }
 
-async function loadBgList(showToast) {
+/* ══════════════════════════════════════════════════════════════════════
+ * 场景（2026-11-01 加）
+ *   一份 layout.json 只能装一个版式。主人要按场景切 —— 聊天一个样、
+ *   打游戏一个样、睡觉一个样 —— 所以场景存在 cache/layouts/<id>.json，
+ *   选哪个哪个就覆盖 layout.json（= 画面立刻换）。
+ * 🔴 「保存」只推当前场景；「另存为」新建一个并顺手切过去。
+ * ══════════════════════════════════════════════════════════════════════ */
+let sceneId = '';
+let scenes = [];
+
+function paintScnName(name) {
+  /* 下拉里那一项的文字就是场景名本身，所以这里只负责把「生效」标记打上 */
+  const sel = $('#scnSel');
+  if (sel) sel.classList.toggle('live', !!name);
+}
+
+function paintScenes() {
+  const sel = $('#scnSel');
+  if (!sel) return;
+  if (!scenes.length) {
+    sel.innerHTML = '<option>（没有场景）</option>';
+    sel.disabled = true;
+    return;
+  }
+  sel.disabled = false;
+  /* 选项只写场景名：「名字 · 11-01 15:47」塞进去必被下拉框截断，看着像坏了。
+     时间放进 title，鼠标停一下就能看到。 */
+  sel.innerHTML = scenes.map(function (s) {
+    const at = s.at ? new Date(s.at).toLocaleString('zh-CN', { hour12: false }) : '还没保存过';
+    return '<option value="' + esc(s.id) + '" title="' + esc(s.name + ' · ' + at) + '"'
+      + (s.id === sceneId ? ' selected' : '') + '>' + esc(s.name) + '</option>';
+  }).join('');
+  paintScnName((scenes.find((s) => s.id === sceneId) || {}).name);
+}
+
+async function loadScenes(quiet) {
+  try {
+    const r = await fetchT(API + '/layout/scenes', {}, 5000);
+    const j = await r.json();
+    if (!j.ok) { if (!quiet) toast('读不到场景列表：' + (j.error || ''), 4000); return; }
+    scenes = j.list || [];
+    if (j.active) sceneId = j.active;
+    paintScenes();
+  } catch (e) {
+    // 桥还是旧代码 / 没起：场景栏留在「没有场景」，其余功能照常用
+    if (!quiet) console.log('[编辑器] 读不到场景列表：' + (e && e.message || e));
+    scenes = [];
+    paintScenes();
+  }
+}
+
+async function activateScene(id) {
+  try {
+    const r = await fetchT(API + '/layout/scene/activate', {
+      method: 'POST', headers: { 'content-type': 'text/plain;charset=UTF-8' },
+      body: JSON.stringify({ id }),
+    }, 8000);
+    const j = await r.json();
+    if (!j.ok) { toast('切不过去：' + (j.error || ''), 5000); await loadScenes(true); return; }
+    sceneId = j.active;
+    try { localStorage.removeItem(LS_KEY); } catch (e) { /* 忽略 */ }
+    showDraft(false);
+    await loadFromBridge(false);
+    await loadScenes(true);
+    toast('已切到「' + j.name + '」· 画面 1 秒内换过去', 3000);
+  } catch (e) {
+    toast('切场景失败：' + (e.name === 'AbortError' ? '超时' : e.message), 5000);
+    await loadScenes(true);
+  }
+}
+
+async function loadBgList() {
   try {
     const r = await fetchT(API + '/layout/bg', {}, 5000);
     const j = await r.json();
     if (j.ok && Array.isArray(j.files)) {
       renderBgPane._files = j.files;
       renderBgPane();
-      if (showToast) toast('读到 ' + j.files.length + ' 张图');
       return;
     }
-    if (showToast) toast(j.error || '读不到图片列表', 3000);
+    console.log('[编辑器] 读不到图片列表：' + (j.error || ''));
   } catch (e) {
-    if (showToast) toast('桥没有 /layout/bg（还没重启）', 3000);
+    console.log('[编辑器] 桥没有 /layout/bg（可能还没重启）：' + (e && e.message || e));
   }
 }
 
@@ -974,7 +1221,7 @@ async function uploadBg(file) {
     if (!j.ok) { toast('上传失败：' + j.error, 4000); return; }
     scene.bg.type = 'image';
     scene.bg.image = j.path;
-    pushHistory(); renderBg(); await loadBgList(false); autoSave();
+    pushHistory(); renderBg(); await loadBgList(); markDirty();
     toast('换上了 ' + file.name + '（' + j.kb + 'KB）', 2600);
   } catch (e) {
     toast('上传失败：' + (e.name === 'AbortError' ? '超时' : e.message), 4000);
@@ -987,10 +1234,74 @@ $('#fitBtn').onclick = fitScale;
 $('#undoBtn').onclick = undo;
 $('#redoBtn').onclick = redo;
 $('#saveBtn').onclick = function () { pushHistory(); save(false); };
-$('#reloadBtn').onclick = function () {
-  if (!confirm('丢掉本地改动，重新读画面现在用的版式？')) return;
-  loadFromBridge(true);
+$('#reloadBtn').onclick = async function () {
+  if (!confirm('丢掉没保存的改动，回到画面正在用的这个场景？')) return;
+  try { localStorage.removeItem(LS_KEY); } catch (e) { /* 忽略 */ }
+  showDraft(false);
+  await loadFromBridge(true);
 };
+
+/* ── 场景栏 ── */
+$('#scnSel').onchange = function (e) {
+  const id = e.target.value;
+  if (!id || id === sceneId) return;
+  const s = scenes.find((x) => x.id === id) || { name: id };
+  // 切场景 = 直播画面立刻换版式，这件事必须问一句
+  if (!confirm('把直播画面换成「' + s.name + '」？\n没保存的改动会丢掉。')) { paintScenes(); return; }
+  activateScene(id);
+};
+$('#scnNew').onclick = async function () {
+  const name = prompt('这个场景叫什么？（比如「聊天」「打游戏」）', '');
+  if (name === null) return;
+  const clean = String(name).trim().slice(0, 24);
+  if (!clean) { toast('名字不能空着', 3000); return; }
+  try {
+    const r = await fetchT(API + '/layout/scenes', {
+      method: 'POST', headers: { 'content-type': 'text/plain;charset=UTF-8' },
+      body: JSON.stringify({ name: clean, layout: JSON.parse(snap()) }),
+    }, 8000);
+    const j = await r.json();
+    if (!j.ok) { toast('另存失败：' + (j.error || ''), 5000); return; }
+    sceneId = j.id;
+    try { localStorage.setItem(LS_KEY, snap()); } catch (e) { /* 忽略 */ }
+    showDraft(false);
+    setSync('ok', '已另存并生效 · ' + j.name);
+    await loadScenes(true);
+    toast('「' + j.name + '」已另存，画面现在用它', 3200);
+  } catch (e) {
+    toast('另存失败：' + (e.name === 'AbortError' ? '超时' : e.message), 5000);
+  }
+};
+$('#scnDel').onclick = async function () {
+  if (!sceneId) return;
+  const s = scenes.find((x) => x.id === sceneId) || { name: sceneId };
+  if (!confirm('删掉场景「' + s.name + '」？\n画面不会跟着变（现在是什么样就还是什么样）。')) return;
+  try {
+    const r = await fetchT(API + '/layout/scene/delete', {
+      method: 'POST', headers: { 'content-type': 'text/plain;charset=UTF-8' },
+      body: JSON.stringify({ id: sceneId }),
+    }, 6000);
+    const j = await r.json();
+    if (!j.ok) { toast('删不掉：' + (j.error || ''), 5000); return; }
+    sceneId = j.active || '';
+    await loadScenes(true);
+    await loadFromBridge(false);
+    toast('已删掉「' + s.name + '」', 2600);
+  } catch (e) {
+    toast('删不掉：' + (e.name === 'AbortError' ? '超时' : e.message), 5000);
+  }
+};
+/* 恢复草稿：刷新之后才发现有没推送的改动，一键捡回来（还是草稿，要推得自己点保存） */
+$('#draftBtn').onclick = function () {
+  let d = null;
+  try { const raw = localStorage.getItem(LS_KEY); if (raw) d = normalize(JSON.parse(raw)); } catch (e) { /* 忽略 */ }
+  if (!d) { showDraft(false); toast('草稿已经没了', 2600); return; }
+  scene = d;
+  pushHistory(); renderAll();
+  markDirty();
+  toast('草稿回来了 · 看完没问题再点「保存并推送」', 3600);
+};
+
 $('#previewBtn').onclick = function () {
   document.body.classList.toggle('preview');
   fitScale();
@@ -1003,7 +1314,6 @@ $('#gridBtn').onclick = function () {
 $('#snapBtn').onclick = function () {
   snapOn = !snapOn;
   $('#snapBtn').classList.toggle('on', snapOn);
-  toast(snapOn ? '吸附开：自动对齐中轴和别的组件' : '吸附关：随便放');
 };
 
 /* ── 键盘 ── */
@@ -1027,7 +1337,7 @@ document.addEventListener('keydown', function (e) {
     if (e.key === 'ArrowRight') it.x += step;
     if (e.key === 'ArrowUp') it.y -= step;
     if (e.key === 'ArrowDown') it.y += step;
-    renderItems(); renderProps(); autoSave();
+    renderItems(); renderProps(); markDirty();
   }
 });
 
@@ -1051,11 +1361,18 @@ window.addEventListener('resize', function () {
   fitScale();
   $('#snapBtn').classList.add('on');
   $('#gridBtn').classList.add('on');
-  // 再跟画面同步一次：本地草稿可能比画面新，也可能比画面旧
+  /* 🔴 刷新 = 重置（2026-11-01 主人的要求）：
+     草稿只用来「先把界面点亮」，真正的版式以画面正在用的那份为准。
+     上面先画草稿是为了桥没起的时候不白屏；桥一答应就整份换掉。
+     草稿跟画面不一样 → 顶栏挂个「恢复草稿」，按错 F5 不至于赔掉半小时的活。 */
+  const draft = (function () {
+    try { const raw = localStorage.getItem(LS_KEY); return raw ? normalize(JSON.parse(raw)) : null; }
+    catch (e) { return null; }
+  })();
   const ok = await loadFromBridge(false);
-  if (!ok) toast('读不到画面版式，现在用的是本地草稿', 3000);
-  loadBgList(false);
-  console.log('[编辑器] 组件 ' + COMPS.length + ' 个，桥 ' + (ok ? 'OK' : '不可用'));
+  if (ok && draft && JSON.stringify(draft) !== snap()) showDraft(true);
+  loadScenes(true);
+  loadBgList();
 })();
 </script>
 </body>

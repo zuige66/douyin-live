@@ -158,6 +158,8 @@ class State:
             # 礼物档位媒体（2026-10-27）。桥每次 /state.json 都带这一段，
             # render.draw_computer 靠它决定屏幕上播什么。空字典 = 待机。
             "media": {},
+            # 白饭（2026-10-30）：空字典 = 还没拉到余额，render 会退回读 token。
+            "rice": {},
         }
         self.ver = 0
         self.alive = False  # 桥连上了没
@@ -167,7 +169,11 @@ class State:
         changed = False
         for k in ("online", "chat", "gift", "replied", "token", "state",
                   "stateText", "songs", "queue", "danmaku", "subtitle", "name",
-                  "mood", "moodAt", "music", "live", "media"):
+                  "mood", "moodAt", "music", "live", "media",
+                  # 白饭（2026-10-30）：右下角那个「白饭 14.7 碗 · 今天 -0.3」。
+                  # 🔴 这里是**白名单**，桥给了不在这张表里的字段画面一律收不到 ——
+                  # 漏一个 key 的表现就是「画面永远显示 0.0」，而且桥那边看着完全正常。
+                  "rice", "money"):
             if k in d and d[k] != self.data.get(k):
                 self.data[k] = d[k]
                 changed = True
