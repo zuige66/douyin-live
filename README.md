@@ -68,8 +68,9 @@ open-overlay.cmd --topmost    # 窗口置顶
 
 - **`live-start.cmd`**（双击）：确保控制台在跑 → Mate 让直播伴侣**开播** → `/ctl/all` 起桥 + 画面 + 音乐。
   **先开播再起桥**（顺序不能反 —— 桥若在房间没活时先起会「假活」，灯绿但一条弹幕都收不到）。
-- **`live-stop.cmd`**（双击）：Mate **关播**（自动点二次确认）→ `/ctl/stop` 停桥 + 画面 →
-  **彻底杀掉音乐服务**（否则「全停了还有音乐」）。
+- **`live-stop.cmd`**（双击）：**先让大肥鱼说一句告别**（「好啦，我下播啦，拜拜~」，等字幕和语音
+  真的走完，至少 5 秒）→ Mate **关播**（自动点二次确认）→ `/ctl/stop` 停桥 + 画面 →
+  **彻底杀掉音乐服务**（否则「全停了还有音乐」）。赶时间可以 `node tools/live.mjs stop --no-bye`。
 - **`live-status.cmd`**（双击）：只看状态，不动手。
 
 人双击就行；agent 也能跑，加 `--no-pause` 不阻塞：
@@ -77,6 +78,7 @@ open-overlay.cmd --topmost    # 窗口置顶
 ```
 live-start.cmd --no-pause
 node tools/live.mjs start      # 等价，直接跑核心
+node tools/live.mjs bye        # 只说一句告别，不关播（调试声线用）
 ```
 
 > 前置：Mate 提权代理（`start-mate-agent.cmd`）要在后台起着，否则开播/下播那一下点不到直播伴侣
@@ -148,8 +150,24 @@ zhibo/
 | `prompts/dafeiyu-live.md` | 主角色卡：她是谁、怎么说话 | 回退到内置的八行人设，很薄，容易漂 |
 | `prompts/skins/<皮套名>.md` | 这一身长什么样 | 只说「今天穿的女仆装」，被问颜色会编 |
 | `prompts/kb/<库名>.md` | 知识库，一份 md 一个库 | 没有知识储备，只能闲聊 |
-| `llm.json` | 模型：`mode` / `base` / `key` / `model` | 只能用本地话术 |
+| `llm.json` | 模型：`base` / `key` / `model`（面板上填，不用手改） | 只能用本地话术 |
 | `cache/layout.json` | 画面版式 | 用内置默认坐标 |
+
+### 怎么确认现在用的是哪个模型
+
+`llm.json` 是**直播间弹幕回复**（`reply.mjs`）唯一的模型来源；
+`zhibo-auto/config.json` 的 `llm.model` 管**评论区/私信自动回复**。
+两处互不影响 —— 但 `zhibo-auto` 默认会跟着 `llm.json` 走，所以改这边会连带改到那边。
+
+一条命令看全部（读两份配置 + 真发一次请求，把**服务端返回的 model 字段**打出来：
+
+```bash
+node tools/which-model.mjs
+```
+
+配置写 flash、网关却偷偷换成 pro 这种事，只有"实调一次看回包"这一步能抓到。
+如果只想测直播间那条链路：`node reply.mjs --probe`，它会打
+`配置：模型 xxx @ base` 并真回一句。
 
 格式看 `prompts/README.md`，以及同目录下的 `example.md`。
 皮套名对应 `cache/layout.json` 里 `items.character.pet` 的值。
