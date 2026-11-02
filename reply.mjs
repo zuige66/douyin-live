@@ -23,7 +23,6 @@ const MAX_LEN = 20
 const MAX_LEN_DEEP = 40
 
 import fs from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -1140,23 +1139,20 @@ function localReply({ user, text = '', kind = '', song = null, video = null, ski
 
 /* ------------------------------------------------------------------ 大模型 */
 /**
- * 三档（llm.json 的 mode，或环境变量 REPLY_MODE）：
+ * 一条路（2026-11-02 改版）。
  *
- *   flash（默认）  直连 DeepSeek 官方接口，model = deepseek-flash
- *   dsh            跟着 DSH 现在选的模型走
- *   local          不调模型，只用本地话术
+ * 以前这里是「三档」：flash 直连 / dsh 跟 DSH 走 / local 只用本地话术，
+ * 档位写在 llm.json 的 mode 里。主人反馈「接入 API 好像没有的选择模型」——
+ * 档位这一层既不直观，又选不了具体用哪个模型。
  *
- * 为什么要有 dsh 这一档：模型是 DSH 设置页里选的，换一次就得回来改一次配置太烦。
- * 这一档直接读它选的那份（profiles/<profile>/cordis.patch.yml 的 agent-default-model），
- * 它换成什么就跟什么。
+ * 现在只有一条路：**llm.json 的 base / key / model 就是唯一真相**。
+ * 面板「设置 → 账号 → 接口与模型」里填地址、探测模型、从列表里挑一个，
+ * 存完下一条弹幕就生效，不用重启桥。
  *
- * ⚠ 但 DSH 的 provider 不一定能从外面调：
- *   · deepseek 系 —— 官方 HTTP 接口，拿 key 就能打，OK
- *   · workbuddy / buddy / trae 这类 —— 凭证在 DSH 进程里换 token，外面没有端口。
- *     只有 DSH 的「免费模型转发」（our-free-model 插件，默认 127.0.0.1:18899）开着才调得到。
- *     没开就明确报错，别假装通了 —— 这类静默降级最难查。
+ * 🔴 「本地话术」不再是一档。它退回本职：模型连不上时的兜底
+ *    （见 makeReplyRaw 的 route().ok 判断），以及礼物/点歌这类本地答得更准的场合
+ *    （见 betterLocal）。别把它当成可以"选"的模式 —— 选了就等于关掉回复。
  */
-const DSH_HOME = process.env.DSH_HOME || path.join(os.homedir(), '.dsh')
 
 function readJsonSafe(f) {
   try {
@@ -1172,86 +1168,57 @@ function readConf() {
   if (fs.existsSync(CONF_FILE)) console.error('  [llm] llm.json 解析不了，当没配')
   return {}
 }
-const CONF = readConf()
-let MODE = String(process.env.REPLY_MODE || CONF.mode || 'flash').toLowerCase()
-
-/** DSH 当前选的模型：{ profile, provider, model } 或 null */
-export function dshSelection() {
-  for (const p of ['desktop', 'web', 'headless']) {
-    const f = path.join(DSH_HOME, 'profiles', p, 'cordis.patch.yml')
-    if (!fs.existsSync(f)) continue
-    let lines
-    try {
-      lines = fs.readFileSync(f, 'utf8').split(/\r?\n/)
-    } catch {
-      continue
-    }
-    const i = lines.findIndex((l) => /^-\s+id:\s*agent-default-model\b/.test(l))
-    if (i < 0) continue
-    let provider = ''
-    let model = ''
-    for (let j = i + 1; j < lines.length; j++) {
-      if (/^-\s+id:/.test(lines[j])) break // 下一项了
-      const mp = /^\s+provider:\s*['"]?([^'"\s#]+)/.exec(lines[j])
-      const mm = /^\s+model:\s*['"]?([^'"\s#]+)/.exec(lines[j])
-      if (mp) provider = mp[1]
-      if (mm) model = mm[1]
-    }
-    if (model) return { profile: p, provider, model }
-  }
-  return null
+/* 配置改了要能热生效（面板上「保存」不该要求重启桥）。
+ * 所以 CONF 不 freeze 在模块加载那一刻，而是带 mtime 的懒读缓存 ——
+ * 文件一动，下一次 route() 就用新的。见 reloadConf()。 */
+let CONF = readConf()
+let confMtime = 0
+try {
+  confMtime = fs.statSync(CONF_FILE).mtimeMs
+} catch {
+  // 没有 llm.json = 没配，保持空对象
 }
 
-/** DSH 免费模型转发口（our-free-model 插件里配的，没开就是死地址，probe 会当场报出来） */
-function dshForward() {
-  const s = readJsonSafe(path.join(DSH_HOME, 'our-free-model', 'settings.json')) || {}
-  const fw = s.forward || {}
-  return {
-    base: `http://${fw.host || '127.0.0.1'}:${fw.port || 18899}/v1`,
-    key: s?.chanGateway?.relay?.key || '',
+/** 文件被改过就重读。面板保存后立刻调一次，别等缓存过期。 */
+function reloadConf() {
+  let mtime = 0
+  try {
+    mtime = fs.statSync(CONF_FILE).mtimeMs
+  } catch {
+    // 文件被删了：当成没配，别抱着旧值继续打接口
+    if (confMtime) {
+      confMtime = 0
+      CONF = {}
+    }
+    return CONF
   }
+  if (mtime !== confMtime) {
+    confMtime = mtime
+    CONF = readConf()
+    routeCache = { at: 0, route: null }
+  }
+  return CONF
 }
 
 /**
  * 决定这一条弹幕走哪个接口。
  * 返回 { ok:true, label, base, key, model } 或 { ok:false, why }
+ *
+ * 只有一个来源：llm.json（面板写它）。环境变量仍然可以盖过去 ——
+ * 排查问题时 `REPLY_MODEL=xxx node reply.mjs --probe` 比改文件快，
+ * 但它**不该**成为日常配置的入口，所以面板上不暴露。
  */
 function resolveRoute() {
-  if (MODE === 'local') return { ok: false, why: 'mode=local' }
-
-  if (MODE === 'dsh') {
-    const sel = dshSelection()
-    if (!sel) return { ok: false, why: '读不到 DSH 选的模型（profiles/*/cordis.patch.yml 里没有 agent-default-model）' }
-    const tag = `${sel.provider}/${sel.model}`
-    const ov = CONF.dsh || {} // llm.json 里的 dsh 段可以强行指接口/模型（转发口上模型名不一样时要用）
-    const isDs = /deepseek/i.test(sel.provider) || /^deepseek/i.test(sel.model)
-    const fw = dshForward()
-    const base = String(ov.base || (isDs ? 'https://api.deepseek.com/v1' : fw.base)).replace(/\/+$/, '')
-    const key = ov.key || (isDs ? process.env.REPLY_API_KEY || process.env.DEEPSEEK_API_KEY || CONF.key || '' : fw.key)
-    const model = ov.model || sel.model
-    if (!key && isDs) return { ok: false, why: `DSH 选的是 ${tag}，但没 key（llm.json 的 key）` }
-    return {
-      ok: true,
-      label: `dsh → ${tag}${ov.model && ov.model !== sel.model ? `（接口上用 ${ov.model}）` : ''} @ ${base}`,
-      base,
-      key,
-      model,
-      sel,
-      hint: isDs
-        ? ''
-        : '这个 provider 的凭证只在 DSH 进程里，外面没有端口。两条路：①把 DSH 的模型切成 DeepSeek（这一档立刻生效）②在 DSH 的「免费模型」插件里开转发，再在 llm.json 的 dsh 段写转发口的模型名',
-    }
-  }
-
-  // flash / 自定义接口
-  // 优先级：REPLY_* 环境变量 > llm.json > 通用 OPENAI_* 环境变量
-  // （通用的 OPENAI_* 常被别的工具占着，甚至指向一个已经关掉的转发，所以放最后）
+  reloadConf()
   const base = String(
     process.env.REPLY_API_BASE || CONF.base || process.env.OPENAI_BASE_URL || 'https://api.deepseek.com/v1'
   ).replace(/\/+$/, '')
   const key = process.env.REPLY_API_KEY || CONF.key || process.env.OPENAI_API_KEY || ''
-  const model = process.env.REPLY_MODEL || CONF.model || process.env.OPENAI_MODEL || 'deepseek-flash'
-  if (!key) return { ok: false, why: '没配 key（llm.json 的 key）' }
+  const model = String(process.env.REPLY_MODEL || CONF.model || process.env.OPENAI_MODEL || '').trim()
+  if (!key) return { ok: false, why: '还没填 API key（设置 → 账号 → 接口与模型）' }
+  /* 没有 model 就不猜。以前这里默认 deepseek-flash，换个中转（人家根本没这个模型名）
+   * 就会得到一句「HTTP 400」，看着像接口坏了，其实是模型名不对。 */
+  if (!model) return { ok: false, why: '还没选模型（设置 → 账号 → 接口与模型 → 探测模型）' }
   return { ok: true, label: `${model} @ ${base}`, base, key, model }
 }
 
@@ -1321,6 +1288,62 @@ const FALLBACK_SYSTEM = `你是直播间的虚拟主播「zuige大肥鱼」，�
 
 const PERSONA_FILE = path.join(DIR, 'prompts', 'dafeiyu-live.md')
 const PERSONA_CFG = path.join(DIR, 'cache', 'persona.json')
+
+/* ------------------------------------------------------- 场景（2026-11-01）
+ * 主人要的是：**一套桥 + 多个「页面」**，页面之间可以切。
+ *   · 共用：桥（弹幕/回复/TTS）、音乐
+ *   · 跟着页面走：画面渲染器、人设卡、素材视频、场景简报
+ *
+ * 场景表存在 `cache/scenes.json`：{ active, list:[{id,name,render,persona,scene,media}] }
+ *
+ * 🔴 「场景简报」是这次最关键的一块。2026-11-01 现场栽过：切到炒股画面之后，
+ *    观众问「你在炒股吗」，她回「什么炒股」——因为 system 里根本没人告诉她
+ *    这一场在干嘛。人设卡写的是"你是谁"，场景简报写的是"**你现在在做什么**"。
+ *
+ * 🔴 顺序有讲究：人设卡 → 皮套 → **场景** → 性格。
+ *    prompt 缓存是前缀匹配，切场景只失效场景段之后的尾巴，前面几节照旧命中。
+ *    别把场景段插到皮套前面 —— 那等于每次切场景都要重算整张卡的缓存。
+ */
+const SCENES_FILE = path.join(DIR, 'cache', 'scenes.json')
+const SCENE_DIR = path.join(DIR, 'prompts', 'scene')
+let scenesCache = { mtime: -1, active: '', list: [] }
+
+function loadScenes() {
+  try {
+    const st = fs.statSync(SCENES_FILE)
+    if (st.mtimeMs !== scenesCache.mtime) {
+      const j = JSON.parse(fs.readFileSync(SCENES_FILE, 'utf8'))
+      scenesCache = {
+        mtime: st.mtimeMs,
+        active: String(j.active || ''),
+        list: Array.isArray(j.list) ? j.list : [],
+      }
+    }
+  } catch {
+    /* 文件没了/坏了就回到「只有日常这一页」—— 一场直播不能因为少个 json 就哑掉 */
+    if (!scenesCache.list.length) {
+      scenesCache = { mtime: -1, active: 'live', list: [{ id: 'live', name: '日常横屏', scene: 'live' }] }
+    }
+  }
+  return scenesCache
+}
+
+/** 当前这一页。找不到 active 就退到第一页。 */
+export function currentScene() {
+  const s = loadScenes()
+  return s.list.find((x) => x.id === s.active) || s.list[0] || { id: 'live', name: '日常横屏', scene: 'live' }
+}
+
+/** 人设卡路径：页面可以用 `persona` 换整张卡，不写就还是主卡 */
+function personaFile() {
+  const sc = currentScene()
+  const want = String(sc.persona || '').trim()
+  if (want) {
+    const p = path.join(DIR, 'prompts', `${want}.md`)
+    if (fs.existsSync(p)) return p
+  }
+  return PERSONA_FILE
+}
 
 /* ------------------------------------------------------- 皮套（2026-10-28）
  * 换皮套 = 换一身衣服。但「她长什么样」原来写死在主卡里，于是红发皮套下
@@ -1411,16 +1434,43 @@ export function skinInfo() {
 let baseCache = { mtime: -1, text: '' }
 
 function loadPersona() {
+  const file = personaFile()
   try {
-    const st = fs.statSync(PERSONA_FILE)
-    if (st.mtimeMs === baseCache.mtime && baseCache.text) return baseCache.text
-    const raw = fs.readFileSync(PERSONA_FILE, 'utf8')
+    const st = fs.statSync(file)
+    /* 🔴 缓存键必须带**路径**：切场景换了人设卡但两文件 mtime 撞上（同一秒写的）
+     *    就会拿旧文本，表现成「切了页面人设没变」，查半天查不出来。 */
+    if (st.mtimeMs === baseCache.mtime && baseCache.file === file && baseCache.text) {
+      return baseCache.text
+    }
+    const raw = fs.readFileSync(file, 'utf8')
     // 去掉开头的身份牌注释，别让它当成正文喂给模型
     const body = raw.replace(/^\s*<!--[\s\S]*?-->/, '').trim() || FALLBACK_SYSTEM
-    baseCache = { mtime: st.mtimeMs, text: body }
+    baseCache = { mtime: st.mtimeMs, file, text: body }
     return body
   } catch {
     return FALLBACK_SYSTEM
+  }
+}
+
+/* ------------------------------------------------------- 场景简报（2026-11-01）
+ * 「你现在在做什么」—— 按当前页面注入，缺失就整段跳过（日常那页可以没有）。
+ * e.g. 炒股页会写清「这是模拟盘 / 你的杠杆是观众送的 / 被问你在炒股吗直接认」。
+ */
+let sceneCache = { file: '', mtime: -1, text: '' }
+function sceneBlock() {
+  const sc = currentScene()
+  const id = String(sc.scene || sc.id || '').trim()
+  if (!id) return ''
+  const file = path.join(SCENE_DIR, `${id}.md`)
+  try {
+    const st = fs.statSync(file)
+    if (sceneCache.file === file && sceneCache.mtime === st.mtimeMs) return sceneCache.text
+    const raw = fs.readFileSync(file, 'utf8')
+    const body = raw.replace(/^\s*<!--[\s\S]*?-->/, '').trim()
+    sceneCache = { file, mtime: st.mtimeMs, text: body }
+    return body
+  } catch {
+    return ''
   }
 }
 
@@ -1539,7 +1589,9 @@ function personaSamples() {
 
 /** 当前完整的 system。内容不变时字符串完全一样，缓存照样命中。 */
 function getSystem() {
-  return `${loadPersona()}\n\n${skinBlock()}\n\n${personaBlock()}`
+  return [loadPersona(), skinBlock(), sceneBlock(), personaBlock()]
+    .filter(Boolean)
+    .join('\n\n')
 }
 
 /** 面板用：当前性格 + 三套定义 + 覆盖项 */
@@ -1613,6 +1665,29 @@ const KB_TTL = 3000 // 3 秒内不重复扫目录；直播中改 kb.json 也能�
 
 let kbCache = { at: 0, cfg: {}, blocks: [] }
 
+/** 把 json 里的作用域字段读成字符串数组。不是数组 / 空 = []（= 不限，哪一页都用）。 */
+function arrOfStr(v) {
+  if (!Array.isArray(v)) return []
+  return v.map((x) => String(x || '').trim()).filter(Boolean)
+}
+
+/**
+ * 这份资料在「当前这一页 + 当前这一身皮套」下面该不该生效（2026-11-01）。
+ *
+ * 主人原话：「知识库隔离一下，或者说在设置里面可以对不同颜色的大肥鱼
+ * 跟不同直播画面的大肥鱼的知识库进行设置配置。」
+ *
+ * 两个维度各管一件事，**空数组 = 不限**：
+ *   scenes  只在这些直播页面里生效（例：广工那套只在 live）
+ *   skins   只在这些皮套下生效（例：只给 pet2 那身衣服写的东西）
+ * 两个都非空就是「且」—— 得同时对上才给。
+ */
+function kbInScope(b, sceneId, pet) {
+  if (b.scenes && b.scenes.length && !b.scenes.includes(sceneId)) return false
+  if (b.skins && b.skins.length && !b.skins.includes(pet)) return false
+  return true
+}
+
 function loadKb() {
   const now = Date.now()
   if (now - kbCache.at < KB_TTL) return kbCache
@@ -1631,6 +1706,10 @@ function loadKb() {
     const key = f.replace(/\.md$/i, '')
     const fc = (cfg.files || {})[key] || {}
     const fileOn = fc.on !== false
+    /* 作用域（2026-11-01 主人要的隔离）：空数组 = 不限，哪一页 / 哪一身都用。
+     * 老配置里没有这两个键，读出来就是 []，行为跟以前完全一样 —— 不用迁移。 */
+    const scopeScenes = arrOfStr(fc.scenes)
+    const scopeSkins = arrOfStr(fc.skins)
     let raw = ''
     try {
       raw = fs.readFileSync(path.join(KB_DIR, f), 'utf8')
@@ -1647,7 +1726,11 @@ function loadKb() {
       body = body.replace(/<!--[\s\S]*?-->/g, '').replace(/\s+/g, ' ').trim()
       if (!title || !body || !kws.length) continue
       const off = (cfg.blockOff || []).includes(`${key}/${title}`)
-      blocks.push({ key, title, kws, body, off, fileOn, tests: kws.map(kwTester) })
+      blocks.push({
+        key, title, kws, body, off, fileOn,
+        scenes: scopeScenes, skins: scopeSkins,
+        tests: kws.map(kwTester),
+      })
     }
   }
   kbCache = { at: now, cfg, blocks }
@@ -1681,8 +1764,13 @@ export function kbPick(text) {
   const tl = t.toLowerCase()
   const { cfg, blocks } = loadKb()
   if (cfg.enabled === false || !blocks.length) return ''
+  /* 按当前这一页 + 当前这一身皮套过滤（2026-11-01）。
+   * 🔴 必须读**当下**的场景和皮套，不能缓存在模块顶上 ——
+   *    切页面 / 换皮套都是热操作，缓存住就得重起桥才生效。 */
+  const sceneId = String(currentScene().id || '')
+  const pet = currentPet()
   const hits = blocks
-    .filter((b) => b.fileOn && !b.off)
+    .filter((b) => b.fileOn && !b.off && kbInScope(b, sceneId, pet))
     .map((b) => ({ b, score: (b.tests || []).filter((f) => f(t, tl)).length }))
     .filter((x) => x.score > 0)
     .sort((a, b) => b.score - a.score)
@@ -1714,6 +1802,17 @@ export function kbInfo() {
   } catch {
     // 没目录就是没知识
   }
+  /* 作用域的两个可选值（2026-11-01）：页面来自 scenes.json，皮套来自
+   * prompts/skins/*.md —— 都现读，新加一个页面 / 一套衣服这里自动多一个选项。 */
+  const sceneList = (loadScenes().list || []).map((s) => ({ id: String(s.id), name: String(s.name || s.id) }))
+  let skinList = []
+  try {
+    skinList = fs.readdirSync(SKIN_DIR)
+      .filter((f) => /\.md$/i.test(f) && f.toLowerCase() !== 'example.md')
+      .map((f) => f.replace(/\.md$/i, ''))
+  } catch {}
+  const nowScene = String(currentScene().id || '')
+  const nowPet = currentPet()
   return {
     enabled: cfg.enabled !== false,
     /* 文件级设置要按磁盘上的真实文件列，不能按加载结果列 ——
@@ -1725,6 +1824,9 @@ export function kbInfo() {
         on: fc.on !== false,
         maxBlocks: Math.max(1, Math.min(4, Number(fc.maxBlocks) || 2)),
         maxChars: Math.max(200, Math.min(2000, Number(fc.maxChars) || 700)),
+        /* 空数组 = 不限。面板上「全部」就是空数组。 */
+        scenes: arrOfStr(fc.scenes),
+        skins: arrOfStr(fc.skins),
       }
     }),
     blocks: blocks.map((b) => ({
@@ -1735,7 +1837,15 @@ export function kbInfo() {
       off: !!b.off,
       /* 所属资料被整份关掉时也是「现在不生效」，面板要能区分这两种关法 */
       fileOn: b.fileOn !== false,
+      /* 被场景 / 皮套挡在外面：面板要能说出「不是关了，是这一页用不上」 */
+      inScope: kbInScope(b, nowScene, nowPet),
+      scenes: b.scenes || [],
+      skins: b.skins || [],
     })),
+    /* 面板画多选用的 */
+    sceneList,
+    skinList,
+    current: { scene: nowScene, skin: nowPet },
   }
 }
 
@@ -1759,6 +1869,10 @@ export function kbSet(patch = {}) {
     if ('on' in patch) fc.on = !!patch.on
     if ('maxBlocks' in patch) fc.maxBlocks = Math.max(1, Math.min(4, Number(patch.maxBlocks) || 2))
     if ('maxChars' in patch) fc.maxChars = Math.max(200, Math.min(2000, Number(patch.maxChars) || 700))
+    /* 作用域（2026-11-01）：传空数组就是「全部」，跟没设一样。
+     * 面板上点「全部」会传 []，所以这里必须允许把它写回去。 */
+    if ('scenes' in patch) fc.scenes = arrOfStr(patch.scenes)
+    if ('skins' in patch) fc.skins = arrOfStr(patch.skins)
     j.files[patch.file] = fc
   }
   if (patch.block) {
@@ -2094,7 +2208,32 @@ async function llmReply(r, { user, text, kind, song = null, profile = null, vide
       headers,
       body: JSON.stringify(body),
     })
-    if (!res.ok) throw new Error('HTTP ' + res.status)
+    /* 🔴 光抛 `HTTP 400` 等于没说（2026-11-02 实测踩过）：
+     * 模型名打错、key 不对、余额空，全都长成「HTTP 4xx」，
+     * 面板上看到的就是一句没头没尾的状态码。
+     * 接口的错误体里其实有 `error.message`（"Model Not Exist" / "Authentication Fails"），
+     * 捞出来带上；捞不到再退回状态码。截 200 字，别把整坨 HTML 塞进日志。 */
+    if (!res.ok) {
+      let detail = ''
+      try {
+        const t = await res.text()
+        try {
+          const j = JSON.parse(t)
+          detail = j?.error?.message || j?.msg || j?.message || ''
+        } catch {
+          detail = t.slice(0, 120)
+        }
+      } catch {
+        // 错误体都读不出来就只报状态码
+      }
+      const hint =
+        res.status === 400 ? '（模型名不对？先在面板上探测一下）'
+        : res.status === 401 || res.status === 403 ? '（key 不对或没权限）'
+        : res.status === 402 ? '（余额不足）'
+        : res.status === 429 ? '（限流，等会儿再试）'
+        : ''
+      throw new Error(`HTTP ${res.status}${detail ? `：${String(detail).slice(0, 200)}` : ''}${hint}`)
+    }
     const j = await res.json()
 
     /* 记账：usage 里有 prompt_cache_hit_tokens / prompt_cache_miss_tokens。
@@ -2261,42 +2400,129 @@ export async function makeReply(ctx) {
 }
 
 /**
- * 启动时探一次：配了 key 不等于能用（中转挂了、余额空了、格式不对、转发口没开都算）。
+ * 启动时探一次：配了 key 不等于能用（中转挂了、余额空了、格式不对、模型名不对都算）。
  * 返回 { ok, why, sample }，bridge 拿它决定日志怎么写。
  */
 export async function probeLLM() {
   const r = route()
-  if (!r.ok) return { ok: false, why: r.why, label: MODE }
+  if (!r.ok) return { ok: false, why: r.why, label: '没配好' }
+  /* 20 秒，不是 10（2026-11-02 实测踩过）。
+   * deepseek-v4-pro 这种推理模型首字要 1 秒以上，遇上「桥刚起来自检」和
+   * 「面板点探测」同时打接口，10 秒会先到点 —— 报出来的还是一句
+   * `This operation was aborted`，看着像接口坏了，其实是超时。
+   * 直播时每条弹幕仍然走 llmReply 自己的 6 秒（那里要快），这里只服务探活。 */
+  const PROBE_MS = 20000
   try {
-    const out = await llmReply(r, { user: '测试', text: '在吗', kind: 'chat' }, 10000)
+    const out = await llmReply(r, { user: '测试', text: '在吗', kind: 'chat' }, PROBE_MS)
     if (!out) return { ok: false, why: '接口通了但回的是空串', label: r.label }
     return { ok: true, sample: out, label: r.label }
   } catch (e) {
-    const why = e?.message || String(e)
+    const raw = e?.message || String(e)
+    /* AbortError 的 message 是英文的 "This operation was aborted"，
+     * 直接抛给面板等于没说。翻译成「多久没回」。 */
+    const why =
+      e?.name === 'AbortError' || /abort/i.test(raw)
+        ? `等了 ${PROBE_MS / 1000} 秒没回话（接口太慢 / 模型名不对 / 网络卡住）`
+        : raw
     return { ok: false, why: r.hint ? `${why} —— ${r.hint}` : why, label: r.label }
   }
 }
 
-/** 列一下这个接口能用的模型名（换模型前先跑这个，别猜） */
-export async function listModels() {
-  const r = route()
-  if (!r.ok) return { ok: false, why: r.why }
-  const headers = {}
-  if (r.key) headers.authorization = `Bearer ${r.key}`
+/**
+ * 试一份**还没落盘**的配置（2026-11-02）。
+ *
+ * 🔴 为什么不能「先存再试」：主人填了个错的模型名（手滑 / 接口改了名），
+ *    一点「保存并测试」，能用的那份配置就被错的覆盖了 —— 直播中这一步等于
+ *    当场把她弄哑。所以顺序必须是**先试，通了才存**（存的活由 bridge 干）。
+ *
+ * 做法：临时把内存里的 CONF 换成试的那份，试完无论成败都换回去。
+ * 不碰磁盘，所以失败了配置一点没变。
+ */
+export async function probeLLMWith(over = {}) {
+  reloadConf()
+  const backup = { ...CONF }
+  const tryConf = { ...CONF }
+  if (over.base != null && String(over.base).trim()) tryConf.base = String(over.base).trim().replace(/\/+$/, '')
+  if (over.key != null && String(over.key).trim()) tryConf.key = String(over.key).trim()
+  if (over.model != null && String(over.model).trim()) tryConf.model = String(over.model).trim()
+  CONF = tryConf
+  routeCache = { at: 0, route: null }
   try {
-    const res = await fetch(`${r.base}/models`, { headers })
-    const j = await res.json()
-    const ids = (j?.data || []).map((m) => m.id).filter(Boolean)
-    return { ok: true, ids, label: r.label }
-  } catch (e) {
-    return { ok: false, why: e?.message || String(e) }
+    return await probeLLM()
+  } finally {
+    /* 无论成败都还原 —— 这里泄漏一次，后面每条弹幕都会走一份没存过的配置，
+     * 而面板上显示的又是文件里的那份，两边对不上。 */
+    CONF = backup
+    routeCache = { at: 0, route: null }
   }
 }
 
-/** 当前这一档实际会走哪儿（CLI 换档之后要重新算，别用模块加载时的旧值） */
+/**
+ * 列一下这个接口能用的模型名。
+ *
+ * 面板「探测模型」按钮走这里。2026-11-02 改：**允许临时传 base/key** ——
+ * 主人是「先填地址和 key、点探测、再挑一个」这个顺序，探测时那两样还没存盘。
+ * 不传就用 llm.json 里现有的（换模型时不用重填 key）。
+ *
+ * 探测本身**不需要模型名**（GET /models 不认 model），所以这里不检查 model。
+ */
+export async function listModels(over = {}) {
+  reloadConf()
+  const base = String(over.base || process.env.REPLY_API_BASE || CONF.base || 'https://api.deepseek.com/v1')
+    .trim()
+    .replace(/\/+$/, '')
+  const key = String(over.key || process.env.REPLY_API_KEY || CONF.key || '').trim()
+  if (!base) return { ok: false, why: '还没填接口地址' }
+  if (!key) return { ok: false, why: '还没填 API key' }
+  const headers = { authorization: `Bearer ${key}` }
+  const ctl = new AbortController()
+  const timer = setTimeout(() => ctl.abort(), 15000)
+  try {
+    const res = await fetch(`${base}/models`, { headers, signal: ctl.signal })
+    /* 有的中转把错误也回 200 + HTML，先看状态码再解析，别让 JSON.parse 抛一句看不懂的 */
+    if (!res.ok) {
+      let detail = ''
+      try {
+        const t = await res.text()
+        const j = JSON.parse(t)
+        detail = j?.error?.message || j?.msg || t.slice(0, 200)
+      } catch {
+        // 非 JSON 错误体就算了，状态码已经够用
+      }
+      return {
+        ok: false,
+        why: `接口回了 HTTP ${res.status}${detail ? `：${detail}` : ''}` +
+          (res.status === 401 || res.status === 403 ? '（key 不对？）' : ''),
+      }
+    }
+    const j = await res.json()
+    const ids = (Array.isArray(j?.data) ? j.data : [])
+      .map((m) => (typeof m === 'string' ? m : m?.id))
+      .filter(Boolean)
+      .map(String)
+    /* 有的中转（和部分兼容层）不实现 /models。这时候不该说「接口坏了」，
+     * 而是明说「列不出来，手填吧」—— 手填的输入框面板上一直都有。 */
+    if (!ids.length) return { ok: false, why: '这个接口没返回模型列表（可能不支持 /models），可以手动填模型名' }
+    return { ok: true, ids, base, label: `@ ${base}` }
+  } catch (e) {
+    /* 区分「超时」和「连不上」。连不上最常见的原因是地址写错了
+     * （多打一个路径段、https 写成 http、端口不对），提示要往那儿指。 */
+    const why =
+      e?.name === 'AbortError'
+        ? '探测超时（15 秒）'
+        : /fetch failed|ENOTFOUND|ECONNREFUSED|getaddrinfo/i.test(String(e?.message || e))
+          ? `连不上 ${base} —— 地址写错了？${e?.cause?.code ? `（${e.cause.code}）` : ''}`
+          : e?.message || String(e)
+    return { ok: false, why }
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+/** 现在实际会走哪儿（每次现算，别用模块加载时的旧值） */
 export function describe() {
   const r = route()
-  return r.ok ? `模型 ${r.label}` : `本地话术（${r.why}）`
+  return r.ok ? `模型 ${r.label}` : `没连上模型（${r.why}），先用本地话术顶着`
 }
 
 const R = route()
@@ -2304,16 +2530,86 @@ export const llmConfigured = R.ok
 export const replyMode = describe()
 
 /**
- * 热切换回复档（2026-10-27）：面板上改「回复模型」不用再全停重启桥。
- * MODE 是模块级的，改完**下一条弹幕**就走新档；route() 每次调用现算，所以
- * 不需要动任何别的东西。环境变量 REPLY_MODE 仍然只在启动时读一次 —— 这里
- * 改的是内存里的值，重启桥会回到 llm.json / 环境变量。
+ * 存接口配置（2026-11-02）。
+ *
+ * 只认 base / key / model 三个字段，写进 llm.json，然后**立刻**让内存里的
+ * CONF 跟上 —— 下一条弹幕就走新的，不用重启桥。
+ *
+ * 🔴 三件事必须守住：
+ *   1. 其它字段（maxTokens 之类）原样保留，别整份覆盖掉；
+ *   2. key 传空串 = 不改（面板上那个框回填的是打码值，不能拿它覆盖真 key）；
+ *   3. 写盘用 .tmp + rename，半截文件会让桥以为「没配」而静默退回本地话术。
+ */
+export function saveLlmCfg(patch = {}) {
+  const cur = { ...(readJsonSafe(CONF_FILE) || {}) }
+  const next = { ...cur }
+  if (patch.base != null) {
+    const v = String(patch.base).trim().replace(/\/+$/, '')
+    if (!/^https?:\/\//i.test(v)) return { ok: false, why: '接口地址要以 http:// 或 https:// 开头' }
+    next.base = v
+  }
+  /* 只有明确给了非空 key 才写。面板不会把真 key 发回来（见 bridge 的打码逻辑）。 */
+  if (patch.key != null && String(patch.key).trim()) next.key = String(patch.key).trim()
+  if (patch.model != null) {
+    const v = String(patch.model).trim()
+    if (!v) return { ok: false, why: '模型名不能是空的' }
+    next.model = v
+  }
+  /* 老配置里的 mode 现在没用了。留着会让人以为还能切档 —— 直接删掉。 */
+  delete next.mode
+  delete next.dsh
+  try {
+    fs.mkdirSync(path.dirname(CONF_FILE), { recursive: true })
+    const tmp = `${CONF_FILE}.tmp`
+    fs.writeFileSync(tmp, JSON.stringify(next, null, 2) + '\n', 'utf8')
+    fs.renameSync(tmp, CONF_FILE)
+  } catch (e) {
+    return { ok: false, why: '写 llm.json 失败：' + (e?.message || String(e)) }
+  }
+  CONF = next
+  try {
+    confMtime = fs.statSync(CONF_FILE).mtimeMs
+  } catch {
+    confMtime = 0
+  }
+  routeCache = { at: 0, route: null } // 立刻重算，别等 10 秒缓存过期
+  return { ok: true, base: next.base || '', model: next.model || '', hasKey: Boolean(next.key), text: describe() }
+}
+
+/** 面板要显示「现在填的是什么」。key 打码，绝不把明文发给浏览器。 */
+export function llmCfg() {
+  reloadConf()
+  const key = String(CONF.key || '')
+  return {
+    base: String(CONF.base || ''),
+    model: String(CONF.model || ''),
+    /* 只露尾巴 4 位。够确认「填的是哪把钥匙」，又不足以被抄走。 */
+    keyMask: key ? (key.length <= 8 ? '••••' : `••••${key.slice(-4)}`) : '',
+    hasKey: Boolean(key),
+    env: {
+      /* 环境变量能盖掉文件里的值。盖着的时候面板要明说，
+       * 不然「存了没生效」会查很久。 */
+      base: Boolean(process.env.REPLY_API_BASE),
+      key: Boolean(process.env.REPLY_API_KEY || process.env.DEEPSEEK_API_KEY),
+      model: Boolean(process.env.REPLY_MODEL),
+    },
+    text: describe(),
+  }
+}
+
+/**
+ * 以前这里是「热切换回复档」（flash / dsh / local）。2026-11-02 撤掉了：
+ * 换模型现在走 saveLlmCfg，档位这个概念本身不存在了。
+ *
+ * 保留这个导出只为让老的调用方（bridge 的 /reply/mode）有个明确的拒绝，
+ * 而不是静默成功却什么也没做。
  */
 export function setReplyMode(m) {
   const v = String(m || '').trim().toLowerCase()
-  if (!['flash', 'dsh', 'local'].includes(v)) return { ok: false, why: '不认识的档：' + v }
-  MODE = v
-  return { ok: true, mode: MODE, text: describe() }
+  return {
+    ok: false,
+    why: `回复档已经取消了（收到 ${v || '空'}）。现在只有一条路：设置 → 账号 → 接口与模型 里选模型。`,
+  }
 }
 
 /** /healthz 用：每次现算，别用模块加载时的旧字符串 */
@@ -2325,18 +2621,12 @@ export function replyModeText() {
 // 探接口：node reply.mjs --probe
 // 列模型：node reply.mjs --models
 // 预热：  node reply.mjs --warm      ← 开播前跑两次，第一条弹幕就不用全价买前缀
-// 换档：  node reply.mjs --mode dsh
+// 临时换模型（不改文件）：REPLY_MODEL=deepseek-v4-pro node reply.mjs --probe
 if (process.argv[1] && process.argv[1].endsWith('reply.mjs')) {
   const args = process.argv.slice(2)
-  const mi = args.indexOf('--mode')
-  if (mi >= 0 && args[mi + 1]) {
-    MODE = String(args[mi + 1]).toLowerCase()
-    routeCache = { at: 0, route: null }
-    args.splice(mi, 2)
-  }
 
   if (args[0] === '--warm') {
-    console.log('模式：', MODE, '/', describe())
+    console.log('配置：', describe())
     probeLLM().then((p) => {
       const c = cacheStats()
       if (!p.ok) {
@@ -2373,7 +2663,6 @@ if (process.argv[1] && process.argv[1].endsWith('reply.mjs')) {
     }
     process.exit(0)
   } else if (args[0] === '--probe' || args[0] === '--models') {
-    console.log('模式：', MODE)
     console.log('配置：', describe())
     if (args[0] === '--models') {
       listModels().then((m) => {
@@ -2390,12 +2679,10 @@ if (process.argv[1] && process.argv[1].endsWith('reply.mjs')) {
   } else {
     const [user = '测试', text = '你好', kind = ''] = args
     ;(async () => {
-      console.log('模式：', MODE, '/', describe())
+      console.log('配置：', describe())
       // 单条试话术也先探一次，免得打印「模型」却悄悄用了本地话术
-      if (MODE !== 'local') {
-        const p = await probeLLM()
-        console.log(p.ok ? `  自检通过（样例：${p.sample}）` : `  ⚠ 探不通，用本地话术：${p.why}`)
-      }
+      const p = await probeLLM()
+      console.log(p.ok ? `  自检通过（样例：${p.sample}）` : `  ⚠ 探不通，用本地话术：${p.why}`)
       const r = await makeReply({ user, text, kind })
       console.log(`  ${user}：${text}`)
       console.log(`  大肥鱼：${r}   (${r.length} 字)`)
