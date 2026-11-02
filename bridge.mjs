@@ -23,7 +23,7 @@ import path from 'node:path'
 import { spawn, exec } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import {
-  makeReply, replyMode, probeLLM, llmConfigured, cacheStats, llmHealth,
+  makeReply, replyMode, probeLLM, cacheStats, llmHealth,
   /* 点歌：正则快路 + 模型兜底（2026-10-30）。
    * songIntent 是**唯一**判定入口；isSongRequest 只留给排队用（同步、不花 token）。
    * 旧的 songAsk / isSongHelp 不要再从这儿直接调 —— 那等于绕过模型兜底。 */
@@ -33,10 +33,15 @@ import {
   isSkipRequest,
   /* speakSplit：长回复拆两段念（2026-10-29，C3）。 */
   speakSplit,
-  setReplyMode, replyModeText,
+  /* 接口与模型（2026-11-02）：档位取消，改成「填地址 → 探测模型 → 挑一个」。
+   * setReplyMode 现在只会返回「档位已取消」，留着是给老调用方一个明确答复。 */
+  setReplyMode, replyModeText, saveLlmCfg, llmCfg, listModels, probeLLMWith,
   /* 白饭（2026-10-30）：costStats 是模型那一侧记的**真实 token 账单**，
    * setRiceHint 把「手里还有几碗」塞进 user 行 —— 不进 system，前缀缓存不受影响。 */
   costStats, setRiceHint,
+  /* 场景（2026-11-01）：画面切到竖屏炒股之后没地方放素材视频，
+   * 由 scenes.json 的 `video:false` 一句话关掉，见 mediaBegin()。 */
+  currentScene,
 } from './reply.mjs'
 
 const DIR = path.dirname(fileURLToPath(import.meta.url))
@@ -1556,11 +1561,34 @@ function resumeMusicAfterMedia() {
 }
 
 /**
+ * 这一页播不播素材视频（2026-11-01 主人：「炒股不要播放视频，都没有地方放」）。
+ *
+ * 炒股竖屏画面是 1080×1920 的 K 线图，整块屏幕都被行情和账本占满，
+ * 礼物视频根本没地方落 —— 硬播的话观众刷了礼物只看到 K 线动了一下，
+ * 比不播更糟。所以由 scenes.json 里那一页自己的 `video:false` 说话。
+ *
+ * 返回**页面名**（非空 = 这一页不播），调用方拿它写日志。
+ * 🔴 礼物 / 闲时 / 点播三条路都要先问它 —— 漏一条就是「刷了没反应」。
+ */
+function videoOff() {
+  const sc = currentScene()
+  return sc && sc.video === false ? (sc.name || sc.id || '这一页') : ''
+}
+
+/**
  * 真正开播一份素材。seq++ 让画面立刻切过去。
  * @param {object} item   scanMedia 出来的条目
  * @param {object} meta   {tier, user, gift}
  */
 function mediaBegin(item, meta) {
+  /* 兜底：上面三个入口都拦过一道了，这里再拦一次是防以后新加的调用点漏判。
+   * 顺手把队列清掉 —— 这一页根本不播，留着只会堆到 maxQueue，
+   * 之后每份礼物都被「队列满」拒掉，日志里看着像出了故障。 */
+  const off = videoOff()
+  if (off) {
+    MEDIA.queue.length = 0
+    return { how: '跳过', why: `「${off}」这一页不播素材视频` }
+  }
   /* 🔴 不能用 `Number(meta.tier) || 1`：闲时档就是 0，`||` 会把它改成礼物 1 档。
    * 这个坑以前没暴露，是因为 0 开头的文件压根没被扫进来。 */
   const rawTier = Number(meta.tier)
@@ -1688,6 +1716,7 @@ function idleCfg() {
 
 function maybeIdleMedia() {
   if (IDLE_OFF || !mediaCfg.on) return
+  if (videoOff()) return // 这一页不播素材视频（炒股竖屏）
   const cfg = idleCfg()
   if (!cfg.on) return
   if (MEDIA.cur || MEDIA.queue.length) return // 有东西在播/排队，轮不到闲时
@@ -1734,6 +1763,8 @@ const CLIP_GAP = Number(process.env.ZY_CLIP_GAP || 90) * 1000
 let clipAt = 0
 function playClipNow(user) {
   if (!mediaCfg.on) return { ok: false, why: '媒体总开关关着' }
+  const off = videoOff()
+  if (off) return { ok: false, why: `「${off}」这一页不放视频` }
   const pool = scanMedia().idle || []
   if (!pool.length) return { ok: false, why: `没有 0 档素材（${mediaDir()}）` }
   if (MEDIA.cur) {
@@ -1766,6 +1797,15 @@ function playClipNow(user) {
  * 返回 {how, why}，只用于日志和面板显示。
  */function triggerGiftMedia(n) {
   if (!mediaCfg.on) return { how: '跳过', why: '媒体总开关关着' }
+  /* 炒股那一页不播素材视频（2026-11-01 主人：「都没有地方放」）。
+   * 放在最前面而不是 mediaBegin 里：礼物这一路还要判档位、冷却、打断，
+   * 全判完才发现不能播，日志里会写一堆「正在播」「打断」的假动作。 */
+  const off = videoOff()
+  if (off) {
+    const why = `「${off}」这一页不播素材视频`
+    mediaLog(`✕ ${n.giftName || '礼物'} 没播：${why}`, 'warn')
+    return { how: '跳过', why }
+  }
   /* 「礼物不分档」（2026-10-27 深夜，主人要求）：
    * 「只要刷礼物，那四个视频就随机选一个播放」——
    * 打开后完全不看礼物名 / giftMap，1–4 档混成一个池子随机抽。
@@ -5739,7 +5779,21 @@ async function dyRoute(p, u, req) {
      * 夹取范围和 loadMediaCfg() 里读盘时保持一致，别两处不一样。 */
     if (b.idlePlay && typeof b.idlePlay === 'object') {
       const ip = mediaCfg.idlePlay
+      const wasOn = ip.on !== false
       if (typeof b.idlePlay.on === 'boolean') ip.on = b.idlePlay.on
+      /* 🔴 关掉开关就得**当场**把正在放的 0 档停掉（2026-11-01 主人：
+       *   「闲时视频关掉，这个在设置页面给我开关」）。
+       *   原来只改标志位，正在放的那一段照放到底 —— 而闲时视频播放期间
+       *   音乐是被压住的，于是关掉开关后画面没东西、音乐也不响，看着像没生效。
+       *   顺手 resumeMusicAfterMedia()，别让歌卡在暂停。 */
+      if (wasOn && ip.on === false && MEDIA.cur && MEDIA.cur.tier === 0) {
+        clearEndTimer()
+        MEDIA.cur = null
+        MEDIA.queue.length = 0
+        MEDIA.seq++
+        resumeMusicAfterMedia()
+        mediaLog('■ 闲时自动放被关掉，停掉正在放的 0 档', 'end')
+      }
       if (Number.isFinite(Number(b.idlePlay.quietSec))) {
         ip.quietSec = Math.max(10, Math.min(3600, Number(b.idlePlay.quietSec)))
       }
@@ -6018,6 +6072,11 @@ async function dyRoute(p, u, req) {
         if ('on' in b) patch.on = !!b.on
         if ('maxBlocks' in b) patch.maxBlocks = b.maxBlocks
         if ('maxChars' in b) patch.maxChars = b.maxChars
+        /* 作用域（2026-11-01）：哪些直播页面 / 哪些皮套用得上这份资料。
+         * 只收数组、元素限长 —— 这玩意儿最后会进 system 的取舍逻辑，
+         * 别让面板随手塞进奇怪的东西。空数组 = 全部，跟没设一样。 */
+        if ('scenes' in b) patch.scenes = Array.isArray(b.scenes) ? b.scenes.map((x) => String(x).slice(0, 40)) : []
+        if ('skins' in b) patch.skins = Array.isArray(b.skins) ? b.skins.map((x) => String(x).slice(0, 40)) : []
       }
       if (b.block) {
         patch.block = String(b.block).slice(0, 80)
@@ -6232,16 +6291,77 @@ async function dyRoute(p, u, req) {
     return { ok: true, message: '已退出登录' }
   }
 
-  /* ---- 回复档热切换（2026-10-27）----
-   * 面板改「回复模型」不用再全停重启桥：MODE 是 reply.mjs 里的模块级变量，
-   * 改完下一条弹幕就走新档。持久化由宿主写配置（zhiboReplyMode）负责。 */
-  if (p === '/reply/mode' && req.method === 'POST') {
-    const b = await readJson(req)
-    const r = setReplyMode(b.mode)
-    if (r.ok) log(`  [reply] 回复档切成 ${r.mode}（${r.text}）`)
-    return r
+  /* ══════════════════════════════════════════════════════════════════
+   * 接口与模型（2026-11-02 加）
+   *   GET  /llm                      现在填的 base / model / key（key 打码）
+   *   POST /llm       {base,key,model}   存进 llm.json，下一条弹幕生效
+   *   POST /llm/models {base,key}        探测这个接口有哪些模型
+   *   POST /llm/probe  {base,key,model}  真发一句话，验证这条配置能不能用
+   *
+   * 为什么探测允许带参数：主人的顺序是「填地址 → 填 key → 探测 → 挑模型」，
+   * 探测那一步还没保存。硬要求先存盘再探测，等于逼他先存一个可能是错的配置。
+   *
+   * 🔴 key 永远不出这个进程。GET 只回打码值；POST 传空串 = 不改。
+   * ══════════════════════════════════════════════════════════════════ */
+  if (p === '/llm') {
+    if (req.method === 'POST') {
+      const b = await readJson(req)
+      const r = saveLlmCfg({ base: b.base, key: b.key, model: b.model })
+      if (r.ok) log(`  [llm] 接口配置更新：${r.model} @ ${r.base}`)
+      else log(`  [llm] 接口配置没存上：${r.why}`)
+      return { ...r, cfg: llmCfg() }
+    }
+    return { ok: true, ...llmCfg() }
   }
-  if (p === '/reply/mode') return { ok: true, text: replyModeText() }
+
+  if (p === '/llm/models' && req.method === 'POST') {
+    const b = await readJson(req)
+    return await listModels({ base: b.base, key: b.key })
+  }
+
+  if (p === '/llm/probe' && req.method === 'POST') {
+    const b = await readJson(req)
+    const wantBase = String(b.base || '').trim()
+    const wantKey = String(b.key || '').trim()
+    const wantModel = String(b.model || '').trim()
+    /* 🔴 顺序是「先试，通了才存」（2026-11-02 改）。
+     * 原来是先存再探 —— 手滑填错模型名，一点按钮就把能用的配置覆盖了，
+     * 直播中那等于当场把她弄哑。现在错的配置**根本不落盘**。 */
+    if (wantBase || wantKey || wantModel) {
+      const pr = await probeLLMWith({ base: wantBase, key: wantKey, model: wantModel })
+      if (!pr.ok) {
+        log(`  [llm] 新配置没通过自检，没存（原配置不动）：${pr.why}`)
+        return { ...pr, saved: false, cfg: llmCfg() }
+      }
+      const chk = saveLlmCfg({
+        ...(wantBase ? { base: wantBase } : {}),
+        ...(wantKey ? { key: wantKey } : {}),
+        ...(wantModel ? { model: wantModel } : {}),
+      })
+      if (!chk.ok) return { ok: false, why: chk.why, saved: false, cfg: llmCfg() }
+      log(`  [llm] 新配置试通了，已存：${chk.model} @ ${chk.base}（样例「${pr.sample}」）`)
+      return { ...pr, saved: true, cfg: llmCfg() }
+    }
+    /* 不带参数 = 试现在生效的那份，不动磁盘 */
+    const pr = await probeLLM()
+    log(pr.ok ? `  [llm] 自检通过，样例「${pr.sample}」` : `  [llm] 自检失败：${pr.why}`)
+    return { ...pr, saved: false, cfg: llmCfg() }
+  }
+
+  /* ---- 回复档（2026-11-02 取消）----
+   * 以前这里是 flash / dsh / local 三选一的热切换。现在只有一条路：
+   * 模型由 llm.json 决定，换模型走上面的 /llm。
+   * 端点留着只为让**老的调用方**（DSH 插件的抖音直播页）收到一句明确的
+   * 「已经没有了」，而不是 404 让那边以为桥挂了。 */
+  if (p === '/reply/mode') {
+    if (req.method === 'POST') {
+      const b = await readJson(req)
+      const r = setReplyMode(b.mode)
+      log(`  [reply] 拒绝了老的换档请求（${b.mode || '空'}）：档位已取消`)
+      return r
+    }
+    return { ok: true, text: replyModeText(), cfg: llmCfg() }
+  }
 
   /* ---- 两条聊天之间的间隔（2026-10-27）----
    * 面板「回复」页里那个「两条之间隔几秒」。改了立刻生效，下一条就走新节奏。
@@ -6706,8 +6826,10 @@ const server = http.createServer(async (req, res) => {
   /* 🔴 `/music/` 这个前缀 2026-10-28 才补进来。5873cd7 那几个音源登录端点
    *    （/music/auth、/music/login/qq…）当时写进了 dyRoute，但**前缀没挂到
    *    这里**，于是它们一直是 404 —— 面板那张卡点「扫码登录」当然没反应。
-   *    实测：curl /music/auth → `404 D:\Workplace\zhibo\music\auth`。 */
-  if (p.startsWith('/dy/') || p.startsWith('/gift/') || p.startsWith('/user/') || p.startsWith('/persona') || p === '/kb' || p.startsWith('/kb/') || p.startsWith('/music/') || (p.startsWith('/media') && p !== '/media') || p === '/room' || p.startsWith('/room/') || p.startsWith('/reply/') || p.startsWith('/layout') || p === '/pet') {
+   *    实测：curl /music/auth → `404 D:\Workplace\zhibo\music\auth`。
+   * 🔴 `/llm` 2026-11-02 加的时候又差点踩同一个坑：路由写进了 dyRoute，
+   *    白名单没加 ⇒ 设置页「探测模型」全是 404。加新端点记得同步这一行。 */
+  if (p.startsWith('/dy/') || p.startsWith('/gift/') || p.startsWith('/user/') || p.startsWith('/persona') || p === '/kb' || p.startsWith('/kb/') || p.startsWith('/music/') || p.startsWith('/llm') || (p.startsWith('/media') && p !== '/media') || p === '/room' || p.startsWith('/room/') || p.startsWith('/reply/') || p.startsWith('/layout') || p === '/pet') {
     res.setHeader('access-control-allow-origin', '*')
     /* CORS 预检（2026-10-28 加）。
      * editor.html 如果是从别的源打开的（双击本地文件 = Origin: null），
@@ -7340,7 +7462,7 @@ server.on('error', (e) => {
 
 async function main() {
   // 回复引擎先自报家门：配了 key 不等于能用，探一次比事后猜「她怎么说话变呆了」强
-  log(`回复模式：${REPLY_ON ? replyMode : '关掉了（--no-reply）'}`)
+  log(`回复模型：${REPLY_ON ? replyMode : '关掉了（--no-reply）'}`)
   log(`语音：${TTS_ON ? `${ttsCfg().voice} ${ttsCfg().rate} ${ttsCfg().pitch}（edge-tts，缓存命中即 0 延迟 · 设置页可改）` : '关掉了（--no-tts）'}`)
   log(`音乐：${musicOn
     ? '接管本机 QQ 音乐 / 单身汉播放器（画面显示曲目 + 说话自动闪避）'
@@ -7391,7 +7513,10 @@ async function main() {
   const musicWd = setInterval(musicWatchdog, WATCH_EVERY)
   musicWd.unref?.()
 
-  if (REPLY_ON && llmConfigured) {
+  /* 🔴 不再判 llmConfigured（2026-11-02）。那是个**模块加载时**算出来的常量，
+   * 而接口配置现在能热改 —— 启动时没配、面板上配好之后，靠这个常量就永远不探。
+   * probeLLM 自己会处理「没配好」，直接调就行。 */
+  if (REPLY_ON) {
     const p = await probeLLM()
     if (p.ok) log(`  模型自检通过，样例：「${p.sample}」`)
     else log(`  ⚠ 模型探不通，这一轮用本地话术：${p.why}`)

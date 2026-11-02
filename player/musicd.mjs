@@ -17,10 +17,18 @@
  */
 import http from 'node:http'
 import fs from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { search, songUrl, userAccount, cookieSource, lyric, chart } from './netease.mjs'
 
 const PORT = Number(process.env.ZY_MUSIC_PORT || 18083)
 const HOST = '127.0.0.1'
+const HERE = path.dirname(fileURLToPath(import.meta.url))
+const ROOT = path.dirname(HERE)
+/* 按页面分的歌单。key = 页面 id（cache/scenes.json 里的 id），value = 曲目数组。
+ * 为什么放这儿、不放 media.json：歌单的读者只有播放器，
+ * 跟素材档位/音量那些「直播全局参数」不是一回事，混在一起改坏的风险更大。 */
+const PL_FILE = path.join(ROOT, 'cache', 'playlists.json')
 /** 页面超过这个时间没上报就认为播放器界面没开（原插件是 8 秒） */
 const ALIVE_MS = 8000
 /** 命令最多堆这么多，防止页面长期不开时无限增长 */
@@ -189,6 +197,97 @@ function applyCommand(cmd) {
 }
 
 /* ══════════════════════════════════════════════════════════════════════
+ * 按页面分的歌单（2026-11-01）
+ *
+ * 场景（日常横屏 / 炒股竖屏 …）各有各的 BGM。规矩只有两条，别加复杂逻辑：
+ *   · **切走时自动存**：把「正在放的 + 队列里排着的」写进旧页面的歌单，
+ *     主人在这个页面点了哪些歌，切回来还是那些 —— 不用手动保存。
+ *   · **切来时只认有歌的**：新页面歌单是空的就什么都不动，
+ *     绝不能因为「这个页面还没配歌单」就把正在放的音乐清掉。
+ * ══════════════════════════════════════════════════════════════════════ */
+
+let PL = null
+
+function loadPL() {
+  if (PL) return PL
+  try {
+    PL = JSON.parse(fs.readFileSync(PL_FILE, 'utf8')) || {}
+  } catch {
+    PL = {}
+  }
+  return PL
+}
+
+function savePL() {
+  try {
+    fs.mkdirSync(path.dirname(PL_FILE), { recursive: true })
+    const tmp = `${PL_FILE}.${process.pid}.tmp`
+    fs.writeFileSync(tmp, JSON.stringify(loadPL(), null, 1))
+    fs.renameSync(tmp, PL_FILE)
+    return true
+  } catch (e) {
+    log('  ⚠ 歌单存不下：' + String((e && e.message) || e).slice(0, 120))
+    return false
+  }
+}
+
+/** 只留播放需要的字段。别把搜索结果的整坨（封面 base64 之类）写进文件 */
+const normTrack = (t) => ({
+  id: String(t?.id || ''),
+  name: String(t?.name || ''),
+  artists: Array.isArray(t?.artists) ? t.artists.map(String) : [String(t?.artists || '')],
+  durationMs: Number(t?.durationMs || 0),
+  album: String(t?.album || ''),
+})
+
+const pick = (list) => (Array.isArray(list) ? list.filter((t) => t?.id).map(normTrack) : [])
+
+/** 把「正在放的 + 待播的」存成这个页面的歌单 */
+function exportPlaylist(name) {
+  const key = String(name || '').trim()
+  if (!key) return { ok: false, why: '缺少页面 id' }
+  const all = [...(S.current ? [S.current] : []), ...S.queue]
+  loadPL()[key] = pick(all)
+  savePL()
+  return { ok: true, name: key, count: loadPL()[key].length }
+}
+
+/**
+ * 换成这个页面的歌单。
+ * autoplay=false 时只铺队列不自动开播（切页面时用这个：让热榜/队列自己接上，
+ * 别在切换那一瞬间硬塞一首歌把正在放的那句打断）。
+ */
+function applyPlaylist(name, autoplay) {
+  const key = String(name || '').trim()
+  if (!key) return { ok: false, why: '缺少页面 id' }
+  const list = pick(loadPL()[key])
+  if (!list.length) return { ok: true, name: key, count: 0, skipped: true }
+
+  const had = Boolean(S.current)
+  S.current = null
+  S.queue = list.slice(0)
+  S.playing = false
+  S.positionSec = 0
+  S.durationSec = 0
+  push({ type: 'stop' })
+  if (autoplay || had) {
+    advance(`切到页面 ${key} 的歌单`)
+  } else {
+    push({ type: 'queue', queue: S.queue.slice(0, 30) })
+  }
+  log(`  ♫ 载入歌单「${key}」${list.length} 首`)
+  return { ok: true, name: key, count: list.length, playing: S.playing }
+}
+
+function setPlaylist(name, tracks) {
+  const key = String(name || '').trim()
+  if (!key) return { ok: false, why: '缺少页面 id' }
+  loadPL()[key] = pick(tracks)
+  savePL()
+  return { ok: true, name: key, count: loadPL()[key].length, tracks: loadPL()[key] }
+}
+
+/* ══════════════════════════════════════════════════════════════════════
  * HTTP
  * ══════════════════════════════════════════════════════════════════════ */
 
@@ -333,6 +432,28 @@ const server = http.createServer(async (req, res) => {
       const cmd = await readBody(req)
       const r = applyCommand(cmd)
       return json(res, 200, { ok: r.ok !== false, queued: true, pending: S.commands.length, ...r })
+    }
+
+    /* ── 按页面分的歌单 ─────────────────────────────────────────── */
+    if (p === '/playlist' && req.method === 'GET') {
+      const name = url.searchParams.get('name')
+      const all = loadPL()
+      if (name) return json(res, 200, { ok: true, name, tracks: pick(all[name]) })
+      const out = {}
+      for (const [k, v] of Object.entries(all)) out[k] = pick(v)
+      return json(res, 200, { ok: true, playlists: out })
+    }
+    if (p === '/playlist' && req.method === 'POST') {
+      const b = await readBody(req)
+      return json(res, 200, setPlaylist(b.name, b.tracks))
+    }
+    if (p === '/playlist/export' && req.method === 'POST') {
+      const b = await readBody(req)
+      return json(res, 200, exportPlaylist(b.name))
+    }
+    if (p === '/playlist/apply' && req.method === 'POST') {
+      const b = await readBody(req)
+      return json(res, 200, applyPlaylist(b.name, b.autoplay !== false))
     }
 
     /* ── 播放页用的接口 ─────────────────────────────────────────── */
