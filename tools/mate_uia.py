@@ -376,8 +376,151 @@ def _elements_for(kind: str):
     return [c for _, c in scored]
 
 
+# ---------------------------------------------------------------- 真实鼠标（兜底）
+# 只给「UIA 模式点不动」的控件用（CEF 自绘下拉之类）。
+# 前提：本进程必须是提权的 —— 中完整性进程的 SendInput 会被 UIPI 静默丢弃
+# （返回 0，GetLastError 也是 0，查不出原因）。
+_SM_XV, _SM_YV, _SM_CXV, _SM_CYV = 76, 77, 78, 79   # 虚拟桌面左上角 / 宽高
+_MF_MOVE, _MF_LEFTDOWN, _MF_LEFTUP = 0x0001, 0x0002, 0x0004
+_MF_ABSOLUTE, _MF_VIRTUALDESK = 0x8000, 0x4000
+_dpi_done = False
+
+
+class _MOUSEINPUT(ctypes.Structure):
+    _fields_ = [
+        ("dx", wt.LONG), ("dy", wt.LONG), ("mouseData", wt.DWORD),
+        ("dwFlags", wt.DWORD), ("time", wt.DWORD),
+        ("dwExtraInfo", ctypes.c_void_p),
+    ]
+
+
+class _INPUT(ctypes.Structure):
+    _fields_ = [("type", wt.DWORD), ("mi", _MOUSEINPUT)]
+
+
+def _ensure_dpi():
+    """必须先把进程设成 DPI 感知，否则 GetSystemMetrics 给的是缩放后的逻辑像素，
+    换算成 65535 归一化坐标会整体偏掉（表现是「点是点了，但点在别处」）。"""
+    global _dpi_done
+    if _dpi_done:
+        return
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)
+    except Exception:  # noqa: BLE001
+        try:
+            ctypes.windll.user32.SetProcessDPIAware()
+        except Exception:  # noqa: BLE001
+            pass
+    _dpi_done = True
+
+
+def click_at(x: int, y: int, double: bool = False) -> dict:
+    """在屏幕坐标 (x, y) 上真点一下。返回 ok + 换算后的虚拟桌面尺寸（排查用）。"""
+    _ensure_dpi()
+    vx = _u32.GetSystemMetrics(_SM_XV)
+    vy = _u32.GetSystemMetrics(_SM_YV)
+    vw = _u32.GetSystemMetrics(_SM_CXV) or 1
+    vh = _u32.GetSystemMetrics(_SM_CYV) or 1
+    ax = int(round((x - vx) * 65535.0 / max(1, vw - 1)))
+    ay = int(round((y - vy) * 65535.0 / max(1, vh - 1)))
+
+    try:
+        _u32.SendInput.argtypes = [ctypes.c_uint, ctypes.c_void_p, ctypes.c_int]
+        _u32.SendInput.restype = ctypes.c_uint
+    except Exception:  # noqa: BLE001
+        pass
+
+    def send(flags: int) -> bool:
+        inp = _INPUT(type=0, mi=_MOUSEINPUT(dx=ax, dy=ay, mouseData=0,
+                                            dwFlags=flags, time=0, dwExtraInfo=None))
+        return _u32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(_INPUT)) == 1
+
+    base = _MF_MOVE | _MF_ABSOLUTE | _MF_VIRTUALDESK
+    ok = send(base | _MF_LEFTDOWN)
+    time.sleep(0.06)
+    ok = send(base | _MF_LEFTUP) and ok
+    if double:
+        time.sleep(0.09)
+        send(base | _MF_LEFTDOWN)
+        time.sleep(0.06)
+        send(base | _MF_LEFTUP)
+    return {"ok": bool(ok), "at": [x, y], "norm": [ax, ay],
+            "virtualDesktop": [vx, vy, vw, vh]}
+
+
+def expand_named(name: str, exact: bool = True) -> dict:
+    """只试 ExpandCollapsePattern（下拉框专用）。
+
+    CEF 自绘的下拉只有 invoke/legacy 模式，Invoke() 只聚焦不展开；
+    但有些版本会真的实现 ExpandCollapse，那就得单独走这个。
+    """
+    for c in _all_nodes():
+        try:
+            if ((c.Name or "").strip() == name) if exact else (name in (c.Name or "")):
+                p = c.GetPattern(auto.PatternId.ExpandCollapsePattern)
+                if not p:
+                    return {"ok": False, "reason": "控件找到了，但没有 ExpandCollapse 模式",
+                            "picked": node(c, 0)}
+                p.Expand()
+                return {"ok": True, "how": "expand", "picked": node(c, 0)}
+        except Exception:  # noqa: BLE001
+            continue
+    return {"ok": False, "reason": "没找到名字为 %r 的控件" % name}
+
+
+def _find_at(x: int, y: int):
+    """找出屏幕坐标 (x,y) 命中的 UIA 元素里**面积最小**的那个（= 最具体的那个）。
+
+    很多按钮是没有名字的（比如面板右上角那个 ✕），按名字根本找不到；
+    但它在树里有 rect，就能反查出来。取面积最小是为了避开「整个窗口的 Pane
+    也包含这个点」这种情况。
+    """
+    best, best_area = None, None
+    for c in _all_nodes(max_depth=14):
+        try:
+            r = c.BoundingRectangle
+            if r.left <= x <= r.right and r.top <= y <= r.bottom:
+                area = (r.right - r.left) * (r.bottom - r.top)
+                if area <= 0:
+                    continue
+                if best_area is None or area < best_area:
+                    best, best_area = c, area
+        except Exception:  # noqa: BLE001
+            continue
+    return best
+
+
 def invoke_named(name: str, exact: bool = True, dry: bool = False) -> dict:
-    """按名字点一个控件。给「验证 Invoke 是否真的生效」用，也方便临时调别的按钮。"""
+    """按名字点一个控件。给「验证 Invoke 是否真的生效」用，也方便临时调别的按钮。
+
+    特例：name 写成 ``@x,y`` 表示「在屏幕这个坐标真点一下」。
+    有些控件（比如 CEF 自己画的下拉框，只有 invoke/legacy 模式，DoDefaultAction
+    是空实现）UIA 怎么点都没反应，只能退回真实鼠标。真实鼠标在**提权进程**里
+    才有效 —— 中完整性进程的 SendInput 会被 UIPI 静默丢掉，这条路径必须走代理。
+    """
+    if name.startswith("+expand:"):
+        return expand_named(name[len("+expand:"):], exact=exact)
+
+    if name.startswith("@"):
+        try:
+            x, y = [int(v) for v in name[1:].split(",")[:2]]
+        except Exception:  # noqa: BLE001
+            return {"ok": False, "reason": "坐标写法应为 @x,y，收到 %r" % name}
+        if dry:
+            hit = _find_at(x, y)
+            return {"ok": True, "dry": True,
+                    "picked": node(hit, 0) if hit else {"name": name,
+                                                       "rect": [x, y, x, y]}}
+        # 先按坐标反查元素再 Invoke —— 对 High IL 窗口唯一有效的路
+        hit = _find_at(x, y)
+        if hit is not None:
+            how = invoke(hit)
+            if how:
+                return {"ok": True, "how": "invoke@" + how, "picked": node(hit, 0),
+                        "at": [x, y]}
+        # 再退回真实鼠标（本进程提权时才有效；edrAgent 可能会 hook 掉）
+        return click_at(x, y)
+
     hits = []
 
     def rec(c, d):

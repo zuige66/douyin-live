@@ -133,6 +133,15 @@
   .kwtag{font-size:11px;font-weight:600;padding:3px 9px;border-radius:var(--r-tag);
          background:var(--primary-c);color:var(--on-primary-c)}
   .kwtag.grey{background:var(--surface-4);color:var(--muted)}
+  /* 作用域 chips（2026-11-01）：一份资料用在哪些直播页面 / 哪些皮套下面。
+     「全部」= 空数组 = 不限，跟老配置一个行为。 */
+  .scope{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:9px}
+  .scope .slb{font-size:11px;color:var(--muted);flex:none;margin-right:1px}
+  .chip{font:inherit;font-size:11px;font-weight:600;padding:4px 10px;border-radius:var(--r-tag);
+        border:1px solid var(--surface-4);background:var(--surface-1);color:var(--muted);
+        cursor:pointer;white-space:nowrap}
+  .chip:hover{border-color:var(--muted);color:var(--on-surface)}
+  .chip.on{background:var(--primary-c);color:var(--on-primary-c);border-color:var(--primary-c)}
   .inject{white-space:pre-wrap;font-size:13px;line-height:1.7;max-height:260px;overflow:auto}
 
   .testbox{margin-top:16px;padding-top:16px;border-top:1px solid var(--surface-3)}
@@ -302,17 +311,56 @@
 
   <!-- ══════════════ ③ 回复 ══════════════ -->
   <section id="tab-reply" class="hide" data-label="回复">
+    <!-- 2026-11-02：原来这里是「回复档位」三选一（flash / DSH 转发 / 本地话术）。
+         档位取消了 —— 主人要的是「接一个 API，然后能挑模型」，不是选抽象档。
+         现在这张卡干三件事：填接口、探测模型、从列表里挑一个。
+         「本地话术」退回本职：模型连不上时的兜底，不再是可选档。 -->
     <div class="card">
-      <h2>回复档位</h2>
-      <div class="sub" id="modeSub">正在问…</div>
-      <div class="seg" id="modeSeg">
-        <button data-mode="flash">DeepSeek flash</button>
-        <button data-mode="dsh">DSH 转发</button>
-        <button data-mode="local">本地话术</button>
+      <h2>接口与模型</h2>
+      <div class="sub" id="llmSub">正在问…</div>
+
+      <div class="field">
+        <label>接口地址（OpenAI 兼容，一般以 <code>/v1</code> 结尾）</label>
+        <input type="text" id="llmBase" placeholder="https://api.deepseek.com/v1"
+               autocomplete="off" spellcheck="false">
       </div>
+      <div class="field">
+        <label>API Key</label>
+        <input type="password" id="llmKey" placeholder="sk-…" autocomplete="off" spellcheck="false">
+      </div>
+      <div class="hint" id="llmKeyHint" style="margin-top:6px">
+        key 只存在本机的 <code>llm.json</code> 里，不会回传到这个页面。
+        框里留空 = 不改；想换就整把粘进去。
+      </div>
+
+      <div class="row wrap" style="margin-top:16px">
+        <button class="btn" id="btnLlmProbe">探测模型</button>
+        <span class="hint" id="llmProbeTip" style="margin-top:0"></span>
+      </div>
+
+      <div class="field" id="llmPickWrap" style="display:none">
+        <label>选一个模型（探测到 <span id="llmPickN">0</span> 个）</label>
+        <div class="row">
+          <select id="llmPick" style="flex:1;min-width:0"></select>
+          <button class="btn" id="btnLlmUse">用它</button>
+        </div>
+      </div>
+
+      <div class="field">
+        <label>模型名（探测不到列表时手填；探测到的会回填到这里）</label>
+        <input type="text" id="llmModel" placeholder="deepseek-flash"
+               autocomplete="off" spellcheck="false">
+      </div>
+
+      <div class="row wrap" style="margin-top:16px">
+        <button class="btn pri" id="btnLlmSave">保存并测试</button>
+        <span class="hint" id="llmSaveTip" style="margin-top:0"></span>
+      </div>
+      <div class="out" id="llmOut" style="display:none"></div>
       <div class="hint">
-        改完<b>下一条弹幕</b>就走新档，不用重启桥。重启后会回到 <code>llm.json</code> 里写的那一档 ——
-        想永久生效就改那个文件。
+        保存后<b>下一条弹幕</b>就用新配置，不用重启桥。
+        「保存并测试」会真的发一句「在吗」过去 —— 通了才说明这把 key 和这个模型名对得上。
+        模型连不上时她不会哑掉，会用本地话术顶着，诊断页能看到原因。
       </div>
     </div>
 
@@ -602,7 +650,9 @@
     <div class="card">
       <h2>资料库</h2>
       <div class="sub">
-        一份 md 就是一个库，放在 <code>prompts/kb/</code>。新加一份丢进去就自动认出来。
+        一份 md 就是一个库，放在 <code>prompts/kb/</code>。新加一份丢进去就自动认出来。<br>
+        下面每组 <b>直播页面 / 皮套</b> 决定这份资料在哪儿用得上：选「全部」就是不限，
+        选具体项就是只在那些页面或那一身衣服下才算数（多选，可同时勾几个）。
       </div>
       <div id="kbFiles"><div class="hint">正在读…</div></div>
     </div>
@@ -639,6 +689,33 @@
       <div class="row wrap" style="margin-top:12px">
         <button class="btn ghost" id="btnQRefresh">刷新队列</button>
         <span class="hint" id="qMeta"></span>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>按页面分歌单</h2>
+      <div class="sub">
+        每个页面一套 BGM。<b>在哪个页面点了歌，切走时自动记住</b>，切回来还是这些；
+        切到还没配歌单的页面不会打断正在放的歌。
+      </div>
+      <div class="field">
+        <label>页面</label>
+        <select id="plScene"><option value="">正在读…</option></select>
+      </div>
+      <div id="plList"><div class="hint">正在读…</div></div>
+      <div class="field">
+        <label>加歌（一行一首，写「歌名」或者「歌名 - 歌手」）</label>
+        <textarea id="plAdd" placeholder="晴天&#10;一半一半 - 张碧晨"></textarea>
+      </div>
+      <div class="row wrap" style="margin-top:12px">
+        <button class="btn pri" id="btnPlAdd">搜歌加进去</button>
+        <button class="btn ghost" id="btnPlReload">刷新</button>
+        <button class="btn danger" id="btnPlClear">清空这一页</button>
+        <span class="hint" id="plMeta"></span>
+      </div>
+      <div class="hint">
+        歌单存在 <code>cache/playlists.json</code>，按页面 id 分开。
+        切页面时旧页面的队列会<b>自动存进去</b>，所以平时不用来这里手动维护。
       </div>
     </div>
 
@@ -783,7 +860,7 @@ function runLoader(key) {
     else if (key === 'gift') loadGift()
     else if (key === 'computer') { loadMedia(); loadMediaList() }
     else if (key === 'sound') loadMedia()
-    else if (key === 'music') { loadQueue(); loadSrc() }
+    else if (key === 'music') { loadQueue(); loadSrc(); plLoad() }
     else if (key === 'users') loadUsers()
     else if (key === 'persona') loadPersona()
     else if (key === 'kb') loadKb()
@@ -981,6 +1058,118 @@ async function loadQueue() {
 
 $('btnQRefresh').onclick = loadQueue
 
+/* ══════════════════ 按页面分歌单 ══════════════════
+   音乐服务在 18083（跟 index.html 的 MUSIC_BASE 同一个约定）。
+   歌单接口是 musicd 自己的，不是桥的 —— 播放器才是歌单的归属方。 */
+const MUSIC_BASE = 'http://127.0.0.1:18083'
+
+async function musicApi(path, opt, ms) {
+  const c = new AbortController()
+  const t = setTimeout(() => c.abort(), ms || 12000)
+  try {
+    const r = await fetch(MUSIC_BASE + path, Object.assign({}, opt, { signal: c.signal }))
+    return await r.json()
+  } finally { clearTimeout(t) }
+}
+
+let PL_DATA = {}
+let PL_SCENE = ''
+
+function plRender() {
+  const box = $('plList')
+  const list = PL_DATA[PL_SCENE] || []
+  $('plMeta').textContent = PL_SCENE ? `${PL_SCENE} · ${list.length} 首` : ''
+  if (!PL_SCENE) { box.innerHTML = '<div class="hint">先选一个页面。</div>'; return }
+  if (!list.length) {
+    box.innerHTML = '<div class="hint">这一页还没有歌单。切到这一页之前放着的歌，切走时会自动存进来；'
+      + '也可以在上面直接加。</div>'
+    return
+  }
+  box.innerHTML = list.map((x, i) =>
+    '<div style="display:flex;gap:10px;align-items:baseline;padding:7px 2px;'
+    + 'border-bottom:1px solid rgba(128,128,128,.16)">'
+    + '<span style="min-width:20px;font-size:12px;opacity:.6">' + (i + 1) + '</span>'
+    + '<span style="flex:1;font-size:13px">' + esc(x.name) + '</span>'
+    + '<span style="font-size:11px;opacity:.55">' + esc((x.artists || []).join('/')) + '</span>'
+    + '<button class="btn ghost" data-pl-del="' + i + '" style="padding:2px 8px;font-size:11px">删</button>'
+    + '</div>').join('')
+  box.querySelectorAll('[data-pl-del]').forEach((b) => {
+    b.onclick = async () => {
+      const i = Number(b.getAttribute('data-pl-del'))
+      const next = (PL_DATA[PL_SCENE] || []).slice()
+      next.splice(i, 1)
+      await plSave(next)
+    }
+  })
+}
+
+async function plSave(tracks) {
+  try {
+    const o = await musicApi('/playlist', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: PL_SCENE, tracks }),
+    })
+    if (!o.ok) throw new Error(o.why || '存不下')
+    PL_DATA[PL_SCENE] = o.tracks || tracks
+    plRender()
+    toast('歌单已更新')
+  } catch (e) { toast('存不下：' + e.message) }
+}
+
+async function plLoad() {
+  const sel = $('plScene')
+  try {
+    const s = await apiT('/scene')
+    const list = s.list || []
+    sel.innerHTML = list.map((x) =>
+      `<option value="${esc(x.id)}">${esc(x.name)}${x.id === s.active ? '（当前）' : ''}</option>`).join('')
+      || '<option value="">没有页面</option>'
+    PL_SCENE = s.active || (list[0] && list[0].id) || ''
+    if (PL_SCENE) sel.value = PL_SCENE
+    const p = await musicApi('/playlist')
+    PL_DATA = p.playlists || {}
+  } catch (e) {
+    $('plList').innerHTML = '<div class="hint">读不到：' + esc(e.message) + '</div>'
+    return
+  }
+  plRender()
+}
+
+$('plScene').onchange = () => { PL_SCENE = $('plScene').value; plRender() }
+$('btnPlReload').onclick = plLoad
+$('btnPlClear').onclick = async () => {
+  if (!PL_SCENE) return
+  if (!confirm('清空「' + PL_SCENE + '」的歌单？正在放的不受影响。')) return
+  await plSave([])
+}
+
+/* 加歌：一行一首，逐行搜（每行取第一条结果）。
+   为什么不让用户手填 id：没人记得住 id，抄错一位就是「找到是找到了但放不出来」。 */
+$('btnPlAdd').onclick = async () => {
+  const lines = $('plAdd').value.split('\n').map((x) => x.trim()).filter(Boolean)
+  if (!lines.length) return toast('先写歌名')
+  if (!PL_SCENE) return toast('先选一个页面')
+  const btn = $('btnPlAdd')
+  btn.disabled = true
+  const add = []
+  const bad = []
+  try {
+    for (const line of lines) {
+      const kw = line.replace(/\s*[-–]\s*.*$/, '').trim() || line
+      const r = await musicApi('/search?keyword=' + encodeURIComponent(kw) + '&limit=1')
+      const t = (r.tracks || [])[0]
+      if (t && t.id) add.push(t)
+      else bad.push(line)
+    }
+    if (add.length) await plSave([...(PL_DATA[PL_SCENE] || []), ...add])
+    $('plAdd').value = bad.join('\n')
+    toast(`加了 ${add.length} 首` + (bad.length ? `，${bad.length} 首没搜到` : ''))
+  } catch (e) {
+    toast('没加上：' + e.message)
+  } finally { btn.disabled = false }
+}
+
 /* ── QQ：粘贴 Cookie ── */
 $('btnQqSave').onclick = async () => {
   const cookie = $('qqCookie').value.trim()
@@ -1126,6 +1315,17 @@ let P = null
 
 async function loadPersona() {
   P = await api('/persona')
+  /* 🔴 桥没跑时这里回的是 {ok:false, offline:true, error:"桥没在跑…"}，没有 list 字段。
+   * 原来下面 `P.list.find(...)` 会抛 TypeError，把整页的后续初始化一起打断
+   * （2026-11-02 排查「保存接口失败」时才发现：控制台里那条 PAGEERROR 就是它，
+   *  不是接口与模型那张卡的问题，但会让人误判）。补一个空表兜住。 */
+  if (!P || !Array.isArray(P.list)) {
+    P = { list: [], active: '', over: {} }
+    $('plist').innerHTML = '<div class="hint">桥没在跑，性格读不出来 —— 回控制台点「开播」。</div>'
+    $('mode').textContent = '性格 · —'
+    $('mode').className = 'chip'
+    return
+  }
   const plist = Array.isArray(P.list) ? P.list : []
   $('plist').innerHTML = plist
     .map(
@@ -1202,22 +1402,49 @@ async function loadKb() {
   renderKb()
 }
 
+/**
+ * 作用域 chips（2026-11-01）：这份资料用在哪些直播页面 / 哪些皮套下面。
+ * 空数组 = 全部 = 不限，跟老配置一个行为。多选，点一下加、再点一下去掉。
+ */
+function scopeChips(kind, cur, opts, label) {
+  const list = Array.isArray(cur) ? cur : []
+  const btns = [`<button class="chip${list.length ? '' : ' on'}" data-scope="${kind}" data-v="">全部</button>`]
+  for (const o of opts || []) {
+    const id = typeof o === 'string' ? o : String(o.id || '')
+    const name = typeof o === 'string' ? o : String(o.name || o.id || '')
+    if (!id) continue
+    btns.push(
+      `<button class="chip${list.includes(id) ? ' on' : ''}" data-scope="${kind}" data-v="${esc(id)}">${esc(name)}</button>`
+    )
+  }
+  return `<div class="scope"><span class="slb">${label}</span>${btns.join('')}</div>`
+}
+
 function renderKb() {
   const kb = KB || { enabled: true, files: [], blocks: [] }
   swOn('kbAll', kb.enabled !== false)
 
   const files = kb.files || []
+  const curScene = (kb.current && kb.current.scene) || ''
+  const curSkin = (kb.current && kb.current.skin) || ''
   $('kbFiles').innerHTML = files.length
     ? files.map((f) => {
         const mine = (kb.blocks || []).filter((b) => b.file === f.key && !b.off).length
         const all = (kb.blocks || []).filter((b) => b.file === f.key).length
-        return `<div class="kbrow ${f.on ? '' : 'off'}" data-file="${esc(f.key)}">
+        const sc = Array.isArray(f.scenes) ? f.scenes : []
+        const sk = Array.isArray(f.skins) ? f.skins : []
+        /* 现在这一页 / 这一身用不用得上 —— 跟 reply.mjs 的 kbInScope 同一个判据 */
+        const inScope = (!sc.length || sc.includes(curScene)) && (!sk.length || sk.includes(curSkin))
+        const tag = !f.on ? '已关' : inScope ? '在用' : '这一页不用'
+        return `<div class="kbrow ${f.on && inScope ? '' : 'off'}" data-file="${esc(f.key)}">
           <div class="g">
             <div class="t">${esc(f.key)}.md
-              <span class="kwtag ${f.on ? '' : 'grey'}">${f.on ? '在用' : '已关'}</span>
+              <span class="kwtag ${f.on && inScope ? '' : 'grey'}">${tag}</span>
               <span class="kwtag grey">${mine}/${all} 块</span>
             </div>
             <div class="d">弹幕命中触发词时最多带 <b>${f.maxBlocks}</b> 块、不超过 <b>${f.maxChars}</b> 字</div>
+            ${scopeChips('scenes', sc, kb.sceneList || [], '直播页面')}
+            ${scopeChips('skins', sk, kb.skinList || [], '皮套')}
           </div>
           <div class="num">
             <span>块</span><input type="number" min="1" max="4" value="${f.maxBlocks}" data-f="maxBlocks">
@@ -1248,6 +1475,24 @@ function renderKb() {
         renderKb()
       }
     })
+    /* 作用域 chips（2026-11-01）：点「全部」清空成不限；点具体项是开关式多选。
+     * 存的是数组，空数组 = 全部 —— 跟 reply.mjs 的 kbInScope 对齐。 */
+    row.querySelectorAll('.chip').forEach((chip) => {
+      chip.onclick = async () => {
+        const kind = chip.dataset.scope
+        const v = chip.dataset.v || ''
+        const f = (KB.files || []).find((x) => x.key === file) || {}
+        let list = Array.isArray(f[kind]) ? f[kind].slice() : []
+        if (!v) list = []
+        else if (list.includes(v)) list = list.filter((x) => x !== v)
+        else list.push(v)
+        try {
+          KB = await post('/kb', { file, [kind]: list })
+          toast(!v ? `${file}：全部都用` : `${file}：${list.length ? list.join('、') : '全部'}`)
+          renderKb()
+        } catch (err) { toast('没存上：' + err.message) }
+      }
+    })
   })
 
   const blocks = kb.blocks || []
@@ -1266,8 +1511,14 @@ function renderKb() {
       groups.map((g) => `
         <div style="margin-top:12px;font-size:12px;color:var(--muted)">${esc(g.key)}.md</div>` +
         g.items.map((b) => {
-          const live = kb.enabled !== false && b.fileOn !== false && !b.off
-          const why = kb.enabled === false ? '总开关关了' : b.fileOn === false ? '整份资料关了' : '已隔离'
+          const live = kb.enabled !== false && b.fileOn !== false && !b.off && b.inScope !== false
+          const why = kb.enabled === false
+            ? '总开关关了'
+            : b.fileOn === false
+              ? '整份资料关了'
+              : b.inScope === false
+                ? '这一页/这一身用不上'
+                : '已隔离'
           return `<div class="kbrow ${live ? '' : 'off'}">
             <div class="g">
               <div class="t">${esc(b.title)} <span class="kwtag grey">${b.chars} 字</span>
@@ -1284,6 +1535,12 @@ function renderKb() {
     btn.onclick = async () => {
       const id = btn.dataset.block
       const b = (KB.blocks || []).find((x) => x.file + '/' + x.title === id) || {}
+      /* 被作用域挡住的块：点它没有意义 —— off 本来就是 false，post 出去什么都不会变，
+       * 却会弹一句「已打开」，比不响应还迷惑。 */
+      if (b.inScope === false) {
+        toast('这一页/这一身用不上这份资料，去上面「资料库」改作用域')
+        return
+      }
       const live = KB.enabled !== false && b.fileOn !== false && !b.off
       try {
         KB = await post('/kb', { block: id, on: !live })
@@ -1557,35 +1814,188 @@ async function switchPet(name) {
 
 /* ══════════════════ ③ 回复 ══════════════════ */
 async function loadReply() {
+  /* 🔴 这里**不能**用 try/catch 判「桥没跑」（2026-11-02 踩的坑）。
+   * api() 是 `fetch(...).then(r => r.json())`，它**不看 r.ok** ——
+   * 桥没跑时控制台回 502 + 一个合法 JSON 体 {ok:false, offline:true, error:"…"}，
+   * fetch 不会抛，catch 一次都不会进。于是原来这里显示「—」、两个框全空，
+   * 人点保存又在 `if (!base) return` 提前退出 ⇒ 看着就是「点了没反应」。
+   *
+   * 所以：**先看 m.ok / m.offline**，只有真的网络异常才走 catch。 */
+  let m = null
+  let netErr = ''
   try {
-    const m = await apiT('/reply/mode')
-    const text = m.text || '—'
-    $('modeSub').textContent = text
-    /* 桥的 GET 只回一句话（"模型 xxx @ https://…" / "dsh → xxx" / "本地话术（…）"），
-       没有单独的 mode 字段。这里按前缀认，认不出就不高亮 —— 别猜一个假的选中态。 */
-    const cur = /^本地话术/.test(text) ? 'local' : (/^dsh/i.test(text) ? 'dsh' : 'flash')
-    document.querySelectorAll('#modeSeg button').forEach((b) => {
-      if (b.dataset.mode === cur) b.setAttribute('data-on', '')
-      else b.removeAttribute('data-on')
-    })
+    m = await apiT('/llm')
+  } catch (e) {
+    netErr = e?.name === 'AbortError' ? '超时' : (e?.message || '没回话')
+  }
+
+  /* 桥不在（502 带 offline:true）或者根本连不上 —— 都走离线回显 */
+  if (!m || m.ok === false) {
+    /* 桥回的那句本身就带着「桥没在跑 ——」，别再叠一层，否则会变成
+       「桥没在跑 —— 桥没在跑 —— 在这个页面点…」 */
+    const why = (m && (m.error || m.why)) || netErr || '桥没在跑'
+    try {
+      /* /ctl/llm 由控制台自己读磁盘回答，桥不在也能回，且**不含 key** */
+      const f = await apiT('/ctl/llm')
+      const k = String(f.keyMask || '')
+      $('llmSub').textContent = f.base || f.model
+        ? `${why}。下面是磁盘上现在这份；保存要先回控制台点「开播」`
+        : `${why}。而且 llm.json 里还没配过`
+      $('llmBase').value = f.base || ''
+      $('llmModel').value = f.model || ''
+      $('llmKey').value = ''
+      $('llmKey').placeholder = k ? `已存 ${k} · 留空 = 不改` : 'sk-…'
+      $('llmKeyHint').innerHTML = k
+        ? `已存 <code>${esc(k)}</code>。框里留空 = 不改；想换就整把粘进去。`
+        : '还没有 key。'
+      const ids = f.model ? [f.model] : []
+      $('llmPick').innerHTML = ids.map((id) => `<option value="${esc(id)}" selected>${esc(id)}</option>`).join('')
+      $('llmPickWrap').style.display = ids.length ? '' : 'none'
+      $('llmPickN').textContent = String(ids.length)
+      $('llmProbeTip').textContent = '桥没跑，探测不了'
+    } catch {
+      $('llmSub').textContent = `桥没在跑 —— ${why}`
+      $('llmKeyHint').innerHTML = '读不到现有配置。回控制台点「开播」再来。'
+      $('llmProbeTip').textContent = '桥没跑，探测不了'
+    }
+    /* 桥不在时 /reply/gap 也拿不到，间隔滑杆保持原样别乱写 */
+    return
+  }
+
+  const env = m.env || {}
+  /* 回填。key 那框**永远是空的** —— 桥只回打码值，把它塞进 password 框会
+     让人以为「框里那把就是真的」，一保存就把真 key 冲成 `••••1234`。 */
+  $('llmBase').value = m.base || ''
+  $('llmModel').value = m.model || ''
+  $('llmKey').value = ''
+  $('llmKey').placeholder = m.keyMask
+    ? `已存 ${m.keyMask} · 留空 = 不改`
+    : 'sk-…'
+  $('llmKeyHint').innerHTML = m.hasKey
+    ? `已存 <code>${esc(m.keyMask)}</code>。框里留空 = 不改；想换就整把粘进去。`
+    : '还没有 key。填完点「保存并测试」。key 只存在本机的 <code>llm.json</code> 里。'
+  /* 环境变量盖着文件的时候必须明说 —— 不然「存了没生效」能查一晚上 */
+  const over = []
+  if (env.base) over.push('地址')
+  if (env.key) over.push('key')
+  if (env.model) over.push('模型')
+  $('llmSub').textContent = m.text || '—'
+  if (over.length) {
+    $('llmSub').textContent += `　⚠ ${over.join(' / ')} 正被环境变量盖住，这里存了也不生效`
+  }
+
+  /* 模型选择框：没探测过就只列当前值（否则一片空白，看着像没配）。
+     探测之后才换成完整列表 —— 见 btnLlmProbe。 */
+  const sel = $('llmPick')
+  const ids = Array.isArray(m.ids) && m.ids.length ? m.ids : (m.model ? [m.model] : [])
+  sel.innerHTML = ids.map((id) =>
+    `<option value="${esc(id)}"${id === m.model ? ' selected' : ''}>${esc(id)}</option>`
+  ).join('')
+  $('llmPickWrap').style.display = ids.length ? '' : 'none'
+  $('llmPickN').textContent = String(ids.length)
+  $('llmProbeTip').textContent = Array.isArray(m.ids) && m.ids.length
+    ? ''
+    : '点「探测模型」问接口要一份完整列表'
+
+  try {
     const g = await apiT('/reply/gap')
-    if (Number.isFinite(+g.sec)) {
+    if (g && g.ok !== false && Number.isFinite(+g.sec)) {
       $('gapRng').value = g.sec
       $('gapVal').textContent = (+g.sec).toFixed(1) + 's'
     }
-  } catch (e) { $('modeSub').textContent = '桥没回话：' + (e.name === 'AbortError' ? '超时' : e.message) }
+  } catch {
+    /* 间隔读不到不影响这张卡，别把整页搞成报错态 */
+  }
 }
 
-document.querySelectorAll('#modeSeg button').forEach((b) => {
-  b.onclick = async () => {
-    b.disabled = true
-    try {
-      const o = await postT('/reply/mode', { mode: b.dataset.mode })
-      toast(o.ok ? '切到 ' + (o.text || b.dataset.mode) : (o.error || o.why || '切不了'))
-      if (o.ok) loadReply()
-    } catch (e) { toast('切不了：' + e.message) } finally { b.disabled = false }
-  }
-})
+/* 探测：拿框里现在的地址和 key 去问 /models。
+   探测**不要求先保存** —— 主人的顺序就是「填 → 探 → 挑 → 存」，
+   逼他先存一个可能是错的配置纯属添堵。 */
+$('btnLlmProbe').onclick = async () => {
+  const b = $('btnLlmProbe')
+  const tip = $('llmProbeTip')
+  b.disabled = true
+  tip.textContent = '探测中…'
+  try {
+    const o = await postT('/llm/models', {
+      base: $('llmBase').value.trim(),
+      key: $('llmKey').value.trim(),
+    }, 20000)
+    if (!o.ok) {
+      /* 🔴 桥没跑时控制台回的是 {ok:false, offline:true, error:"桥没在跑…"}，
+         没有 why 字段（2026-11-02 主人踩到：填完点保存只看到一句没头没脑的失败）。
+         所以这里要把 error / offline 都认上，别只认 why。 */
+      tip.textContent = '探测失败：' + (o.why || o.error || (o.offline ? '桥没在跑' : '没返回原因'))
+      $('llmPickWrap').style.display = 'none'
+      return
+    }
+    const ids = o.ids || []
+    tip.textContent = `通了，${ids.length} 个模型`
+    $('llmPick').innerHTML = ids.map((id) =>
+      `<option value="${esc(id)}"${id === $('llmModel').value.trim() ? ' selected' : ''}>${esc(id)}</option>`
+    ).join('')
+    $('llmPickWrap').style.display = ''
+    $('llmPickN').textContent = String(ids.length)
+    /* 一个模型都没选的时候直接选第一个 —— 省一次点击，且不会存成空模型名 */
+    if (!$('llmModel').value.trim() && ids.length) $('llmModel').value = ids[0]
+    toast(`探测到 ${ids.length} 个模型`)
+  } catch (e) {
+    tip.textContent = '探测失败：' + (e.name === 'AbortError' ? '超时' : e.message)
+  } finally { b.disabled = false }
+}
+
+$('btnLlmUse').onclick = () => {
+  const v = $('llmPick').value
+  if (!v) return
+  $('llmModel').value = v
+  toast('已选 ' + v + '，点「保存并测试」生效')
+}
+
+/* 保存并测试：一次点击把「存盘」和「真发一句话」都做完。
+   分开做的话，人很容易只点保存、不看通没通，然后就带着一把坏 key 开播。 */
+$('btnLlmSave').onclick = async () => {
+  const b = $('btnLlmSave')
+  const tip = $('llmSaveTip')
+  const out = $('llmOut')
+  const base = $('llmBase').value.trim()
+  const key = $('llmKey').value.trim()
+  const model = $('llmModel').value.trim()
+  if (!base) return toast('接口地址还没填')
+  if (!model) return toast('模型名还没填 —— 先点「探测模型」，或手动写一个')
+  b.disabled = true
+  tip.textContent = '测试中…'
+  out.style.display = 'none'
+  try {
+    /* 服务端是「先试，通了才存」：这里看到 ok 就代表已经存好并且能用；
+       看到失败就代表**配置一点没动**，原来能用的还在用。 */
+    const o = await postT('/llm/probe', { base, key, model }, 40000)
+    out.style.display = ''
+    if (o.ok) {
+      tip.textContent = '通了，已保存'
+      out.innerHTML = `✓ 用的是 <b>${esc((o.cfg && o.cfg.model) || model)}</b>` +
+        ` @ <code>${esc((o.cfg && o.cfg.base) || base)}</code>` +
+        `<span class="len">样例回复：「${esc(o.sample || '')}」 —— 下一条弹幕就走这个</span>`
+      toast('存好了，也测通了')
+      $('llmKey').value = ''
+      loadReply()
+    } else {
+      /* 同上：桥没跑时只有 error 没有 why。这种情况要说清楚「不是配置的问题，
+         是桥没起」—— 不然人会一直改配置，怎么改都不对。 */
+      const why = o.why || o.error || (o.offline ? '桥没在跑' : '没返回原因')
+      tip.textContent = o.offline ? '桥没在跑' : '没通，没保存'
+      out.innerHTML = `✗ ${esc(why)}` +
+        (o.offline
+          ? `<span class="len">配置<b>没动</b>。先回控制台把桥拉起来，再回来保存 —— ` +
+            `探测和保存都要经过桥，桥没跑时这两个按钮都做不了事。</span>`
+          : `<span class="len">配置<b>没动</b>，原来那份还在用 —— 改完再点一次就行。</span>`)
+    }
+  } catch (e) {
+    tip.textContent = '没通'
+    out.style.display = ''
+    out.textContent = '✗ ' + (e.name === 'AbortError' ? '超时（40 秒）' : e.message) +
+      '　配置没动。'
+  } finally { b.disabled = false }
+}
 
 $('gapRng').oninput = () => { $('gapVal').textContent = (+$('gapRng').value).toFixed(1) + 's' }
 $('btnGap').onclick = async () => {

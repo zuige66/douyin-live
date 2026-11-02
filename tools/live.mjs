@@ -8,8 +8,11 @@
  *
  * 命令：
  *   node tools/live.mjs start    # 开播：确保主控在 → Mate 开播 → /ctl/all 起桥+画面+音乐
- *   node tools/live.mjs stop     # 下播：Mate 关播 → /ctl/stop 停桥+画面 → 彻底杀 musicd
+ *   node tools/live.mjs stop     # 下播：先告别 → Mate 关播 → /ctl/stop 停桥+画面 → 彻底杀 musicd
  *   node tools/live.mjs status   # 只查状态，不动
+ *
+ * 下播告别（2026-11-02 主人要的）：停了桥就说不出话，所以**先让桥说一句再见**，
+ * 等字幕和语音真的走完（至少 5 秒）再去关播、关画面。赶时间可以 `stop --no-bye`。
  *
  * 设计要点：
  *   - 用 node 原生 fetch（undici 默认不走系统代理），比 curl 稳，避免 HTTP_PROXY 干扰本地端口。
@@ -30,7 +33,22 @@ const PIDS_FILE = path.join(ROOT, '.run', 'pids.json')
 
 const CTL_PORT = Number(process.env.ZY_CTL_PORT || 18082)
 const MUSIC_PORT = Number(process.env.ZY_MUSIC_PORT || 18083)
+const BRIDGE_PORT = Number(process.env.ZY_BRIDGE_PORT || 18081)
 const CTL = `http://127.0.0.1:${CTL_PORT}`
+const BRIDGE = `http://127.0.0.1:${BRIDGE_PORT}`
+
+/* 下播告别（2026-11-02）。
+ * 🔴 三条都是 20 字以内、**零金融词** —— 人设卡要求 TTS 一口气念得完，
+ *    炒股竖屏场也不能出现任何仓位类说法（见 docs 第十四节合规模板）。 */
+const BYE_LINES = [
+  '好啦，我下播啦，拜拜~',
+  '今天就播到这，我先下咯，拜拜',
+  '差不多啦，明天再来，拜拜拜拜',
+]
+/* 开口后至少等这么久才关画面。语音比这长就等语音（见 farewell 里的 subtitle 判据）。 */
+const BYE_WAIT = Math.max(1000, Number(process.env.ZY_BYE_WAIT || 5000))
+/* 兜底上限：桥不回 subtitle 时不能无限等，否则「下播」点了半天没反应。 */
+const BYE_MAX = BYE_WAIT + 10000
 
 const log = (s = '') => console.log(s)
 const warn = (s) => console.log('⚠ ' + s)
@@ -131,6 +149,70 @@ async function printStatus() {
   } catch {
     log('  直播伴侣：读不到（Mate 提权代理没在跑 —— 双击 start-mate-agent.cmd 启动它）')
   }
+}
+
+/* ---------------------------------------------------------------- farewell */
+/** 读桥的一个 JSON 接口；桥没起 / 超时 / 不是 JSON 一律返回 null。 */
+async function bridgeJson(pathname, timeout = 1500) {
+  try {
+    const r = await http('GET', BRIDGE + pathname, { timeout })
+    return r.json || null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * 下播前让大肥鱼说一句再见（2026-11-02 主人要的）。
+ *
+ * 为什么非要在这一步、这个位置：
+ *   ① 字幕 + TTS 都由**桥**出（/say → 先上字幕 → ttsSynth → playFile），
+ *      `/ctl/stop` 一刀杀掉桥之后，就再也没有人能说话了。
+ *      所以告别必须排在关播/停桥**之前**。
+ *   ② 判据用 `/state.json` 的 `subtitle`：桥里它是 `say && now < say.until`，
+ *      而 `until` 取的是 `max(sec, 语音真实时长+1)` —— 所以「subtitle 变 null」
+ *      就等于「这句真念完了」，比死等 5 秒靠谱（冷启动合成要 1.6~2 秒）。
+ *
+ * 返回 { spoke, text, waited, why }，**任何失败都不阻断下播** ——
+ * 告别只是锦上添花，不能因为桥没在跑就让人下不了播。
+ *
+ * @param {{skip?: boolean, waitMs?: number}} o
+ */
+async function farewell(o = {}) {
+  if (o.skip) return { spoke: false, why: '本次带 --no-bye' }
+  if (String(process.env.ZY_BYE ?? '1') === '0') return { spoke: false, why: '环境变量 ZY_BYE=0' }
+
+  const h = await bridgeJson('/healthz')
+  if (!h || h.ok !== true) return { spoke: false, why: '桥没在跑（没人在画面里说话）' }
+
+  const waitMs = o.waitMs != null ? o.waitMs : BYE_WAIT
+  const text = BYE_LINES[Math.floor(Math.random() * BYE_LINES.length)] || BYE_LINES[0]
+  const sec = Math.max(1, Math.ceil(waitMs / 1000))
+  const t0 = Date.now()
+
+  /* speak=1：连声音一起出。桥会先上字幕、合成好了再补声音，不卡 HTTP。 */
+  const q = `${BRIDGE}/say?t=${encodeURIComponent(text)}&sec=${sec}&speak=1`
+  const r = await http('GET', q, { timeout: 3000 }).catch(() => null)
+  if (!r || !r.httpOk) {
+    return { spoke: false, why: `桥拒了 /say（${r ? 'HTTP ' + r.status : '连不上'}）` }
+  }
+  log(`  告别：「${text}」（至少等 ${sec} 秒，语音没念完就继续等）`)
+
+  let quietSince = 0
+  while (Date.now() - t0 < BYE_MAX) {
+    await sleep(300)
+    const elapsed = Date.now() - t0
+    if (elapsed < waitMs) { quietSince = 0; continue }
+    const st = await bridgeJson('/state.json', 1200)
+    /* 桥突然死了也当说完 —— 反正下面就要把它杀掉 */
+    if (!st) break
+    if (st.subtitle) { quietSince = 0; continue }
+    if (!quietSince) quietSince = Date.now()
+    /* 连着 0.8 秒没有字幕才算真的收口，避免 sec 刚过、语音还在尾巴上就关画面 */
+    if (Date.now() - quietSince >= 800) break
+  }
+
+  return { spoke: true, text, waited: Math.round((Date.now() - t0) / 100) / 10 }
 }
 
 /* ------------------------------------------------------------------ start */
@@ -255,11 +337,28 @@ async function fallbackStop() {
 
 async function stop() {
   log('=== 下播 ===')
+  const noBye = process.argv.includes('--no-bye')
+
   // 1) Mate 关播（代理可能没起，但桥/音乐仍要停，所以失败也继续）
   let mateOk = true
   try { await ensureMate() } catch (e) { mateOk = false; warn(e.message) }
+
+  /* 2) 先告别（2026-11-02）—— 必须在关播、停桥**之前**：
+   *    字幕和 TTS 都是桥出的，桥一死就说不出话。
+   *    只有明确读到「直播伴侣没在播」才跳过；读不到状态也试一次
+   *    （代理没起但桥活着、画面还在推，观众照样看得见）。 */
+  const pre = mateOk ? await mateCall('/state').catch(() => null) : null
+  if (pre && pre.live === false) {
+    log('  直播伴侣本来就没在播，跳过告别')
+  } else {
+    const bye = await farewell({ skip: noBye })
+    if (bye.spoke) ok(`告别说完了（等了 ${bye.waited} 秒），开始关播`)
+    else log(`  跳过告别：${bye.why}`)
+  }
+
+  // 3) Mate 关播
   if (mateOk) {
-    const before = await mateCall('/state').catch(() => null)
+    const before = pre
     if (before && before.live === false) {
       log('直播伴侣本来就没在播，跳过下播')
     } else {
@@ -279,7 +378,7 @@ async function stop() {
     await sleep(1000)
   }
 
-  // 2) 停桥 + 画面 + 按停音乐
+  // 4) 停桥 + 画面 + 按停音乐
   if (await ctlAlive()) {
     try {
       const s = await ctlCall('/ctl/stop', 'POST', {})
@@ -289,7 +388,7 @@ async function stop() {
     log('主控没在跑，桥/画面应该已经没了')
   }
 
-  // 3) 彻底杀 musicd（"全停了还有音乐" 的根治）
+  // 5) 彻底杀 musicd（"全停了还有音乐" 的根治）
   await killMusic()
 
   await sleep(800)
@@ -304,8 +403,16 @@ const cmd = (process.argv[2] || '').toLowerCase()
     if (cmd === 'start') await start()
     else if (cmd === 'stop') await stop()
     else if (cmd === 'status') await printStatus()
+    /* 只告别、不关播（调试用）：验声线 / 验「说完了才关画面」的时序。
+     * 直播中跑观众会听见，别乱点。 */
+    else if (cmd === 'bye') {
+      const r = await farewell()
+      if (r.spoke) ok(`告别完成（等了 ${r.waited} 秒）：${r.text}`)
+      else warn(`没说话：${r.why}`)
+    }
     else {
       console.log('用法：node tools/live.mjs <start|stop|status>')
+      console.log('      node tools/live.mjs stop --no-bye   # 不说告别，直接关（默认会说一句再等 5 秒）')
       process.exitCode = 2
     }
   } catch (e) {

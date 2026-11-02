@@ -46,6 +46,24 @@
   .btxt{font-size:14px;font-weight:600;letter-spacing:-.1px;white-space:nowrap}
   .sb.tiny .btxt{display:none}
 
+  /* ── 页面（场景）切换器 ───────────────────────────────── */
+  .scene{padding:9px 12px 1px;flex:none}
+  .scene label{display:block;font-size:11px;color:var(--muted,#8f879c);
+               margin:0 0 5px 2px;letter-spacing:.3px}
+  .scene select{
+    width:100%;appearance:none;-webkit-appearance:none;
+    background:var(--surface,#1d1a26);color:var(--on-surface,#e8e4ee);
+    border:1px solid var(--border,#2e2839);border-radius:8px;
+    padding:7px 24px 7px 10px;font:inherit;font-size:13px;cursor:pointer;
+    background-image:url("data:image/svg+xml;charset=utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%238f879c' stroke-width='1.4' stroke-linecap='round'/%3E%3C/svg%3E");
+    background-repeat:no-repeat;background-position:right 9px center;background-size:10px 6px;
+    transition:border-color .15s;
+  }
+  .scene select:hover{border-color:var(--muted,#4a4359)}
+  .scene select:focus{outline:none;border-color:var(--primary,#ffd166)}
+  .scene select:disabled{opacity:.5;cursor:progress}
+  .sb.tiny .scene{display:none}
+
   .nav{flex:1;overflow-y:auto;overflow-x:hidden;padding:8px}
   .sb.tiny .nav{padding:8px 6px}
 
@@ -105,6 +123,26 @@
            display:grid;place-items:center;border-radius:2px}
   .tbtn .x:hover{opacity:1;background:rgba(0,0,0,.07)}
 
+  /* ── 画面页顶上的页面切换条（2026-11-01）
+     侧栏只留一个「画面」入口，横屏 / 炒股竖屏在这里选。
+     点它就是真的切直播页面（停旧画面进程、起新的、写 scenes.json），
+     不是只换编辑器 —— 跟侧栏那个下拉是同一个动作，两处同步。 */
+  .scenebar{flex:none;display:flex;align-items:center;gap:6px;padding:7px 12px;
+            background:var(--surface-1);border-bottom:1px solid var(--border);
+            overflow-x:auto;overflow-y:hidden;scrollbar-width:none}
+  .scenebar::-webkit-scrollbar{display:none}
+  .scenebar .lb{font-size:11px;color:var(--muted,#8f879c);flex:none;margin-right:2px}
+  .sbtn{display:inline-flex;align-items:center;gap:6px;height:26px;padding:0 11px;
+        border-radius:var(--r-btn);font-size:12px;color:var(--on-variant);
+        border:1px solid var(--border);background:var(--surface-1);cursor:pointer;
+        white-space:nowrap;flex:none;font-family:inherit}
+  .sbtn:hover{border-color:var(--border-2);color:var(--on-surface)}
+  .sbtn.on{background:var(--primary-c);color:var(--on-primary-c);border-color:var(--primary-c)}
+  .sbtn:disabled{opacity:.55;cursor:progress}
+  .sbtn .dot{width:6px;height:6px;border-radius:50%;background:#c9cfda;flex:none}
+  .sbtn.on .dot{background:var(--primary)}
+  .sbtn .dot.live{background:#22a06b}
+
   iframe{flex:1;width:100%;border:0;display:block;background:var(--bg)}
 </style>
 </head>
@@ -114,6 +152,13 @@
     <div class="brand">
       <span class="mark">鱼</span>
       <span class="btxt">大肥鱼</span>
+    </div>
+    <!-- 页面（场景）切换：画面 + 人设 + 素材整套换，桥和音乐共用。
+         2026-11-01 主人定：「两个是不同一套的，人设不一样，提示词也不一样，
+         以后还会有更多的页面」。列表来自 /scene，不写死在这儿。 -->
+    <div class="scene">
+      <label for="sceneSel">页面</label>
+      <select id="sceneSel" title="切换直播页面（画面 / 人设 / 素材整套换，桥不动）"></select>
     </div>
     <nav class="nav" id="nav"></nav>
   </aside>
@@ -133,6 +178,12 @@
     </header>
 
     <div class="tabbar" id="tabbar"></div>
+
+    <!-- 只在「画面」页出现：横屏 / 炒股竖屏之间切。列表来自 /scene，不写死。 -->
+    <div class="scenebar" id="scenebar" hidden>
+      <span class="lb">直播页面</span>
+      <span id="scenebarBtns" style="display:contents"></span>
+    </div>
 
     <iframe id="view" title="内容区"></iframe>
   </div>
@@ -160,6 +211,8 @@ const ICON = {
   music:'<svg viewBox="0 0 24 24"><path d="M9.5 17.5V5.5l9-1.8v11.6"/><circle cx="6.8" cy="17.8" r="2.7"/><circle cx="15.8" cy="15.3" r="2.7"/></svg>',
   ext:'<svg viewBox="0 0 24 24"><path d="M14 4h6v6"/><path d="M20 4l-8.5 8.5"/><path d="M18 14.5V19a1.6 1.6 0 01-1.6 1.6H5.6A1.6 1.6 0 014 19V8.6A1.6 1.6 0 015.6 7H10"/></svg>',
   logs:'<svg viewBox="0 0 24 24"><rect x="4" y="3.5" width="16" height="17" rx="2.5"/><path d="M8 8.5h8M8 12.2h8M8 15.9h5"/></svg>',
+  /* 炒股：K 线 + 趋势箭头，跟「画面」的显示器图标区分开 */
+  stock:'<svg viewBox="0 0 24 24"><path d="M4 19.5h16"/><path d="M6.5 19.5v-5M10 19.5V9.5M13.5 19.5v-7M17 19.5V6.5"/><path d="M4.5 9.5l4-3 3.5 2 6-4.5"/></svg>',
 }
 
 /* 页面文件表。settings 不再是一级菜单（下面拆开挂），这里只剩「哪个 id 对应哪个文件」。 */
@@ -167,7 +220,11 @@ const PAGES = {
   panel:    { file:'/panel.html',    name:'控制台' },
   logs:     { file:'/logs.html',     name:'日志'   },
   settings: { file:'/settings.html', name:'设置'   },
-  editor:   { file:'/editor.html',   name:'画面'   },
+  /* 画面页。file 只是兜底 —— 真正的地址由 editorFile() 按当前场景决定：
+   * 横屏 /editor.html、炒股 /stock/editor（后者由 :18082 的 /stock 路由直接发，
+   * 文件在 native/stock/editor.html）。
+   * 🔴 主人 2026-11-01 定「不要新开端口，都放在一起」—— 不要再写 :18084 的绝对地址。 */
+  editor:   { file:'/editor.html',     name:'画面'     },
   music:    { file:'/music.html',    name:'播放器' },
 }
 
@@ -197,6 +254,9 @@ const NAV = [
   { id:'set:memory',  hash:'#/settings/memory',  name:'记忆',   icon:'memory',  page:'settings', tab:'memory' },
   { id:'set:audio',   hash:'#/settings/audio',   name:'声音',   icon:'audio',   page:'settings', tab:'audio' },
   { sep:true },
+  /* 画面只有一个入口（2026-11-01 主人定：「希望只有一个入口，再进入之后，
+   * 才切换不同的页面」）。横屏 / 炒股竖屏不再各占一条菜单，
+   * 进去之后在页面顶上那条切换条里选 —— 那条条同时就是「切直播页面」。 */
   { id:'editor',      hash:'#/editor',           name:'画面',   icon:'editor',  page:'editor' },
   { id:'music',       hash:'#/music',            name:'播放器', icon:'music',   page:'music' },
   /* 备用播放页在 18083 那边，是另一个端口和另一份页面，只能新标签打开。
@@ -288,6 +348,8 @@ function entryFromHash() {
     const t = tab || 'account'
     return ITEMS.find((e) => e.page === 'settings' && e.tab === t) || BY_ID['set:account']
   }
+  /* 老书签 #/stock 现在并进「画面」了（2026-11-01 主人要求只留一个入口） */
+  if (key === 'stock') return BY_ID.editor
   return BY_ID[key] || BY_ID.panel
 }
 
@@ -309,11 +371,17 @@ function route() {
   document.title = '大肥鱼 · ' + e.name
   paintTabs()
 
+  /* 画面页顶上那条切换条只在「画面」页出现 —— 别的页面没有第二个编辑器可切 */
+  $('#scenebar').hidden = e.page !== 'editor'
+
   if (view.dataset.page !== e.page) {
     /* 换页才动 src —— 在设置里换组不动 iframe，免得整页重新取数 */
     view.dataset.page = e.page
     pendingTab = tab || ''
-    view.src = PAGES[e.page].file
+    /* 画面页的地址按**当前场景**决定：横屏 /editor.html、炒股 /stock/editor。
+     * 所以第一次路由必须等 loadScenes 回来（见文件末尾），否则会先加载横屏
+     * 编辑器再跳成炒股的，白跑一次还闪一下。 */
+    view.src = e.page === 'editor' ? editorFile() : PAGES[e.page].file
   } else if (tab) {
     clickTab(tab)
   }
@@ -389,7 +457,7 @@ $('#bFold').onclick = () => {
   route()
 }
 
-route()
+/* 第一次路由挪到文件末尾了 —— 要先拿到场景表，画面页的编辑器地址才定得下来。 */
 </script>
 
 <script>
@@ -624,6 +692,124 @@ $m('mStat').onclick = () => { location.hash = '#/music' }
 /* 刷新后如果之前解锁过，先试着直接接上；被拦就等用户点 */
 if (musicUnlocked) setTimeout(() => au.play().catch(() => {}), 1200)
 paintMusic()
+
+/* ══════════════════════════════════════════════════════════════════
+ * 页面（场景）切换（2026-11-01）
+ *
+ * 一个页面 = 一套画面 + 一套人设 + 一套素材；桥和音乐是公用的。
+ * 切过去做三件事：停旧页面的画面进程、起新页面的、落盘 cache/scenes.json。
+ * 桥不用通知，它热读那个文件，下一条回复就换 system。
+ *
+ * 🔴 切换是**有代价**的（起一个 python 画面进程要几百毫秒到两秒），
+ *    所以按钮期间禁掉，别让人连点两次起出两个窗口。
+ * ══════════════════════════════════════════════════════════════════ */
+const sceneSel = $('#sceneSel')
+const scenebar = $('#scenebar')
+const scenebarBtns = $('#scenebarBtns')
+
+/* 场景表的本地副本。编辑器地址、切换条、侧栏下拉都读它。 */
+let SCENES = { active: '', list: [] }
+
+/**
+ * 当前场景的编辑器地址。
+ * scenes.json 里写了 `editor` 就用它；没写按 `render` 兜底 ——
+ * 以后加页面只要往那个 json 里填一行，这里一个字都不用改。
+ */
+function editorFile() {
+  const sc = SCENES.list.find((x) => x.id === SCENES.active) || {}
+  if (sc.editor) return sc.editor
+  return sc.render === 'stock' ? '/stock/editor' : '/editor.html'
+}
+
+/** 把场景表画到两个地方：侧栏下拉 + 画面页顶上那条。 */
+function fillScenes(j) {
+  SCENES = { active: String(j.active || ''), list: Array.isArray(j.list) ? j.list : [] }
+  const cur = SCENES.list.find((x) => x.id === SCENES.active) || {}
+  const run = j.running || {}
+
+  sceneSel.innerHTML = SCENES.list
+    .map((s) => `<option value="${s.id}"${s.id === SCENES.active ? ' selected' : ''}>${s.name}</option>`)
+    .join('')
+  sceneSel.dataset.active = SCENES.active
+  sceneSel.title = `当前页面：${cur.name || SCENES.active}（画面 / 人设 / 素材整套换，桥不动）`
+
+  /* 小圆点亮的那个 = 画面进程正在跑。绿点 = 当前这一页且活着。 */
+  scenebarBtns.innerHTML = SCENES.list
+    .map((s) => {
+      const on = s.id === SCENES.active
+      const alive = s.render === 'stock' ? run.stock : run.overlay
+      return `<button class="sbtn${on ? ' on' : ''}" data-scene="${s.id}"
+        title="${on ? '当前这一页' : '切到「' + s.name + '」'}${alive ? '（画面进程在跑）' : '（画面进程没起）'}">
+        <span class="dot${on && alive ? ' live' : ''}"></span>${s.name}</button>`
+    })
+    .join('')
+  scenebarBtns.querySelectorAll('[data-scene]').forEach((b) => {
+    b.onclick = () => switchScene(b.dataset.scene)
+  })
+}
+
+async function loadScenes() {
+  try {
+    const r = await fetch('/scene', { cache: 'no-store' })
+    fillScenes(await r.json())
+  } catch {
+    sceneSel.innerHTML = '<option>读不到页面表</option>'
+    scenebarBtns.innerHTML = '<span style="font-size:12px;color:#c0392b">读不到页面表</span>'
+  }
+}
+
+/** 把内容区换成当前场景的编辑器。切场景后必须调，否则还在拖上一页的版式。 */
+function loadEditor() {
+  view.dataset.page = 'editor'
+  view.src = editorFile()
+}
+
+/**
+ * 切直播页面。侧栏下拉和画面页顶上那条都走这一个函数。
+ * 🔴 有代价（起一个 python 画面进程几百毫秒到两秒），期间把两个入口一起禁掉，
+ *    别让人连点两次起出两个窗口。
+ */
+let switching = false
+async function switchScene(id) {
+  if (!id || switching) return
+  if (id === SCENES.active) {
+    /* 点的是当前这一页：不折腾进程，只保证编辑器显示的是对的那个 */
+    if (BY_ID[current] && BY_ID[current].page === 'editor') loadEditor()
+    return
+  }
+  switching = true
+  const back = SCENES.active
+  const btns = [...scenebarBtns.querySelectorAll('.sbtn')]
+  sceneSel.disabled = true
+  btns.forEach((b) => (b.disabled = true))
+  try {
+    const r = await fetch('/scene', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id }),
+    })
+    const j = await r.json()
+    if (!j.ok) throw new Error(j.error || '切换失败')
+    /* 重新拉一次：running 变了，圆点要跟着变 */
+    await loadScenes()
+    if (BY_ID[current] && BY_ID[current].page === 'editor') loadEditor()
+  } catch (e) {
+    alert('切换失败：' + (e.message || e))
+    sceneSel.value = back
+  } finally {
+    switching = false
+    sceneSel.disabled = false
+    btns.forEach((b) => (b.disabled = false))
+  }
+}
+
+sceneSel.addEventListener('change', () => switchScene(sceneSel.value))
+
+/* 🔴 第一次路由必须等场景表回来：画面页的 iframe 地址取决于当前场景，
+ *    顺序反了会先加载横屏编辑器、再跳成炒股的（闪一下，还白跑一次）。
+ *    loadScenes 内部自己 catch 了，拿不到就按默认 live 走，不会卡住不路由。 */
+loadScenes().finally(route)
+
 </script>
 </body>
 </html>

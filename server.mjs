@@ -43,6 +43,16 @@ const PORT = Number(process.env.ZY_CTL_PORT || 18082)
 const MUSIC_PORT = Number(process.env.ZY_MUSIC_PORT || 18083)
 const MUSIC = `http://127.0.0.1:${MUSIC_PORT}`
 
+/* 炒股竖屏直播（native/stock/run.py）自己的只读服务。
+ * 🔴 2026-11-01 主人定：「不要新开一个端口，都放在一起搞」。
+ *    所以 18084 降级成**内部**端口（只给这个进程间调用），对外只暴露
+ *    `http://127.0.0.1:18082/stock/…` 一个地址，用户不用记第二个端口号。
+ *    编辑器页面本身也由 :18082 直接发（文件在 native/stock/editor.html），
+ *    只有 /layout、/preview.png 这类动态请求才反代过去。 */
+const STOCK_PORT = Number(process.env.ZY_STOCK_PORT || 18084)
+const STOCK = `http://127.0.0.1:${STOCK_PORT}`
+const STOCK_EDITOR = path.join(DIR, 'native', 'stock', 'editor.html')
+
 /* ══════════════════════════════════════════════════════════════════════
  * 配置与 pid
  * ══════════════════════════════════════════════════════════════════════ */
@@ -51,7 +61,9 @@ const DEFAULTS = {
   /* 房间。存 web_rid（12 位主播号）而不是分享链接 ——
    * 分享链接那串 room_id 下播就失效，重起桥时解析不出来。 */
   room: '',
-  mode: 'flash',
+  /* 🔴 2026-11-02：这里原来有个 `mode`（flash / dsh / local），是「回复档」。
+   * 档位取消了 —— 模型现在由 llm.json 的 base/key/model 决定，面板上改。
+   * 起桥不再传 REPLY_MODE，旧的 cfg.mode 字段留着也不会被读（下次保存时自然消失）。 */
   /* python 命令。有人机器上是 py / python3 / 绝对路径。 */
   python: 'python',
   /* 两条聊天之间隔几秒（桥收毫秒） */
@@ -402,18 +414,35 @@ async function probe() {
 }
 
 /**
+ * 横屏画面活着没有（2026-11-01 修）。
+ * 🔴 不能直接写 `age < 3000`：横屏从没跑过的时候 overlayAgeMs 是 **null**，
+ *    而 `null < 3000` 在 JS 里是 `true` —— /scene 会一直报「横屏在跑」，
+ *    跟同一时刻 /ctl/status 的 `overlay.live:false` 自相矛盾，排查时能把人带沟里。
+ *    判据必须是「它真的是个数，而且够新」。
+ */
+function overlayAlive(h) {
+  const age = h && h.overlayAgeMs
+  return typeof age === 'number' && Number.isFinite(age) && age < 3000
+}
+
+/**
  * 起桥。
  *
  * 🔴 起完不能立刻说 ok。实测两种秒退：端口被占、douyin-mcp 拉不起来。
  *    旧版直接回 ok:true ⇒ 页面绿灯、屏幕上什么都没有，最难查。
  *    这里轮询 /healthz 最多 8 秒，等不到就把日志尾巴当错误回上去。
  *
- * @param {{room?:string, mode?:string, demo?:boolean, withOverlay?:boolean}} o
+ * @param {{room?:string, demo?:boolean, withOverlay?:boolean}} o
+ *   mode 已于 2026-11-02 取消（回复档没了，模型由 llm.json 决定）。
+ *   老调用方还会传，这里**故意不声明也不读** —— 静默忽略，不报错。
  */
 async function start(o = {}) {
   const already = await probe()
   if (already && already.ok) {
-    const ov = o.withOverlay === false ? null : await overlayStart()
+    /* 🔴 2026-11-01 主人定：「启动炒股」和「启动之前的页面」是**二选一**，
+     *    后端（桥 / 音乐 / TTS）才是公用的。所以 start() 默认**不碰画面**，
+     *    想连画面一起开必须显式 withOverlay:true（/ctl/all 和 /ctl/restart 才传）。 */
+    const ov = o.withOverlay === true ? await overlayStart() : null
     return {
       ok: true,
       already: true,
@@ -429,7 +458,6 @@ async function start(o = {}) {
 
   const raw = String(o.room != null ? o.room : cfg().room || '').trim()
   const room = pickRoom(raw) || raw
-  const mode = String(o.mode || cfg().mode || 'flash').toLowerCase()
   const args = [path.join(DIR, 'bridge.mjs')]
   /* 有房间就 --rid；没有就待机（不带 --demo）。
    * 待机是有用的状态：登录、礼物、媒体都能先配好，粘个房间号就开连。 */
@@ -445,7 +473,8 @@ async function start(o = {}) {
     spawned = spawnDetached(process.execPath, args, {
       tag: 'bridge',
       env: {
-        REPLY_MODE: mode,
+        /* 🔴 不再传 REPLY_MODE（2026-11-02）：档位取消了，模型由 llm.json 决定。
+         * 传一个已经没人读的变量只会让下一个人以为它还在起作用。 */
         REPLY_CHAT_GAP: String(Math.round(gapSec() * 1000)),
         ...(musicUp ? { DSH_MUSIC_API: MUSIC } : {}),
       },
@@ -487,8 +516,13 @@ async function start(o = {}) {
     log(`记住 web_rid=${rid}`)
   }
 
-  const ov = o.withOverlay === false ? null : await overlayStart()
-  log(`桥已起 pid=${spawned.pid} room=${rid || room || '待机'} mode=${mode}`)
+  /* 同上：默认不碰画面。「二选一」见上面 429 行那段注释。 */
+  const ov = o.withOverlay === true ? await overlayStart() : null
+  /* 🔴 这里原来还带着 `mode=${mode}`。2026-11-02 删掉那个变量之后忘了改这行，
+   *    结果**桥起来之后立刻 ReferenceError 把控制台自己炸掉** ——
+   *    表现是点「一键全开」桥确实起来了，但页面报 502、状态永远不更新。
+   *    改成报桥自己算出来的那一句（"模型 xxx @ …"），比一个档位名有用得多。 */
+  log(`桥已起 pid=${spawned.pid} room=${rid || room || '待机'} 回复=${h.replyMode || '—'}`)
 
   return {
     ok: true,
@@ -679,6 +713,174 @@ async function overlayRestart() {
   return { ...r, stopped: killed.length ? killed.join('、') : '（本来就没开）' }
 }
 
+/* ══════════════════════════════════════════════════════════════════
+ * 页面（场景）切换（2026-11-01 主人定）
+ *
+ * 主人的原话：「两个是不同一套的，人设不一样，切换页面给 AI 的提示词也不一样。
+ * 以后还会有更多的页面，每个页面有每个页面的组件，组件还能重复拿来用。
+ * 音乐可以相同也可以不同，素材视频可以不一样，**桥是一样的**。」
+ *
+ * 所以分成两半：
+ *   · **共用**：桥（弹幕 / 回复 / TTS）、播放器服务
+ *   · **跟着页面走**：画面渲染器（overlay 横屏 / stock 竖屏）、人设卡、
+ *     场景简报（prompts/scene/<id>.md）、素材视频、可选歌单
+ *
+ * 切换 = 停掉当前页面的画面进程 → 起新页面的 → 写 cache/scenes.json 的 active。
+ * 桥那边**不用通知**：它热读 scenes.json，下一条回复就换 system（reply.mjs 的
+ * currentScene / sceneBlock）。
+ * ══════════════════════════════════════════════════════════════════ */
+const SCENES_FILE = path.join(DIR, 'cache', 'scenes.json')
+const STOCK_ENTRY = path.join(DIR, 'native', 'stock', 'run.py')
+
+function readScenes() {
+  try {
+    const j = JSON.parse(fs.readFileSync(SCENES_FILE, 'utf8'))
+    if (!Array.isArray(j.list) || !j.list.length) throw new Error('list 空')
+    return j
+  } catch {
+    return { active: 'live', list: [{ id: 'live', name: '日常横屏', render: 'overlay' }] }
+  }
+}
+
+function writeScenes(j) {
+  fs.mkdirSync(path.dirname(SCENES_FILE), { recursive: true })
+  fs.writeFileSync(SCENES_FILE, JSON.stringify(j, null, 2))
+}
+
+function stockStop() {
+  const pid = pidOnPort(STOCK_PORT)
+  if (pid) killTree(pid)
+  return pid
+}
+
+async function stockStart(opts = {}) {
+  if (pidOnPort(STOCK_PORT)) return { ok: true, already: true, message: '炒股画面已经在跑了' }
+  const pyPick = pickPython()
+  if (!pyPick.ok) return { ok: false, error: pyPick.error }
+  const args = [...pyPick.args, STOCK_ENTRY]
+  /* 窗口位置由页面自己定义（scenes.json 的 start.x / start.y）。
+   * 炒股窗口是 1080×1920 的无边框窗，默认摆屏幕左半边会压住直播伴侣的
+   * 「添加素材」—— 2026-11-01 现场踩过，所以默认给右边。 */
+  const x = opts.x != null ? opts.x : 2040
+  const y = opts.y != null ? opts.y : 0
+  args.push('--x', String(x), '--y', String(y))
+  const sp = spawnDetached(pyPick.cmd, args, { tag: 'stock' })
+  for (let i = 0; i < 25; i++) {
+    await new Promise((r) => setTimeout(r, 200))
+    if (pidOnPort(STOCK_PORT)) break
+  }
+  return {
+    ok: Boolean(pidOnPort(STOCK_PORT)),
+    pid: sp.pid,
+    log: sp.logFile,
+    message: pidOnPort(STOCK_PORT) ? '炒股画面开了' : '炒股画面没起来，看 .run/stock.log',
+  }
+}
+
+/** 切页面。失败也要把旧画面留住 —— 不能切一半变黑屏。 */
+/** 调音乐服务的一个小封装。服务没起就当失败返回，绝不让切页面卡住。 */
+async function musicCall(p, body) {
+  try {
+    const ctl = new AbortController()
+    const timer = setTimeout(() => ctl.abort(), 3000)
+    const res = await fetch(`${MUSIC}${p}`, {
+      method: body === undefined ? 'GET' : 'POST',
+      headers: body === undefined ? undefined : { 'content-type': 'application/json' },
+      body: body === undefined ? undefined : JSON.stringify(body),
+      signal: ctl.signal,
+    })
+    clearTimeout(timer)
+    return await res.json()
+  } catch (e) {
+    return { ok: false, why: `音乐服务没应答（${e?.message || e}）` }
+  }
+}
+
+async function sceneSwitch(id) {
+  const j = readScenes()
+  const want = j.list.find((x) => x.id === id)
+  if (!want) return { ok: false, error: `没有这个页面：${id}`, list: j.list.map((x) => x.id) }
+  const cur = j.list.find((x) => x.id === j.active) || {}
+
+  const stopped = []
+  let started = null
+  let music = null
+  try {
+    if (want.id === (cur.id || '')) {
+      /* 同一页：只保证它的画面进程活着，不折腾 */
+      if (want.render === 'stock') started = await stockStart(want.start || {})
+      else if (want.render === 'overlay') started = await overlayStart()
+    } else {
+      /* 换页面 = 换歌单。先把这个页面放着的歌记下来（切回来还是这些），
+       * 再换过去；新页面歌单是空的就什么都不动 —— 绝不能因为没配歌单
+       * 把正在放的音乐清掉。 */
+      if (cur.id) {
+        const ex = await musicCall('/playlist/export', { name: cur.id })
+        if (ex.ok) music = { saved: cur.id, savedCount: ex.count }
+      }
+      /* 先把旧页面的画面撤掉 —— 「二选一」：同一时刻只该有一个画面进程 */
+      if (cur.render === 'stock') {
+        const p = stockStop()
+        if (p) stopped.push(`炒股 pid=${p}`)
+      } else if (cur.render === 'overlay') {
+        const k = overlayStop()
+        if (k.length) stopped.push(`横屏 ${k.join('、')}`)
+      }
+      if (want.render === 'stock') started = await stockStart(want.start || {})
+      else if (want.render === 'overlay') started = await overlayStart()
+      const ap = await musicCall('/playlist/apply', { name: want.id, autoplay: true })
+      if (ap.ok && !ap.skipped) music = { ...(music || {}), loaded: want.id, loadedCount: ap.count }
+    }
+  } catch (e) {
+    return { ok: false, error: `切换失败：${e?.message || e}`, stopped }
+  }
+
+  /* 🔴 新画面没起来就别写盘（2026-11-01 修的真 bug）。
+   *
+   * stockStart / overlayStart 起不来的时候是**返回 {ok:false}**、不抛异常，
+   * 而原来这里根本不看那个字段 —— 旧画面已经杀了、新画面没起，
+   * 照样把 active 改成新页面并返回 ok:true。现场表现：
+   *   ① 画面没了（黑屏），② 桥已经开始按新人设说话，
+   *   ③ 面板上显示「切换成功」，谁也不知道出了什么事。
+   * 注释里那句「失败也要把旧画面留住」原来只是句注释。
+   *
+   * 现在：先把旧画面救回来，active 一个字都不动。 */
+  if (started && started.ok === false) {
+    let back = null
+    try {
+      if (cur.render === 'stock') back = await stockStart(cur.start || {})
+      else if (cur.render === 'overlay') back = await overlayStart()
+    } catch {
+      /* 救不回来也要把话说完，不能吞掉 */
+    }
+    const why = started.error || started.message || '未知原因'
+    return {
+      ok: false,
+      error: `「${want.name}」的画面没起来：${why}` +
+        (back && back.ok ? `（已退回「${cur.name || cur.id}」）` : '（旧画面也没救回来，看 .run/ 下的日志）'),
+      stopped,
+      started,
+      restored: Boolean(back && back.ok),
+    }
+  }
+
+  j.active = want.id
+  writeScenes(j)
+  log(`[scene] 切到「${want.name}」${stopped.length ? '（停：' + stopped.join('，') + '）' : ''}` +
+      (music?.loaded ? `，歌单 ${music.loadedCount} 首` : ''))
+  return {
+    ok: true,
+    scene: want,
+    stopped,
+    started,
+    music,
+    message: `切到「${want.name}」` +
+      (stopped.length ? `，关了 ${stopped.join('、')}` : '') +
+      (started?.message ? `，${started.message}` : '') +
+      (music?.loaded ? `，歌单 ${music.loadedCount} 首` : ''),
+  }
+}
+
 /** 重启播放器服务。队列会丢，但队列本来就是桥在下发，桥会重新垫热榜。 */
 async function musicRestart() {
   const pids = readPids()
@@ -701,11 +903,23 @@ async function musicRestart() {
 /** 一键全开：音乐 → 桥（桥起来时会自己带上播放器地址）→ 画面 */
 async function startAll(o = {}) {
   const m = await musicEnsure()
-  const b = await start({ ...o, withOverlay: o.withOverlay !== false })
+  const b = await start({ ...o, withOverlay: false })
+  /* 「一键全开」也要按**当前这一页**起画面（2026-11-01）。
+   * 原来固定起横屏浮层 —— 炒股场景下点它就变成两个画面窗口同时在跑。 */
+  const j = readScenes()
+  const cur = j.list.find((x) => x.id === j.active) || {}
+  let pic = null
+  try {
+    if (cur.render === 'stock') pic = await stockStart(cur.start || {})
+    else if (cur.render === 'overlay') pic = await overlayStart()
+  } catch {
+    /* 画面起不来不该让「全开」整个失败 */
+  }
   return {
     ok: b.ok,
     music: m,
     bridge: b,
+    overlay: pic,
     message: b.ok
       ? `全开了：${m.ok ? '播放器在跑' : '播放器没起来'}；${b.message}`
       : `桥没起来：${b.error}`,
@@ -716,11 +930,26 @@ async function startAll(o = {}) {
  *  重启不按停音乐（keepMusic），换代码不该顺手静音一段。 */
 async function restart(o = {}) {
   const s = await stop({ keepMusic: true })
-  const r = await start({ ...o, withOverlay: o.withOverlay !== false })
+  /* 🔴 别默认起横屏（2026-11-01 修）。
+   * 原来这里传的是 `o.withOverlay !== false`，等于默认 true ——
+   * 在炒股场景点一次「重启」，就会额外拉起一个横屏浮层，
+   * 两个画面窗口同时跑，正是主人定的「二选一」要避免的。
+   * 现在：桥起完，**只保证当前这一页自己的画面活着**，别的一概不碰。 */
+  const r = await start({ ...o, withOverlay: false })
+  const j = readScenes()
+  const cur = j.list.find((x) => x.id === j.active) || {}
+  let pic = null
+  try {
+    if (cur.render === 'stock') pic = await stockStart(cur.start || {})
+    else if (cur.render === 'overlay') pic = await overlayStart()
+  } catch {
+    /* 画面起不来不该让「重启桥」整个失败 —— 桥才是主线 */
+  }
   return {
     ok: r.ok,
     stopped: s.message,
     ...r,
+    overlay: pic,
     message: r.ok ? `重启好了：${r.message}` : `重启失败：${r.error}`,
   }
 }
@@ -802,7 +1031,8 @@ async function status() {
      * 配置里存的和屏幕上跑的不是一回事，页面上要显示"正在用的"。 */
     cfg: {
       room: String((running && h.rid) || cfg().room || ''),
-      mode: String(cfg().mode || 'flash'),
+      /* 🔴 mode 不再往上报（2026-11-02）：档位取消了。面板要显示「现在用哪个模型」
+       * 就直接读 cfg.replyMode（桥报的、现算的那一句），见下。 */
       python: String(cfg().python || 'python'),
       /* 探测结果只读缓存，不在这里现跑 —— 这是 2 秒轮询的接口，
        * 现跑 spawnSync 会把页面拖死。没探测过就是 null（还没点过开画面）。 */
@@ -948,9 +1178,78 @@ function proxy(req, res) {
   req.pipe(p)
 }
 
+/** 炒股竖屏的服务（native/stock/run.py）。路径去掉 `/stock` 前缀再转发。
+ *  🔴 一定要带 u.search —— `/preview.png?demo=1` 和 `?boom=40` 全靠 query 区分，
+ *     漏掉就会永远只出实时那一张，主人以为「预览按钮坏了」。 */
+function proxyStock(req, res, pathname, search) {
+  const sub = pathname.replace(/^\/stock/, '') || '/'
+  const p = http.request(
+    {
+      host: '127.0.0.1',
+      port: STOCK_PORT,
+      path: sub + search,
+      method: req.method,
+      headers: { ...req.headers, host: `127.0.0.1:${STOCK_PORT}` },
+    },
+    (pr) => {
+      res.writeHead(pr.statusCode || 502, pr.headers)
+      pr.pipe(res)
+    },
+  )
+  p.on('error', () => {
+    if (!res.headersSent) {
+      json(res, 502, {
+        ok: false,
+        offline: true,
+        error: '炒股画面进程没在跑 —— 双击 native/stock/run.cmd，或 start-stock.cmd',
+      })
+    } else {
+      res.end()
+    }
+  })
+  req.pipe(p)
+}
+
+/** 炒股编辑器页面。文件在 native/stock/ 下，不在项目根，
+ *  所以不能靠 serveStatic（它只认根目录相对路径）。 */
+function serveStockEditor(res) {
+  if (!fs.existsSync(STOCK_EDITOR)) {
+    res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' })
+    res.end('404 找不到 native/stock/editor.html')
+    return
+  }
+  res.writeHead(200, {
+    'content-type': 'text/html; charset=utf-8',
+    'cache-control': 'no-cache',
+  })
+  fs.createReadStream(STOCK_EDITOR).pipe(res)
+}
+
 const server = http.createServer(async (req, res) => {
   const u = new URL(req.url, 'http://127.0.0.1')
   const p = u.pathname
+
+  /* ── 页面（场景）清单与切换 ─────────────────────────────────── */
+  if (p === '/scene') {
+    if (req.method === 'POST') {
+      const b = await readBody(req)
+      json(res, 200, await sceneSwitch(String(b.id || '')))
+      return
+    }
+    const j = readScenes()
+    json(res, 200, {
+      ok: true,
+      active: j.active,
+      current: j.list.find((x) => x.id === j.active) || null,
+      list: j.list,
+      /* 画面进程活没活，页面上直接能看出来，不用去猜 */
+      running: {
+        stock: Boolean(pidOnPort(STOCK_PORT)),
+        overlay: overlayAlive(await probe()),
+      },
+    })
+    return
+  }
 
   /* ── 控制 API ───────────────────────────────────────────────── */
   if (p === '/ctl/status') {
@@ -971,7 +1270,10 @@ const server = http.createServer(async (req, res) => {
   }
   if (p === '/ctl/overlay' && req.method === 'POST') {
     const b = await readBody(req)
-    json(res, 200, b.action === 'restart' ? await overlayRestart() : await overlayStart())
+    json(res, 200,
+      b.action === 'restart' ? await overlayRestart()
+      : b.action === 'stop' ? { ok: true, killed: overlayStop(), message: '画面窗口关了' }
+      : await overlayStart())
     return
   }
   if (p === '/ctl/music' && req.method === 'POST') {
@@ -987,7 +1289,8 @@ const server = http.createServer(async (req, res) => {
     const b = await readBody(req)
     const patch = {}
     if (typeof b.room === 'string') patch.room = pickRoom(b.room) || b.room.trim()
-    if (typeof b.mode === 'string' && b.mode) patch.mode = b.mode
+    /* 🔴 b.mode 不再收（2026-11-02）：回复档取消，模型走 llm.json。
+     * 老页面还会往这儿发 mode，静默忽略 —— 报错只会让人以为配置坏了。 */
     if (typeof b.python === 'string' && b.python) patch.python = b.python
     if (b.chatGap != null && Number.isFinite(Number(b.chatGap))) {
       patch.chatGap = Math.min(15, Math.max(0.5, Number(b.chatGap)))
@@ -995,11 +1298,47 @@ const server = http.createServer(async (req, res) => {
     json(res, 200, { ok: true, cfg: saveCfg(patch) })
     return
   }
+  /* 接口与模型的**离线回显**（2026-11-02）。
+   *
+   * 为什么控制台要自己读一份 llm.json：设置页那张卡走的是桥的 /llm，
+   * 桥没跑就是 502。于是「地址」「模型」两个框空白 → 点保存 → 前端在
+   * `if (!base) return` 就退出 → 看着像「点了没反应」。
+   * 这里让 :18082 直接读磁盘回答，桥不在也能把现有配置显示出来。
+   *
+   * 🔴 key 只回打码尾巴。整个 key 绝不出这个函数 —— 静态目录那边
+   *    /llm.json 是 403，别在这儿又开一个口子把它漏回去。 */
+  if (p === '/ctl/llm') {
+    let f = {}
+    try {
+      f = JSON.parse(fs.readFileSync(path.join(DIR, 'llm.json'), 'utf8')) || {}
+    } catch {
+      f = {}
+    }
+    const key = String(f.key || '')
+    json(res, 200, {
+      ok: true,
+      base: String(f.base || ''),
+      model: String(f.model || ''),
+      keyMask: key ? (key.length <= 8 ? '••••' : `••••${key.slice(-4)}`) : '',
+      hasKey: Boolean(key),
+    })
+    return
+  }
   if (p === '/ctl/log') {
     const n = Math.min(500, Math.max(20, Number(u.searchParams.get('n') || 200)))
     const text = tailOf(path.join(RUN, 'bridge.log'), 256 * 1024)
     const lines = text.split(/\r?\n/).filter(Boolean).slice(-n)
     json(res, 200, { ok: true, lines, recent: parseBridgeLog(text, 14) })
+    return
+  }
+
+  /* ── 炒股竖屏：页面 + 接口全部挂在 /stock 下 ───────────────── */
+  if (p === '/stock' || p === '/stock/' || p === '/stock/editor') {
+    serveStockEditor(res)
+    return
+  }
+  if (p.startsWith('/stock/')) {
+    proxyStock(req, res, p, u.search)
     return
   }
 

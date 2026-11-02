@@ -149,6 +149,13 @@
   .form{display:grid;grid-template-columns:minmax(0,1fr) 168px;gap:14px}
   .field{display:flex;flex-direction:column;gap:7px;min-width:0}
   .field label{font-size:12px;font-weight:500;color:var(--muted)}
+  /* 「回复模型」现在是一行只读文字，不是输入框。右边那栏只有 168px，
+     「模型 deepseek-v4-pro @ https://api.deepseek.com/v1」必然放不下一行 ——
+     而 .r-fact 默认是 nowrap + 省略号（那是给子系统行用的），这里得放开换行，
+     否则尾巴上的接口地址永远看不见，正好是排查时最想确认的那半句。
+     break-word 而不是 break-all：后者会把 https 拦腰劈成 htt / ps://。 */
+  .field .r-fact{white-space:normal;overflow:visible;text-overflow:clip;
+                 line-height:1.5;overflow-wrap:break-word;word-break:normal}
   input[type=text],select{
     background:var(--surface);border:1px solid var(--control);color:var(--ink);
     border-radius:var(--r-ctl);padding:0 11px;height:34px;font:inherit;font-size:13px;
@@ -309,12 +316,13 @@
             <input type="text" id="room" placeholder="12 位主播号 / 分享链接 / 留空 = 待机"
                    autocomplete="off" spellcheck="false">
           </div>
+          <!-- 2026-11-02：这里原来是个「回复模型」下拉（flash / dsh 两档）。
+               档位取消了，模型现在在「设置 → 账号 → 接口与模型」里挑。
+               开播前真正要看的是「现在到底用哪个模型」，所以这里只显示、不给选 ——
+               两个地方都能改模型，只会让人不知道哪个算数。 -->
           <div class="field">
-            <label for="mode">回复模型</label>
-            <select id="mode">
-              <option value="flash">flash</option>
-              <option value="dsh">dsh</option>
-            </select>
+            <label>回复模型</label>
+            <div class="r-fact" id="modeNow">—</div>
           </div>
         </div>
         <div class="acts">
@@ -609,8 +617,10 @@ function render(s, h) {
   if (document.activeElement !== room && !room.dataset.dirty) {
     room.value = s.cfg.room || ''
   }
-  const mode = $('#mode')
-  if (document.activeElement !== mode && s.cfg.mode) mode.value = s.cfg.mode
+  /* 回复模型：只显示桥现算的那一句（「模型 deepseek-flash @ …」/「没连上模型…」）。
+     改它去设置页 —— 这里不给下拉，两个地方都能改只会让人不知道哪个算数。 */
+  const mw = $('#modeNow')
+  if (mw) mw.textContent = b.running ? (b.replyMode || '—') : '桥没跑，不知道'
 }
 
 /** 音乐侧卡：正在放什么、队列、以及「到底出不出得声」。 */
@@ -746,10 +756,12 @@ async function run(key, label, path, body) {
 }
 
 const roomNow = () => $('#room').value.trim()
-const modeNow = () => $('#mode').value
+/* 🔴 modeNow 删了（2026-11-02）：起桥不再接 mode，模型由 llm.json 决定。
+   三个调用点把 mode 一起去掉 —— 传一个服务端已经忽略的字段，
+   只会让人以为「在这里选了模型」。 */
 
 $('#bAll').onclick = () =>
-  run('bAll', '全开中…', '/ctl/all', { room: roomNow(), mode: modeNow(), withOverlay: true })
+  run('bAll', '全开中…', '/ctl/all', { room: roomNow(), withOverlay: true })
 
 $('#bStop').onclick = () => {
   if (!confirm('全停会关掉弹幕桥和画面窗口，直播就断了。确定吗？')) return
@@ -759,9 +771,9 @@ $('#bStop').onclick = () => {
 $('#bBridge').onclick = () => {
   if ($('#bBridge').dataset.act === 'restart') {
     if (!confirm('重启桥会断开当前弹幕监听约 30 秒，直播中会漏消息。确定吗？')) return
-    run('bBridge', '重启中…', '/ctl/restart', { room: roomNow(), mode: modeNow() })
+    run('bBridge', '重启中…', '/ctl/restart', { room: roomNow() })
   } else {
-    run('bBridge', '启动中…', '/ctl/start', { room: roomNow(), mode: modeNow(), withOverlay: true })
+    run('bBridge', '启动中…', '/ctl/start', { room: roomNow(), withOverlay: true })
   }
 }
 
@@ -776,12 +788,9 @@ $('#bMusic').onclick = () =>
     ? run('bMusic', '重启中…', '/ctl/music', { action: 'restart' })
     : run('bMusic', '启动中…', '/ctl/music', {})
 
-/* 房间号 / 模型改了要落盘 —— 不然下次开播又得重填 */
+/* 房间号改了要落盘 —— 不然下次开播又得重填。
+   模型没有这一行了：它由 llm.json 决定，在设置页存（见 settings.html）。 */
 $('#room').oninput = () => { $('#room').dataset.dirty = '1' }
-$('#mode').onchange = async () => {
-  const r = await api('/ctl/cfg', { method: 'POST', body: { mode: $('#mode').value }, timeout: 8000 })
-  if (!r.ok) toast('模型选择没存上：' + (r.error || ''), 'bad')
-}
 
 /* 3 秒一轮。比 2 秒稳：桥不在时 /healthz 有 1.5 秒超时，2 秒会堆积。 */
 refresh()
