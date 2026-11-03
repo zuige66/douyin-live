@@ -4041,7 +4041,39 @@ let speakUntil = 0 // 排队的语音大概放到什么时候（只给「自言�
  * 千万别在模块顶层直接调 mediaOut()，会踩 TDZ。 */
 
 /** 只合成，不播。返回 {ok,file,dur,cached,ms}。 */
-async function ttsSynth(text) {
+
+/* ───────────── 情绪语速（2026-11-03，学 LiveStream-Agent）─────────────
+ * 原来所有话都是一个语速念（设置里那个 -8%），高兴和难过听起来一模一样。
+ * 但 TTS 侧本来就支持逐句 rate（tts.py 的 server 读 req["rate"]），
+ * 只是桥从来没传过别的值 —— 这里补上。
+ *
+ * 🔴 为什么用规则判断、不让模型输出 emotion 标签：
+ *    模型吐结构化 JSON 就要改回复契约，字幕里还可能漏出标签。
+ *    直播只要三档情绪就够，规则判断零延迟零 token。
+ *    判断错了也就是语速差几个百分点，没人听得出来。 */
+const MOOD_RATE = { happy: 6, lively: 3, warm: -7 }
+
+function pickMood(ctx, text) {
+  const s = String(text || '')
+  if (ctx?.kind === 'gift') return 'happy'
+  // 安慰类：有人在难过，念慢一点
+  if (/别哭|别难过|难受|不开心|抱抱|辛苦了|不容易|我在呢|慢慢来|没事的/.test(s)) return 'warm'
+  // 起哄/接梗：快一点，显得活
+  if (/诶哟|好家伙|啊这|真的假的|哈哈|嘿嘿|绝了|离谱|笑死/.test(s)) return 'lively'
+  return ''
+}
+
+/** 把设置里的基础语速加上情绪偏移。格式不对就原样返回（别把语速搞坏）。 */
+function moodRate(base, mood) {
+  const d = MOOD_RATE[mood] || 0
+  if (!d) return base
+  const m = String(base || '').match(/^\s*([+-]?\d+(?:\.\d+)?)\s*%\s*$/)
+  if (!m) return base
+  const v = Math.max(-40, Math.min(40, Number(m[1]) + d))
+  return `${v > 0 ? '+' : ''}${Math.round(v)}%`
+}
+
+async function ttsSynth(text, mood = '') {
   if (!TTS_ON || !text) return { ok: false }
   if (ttsBusy) return { ok: false }
   /* 兜底：把孤立代理字符去掉（见 reply.mjs 里 clip 的注释）。
@@ -4054,11 +4086,14 @@ async function ttsSynth(text) {
   ttsBusy = true
   try {
     const c = ttsCfg()
+    /* 语速按这句话的情绪微调（见上面 pickMood）。缓存按 rate 分 key，
+     * 所以同一句话换个语气会重新合成一次 —— 一句几十毫秒，值得。 */
+    const rate = moodRate(c.rate, mood)
     TTS_SVC.start()
-    const r = await TTS_SVC.cmd({ text, voice: c.voice, rate: c.rate, pitch: c.pitch }, 25000)
+    const r = await TTS_SVC.cmd({ text, voice: c.voice, rate, pitch: c.pitch }, 25000)
     if (r && r.ok) return r
     // 常驻进程挂了就退回一次性调用 —— 不能因为一个 bug 让她哑掉
-    const one = await pyOnce('tts.py', ['--text', text, '--voice', c.voice, `--rate=${c.rate}`, `--pitch=${c.pitch}`], 20000)
+    const one = await pyOnce('tts.py', ['--text', text, '--voice', c.voice, `--rate=${rate}`, `--pitch=${c.pitch}`], 20000)
     if (one && one.ok) return one
     log(`  [tts] 合成失败，只出字幕：${r?.why || one?.error || '没返回'}`)
     return { ok: false }
@@ -4661,9 +4696,11 @@ async function replyWorker() {
      *
      * 单段的（绝大多数）走的还是原来那条路，一个字都没变。 */
     const parts = speakSplit(text)
+    /* 语气按整句判断一次，拆段后用同一个 —— 两段念出两个语速会很怪 */
+    const mood = pickMood(ctx, text)
     let dur = 0
     for (let i = 0; i < parts.length; i++) {
-      const syn = await ttsSynth(parts[i])
+      const syn = await ttsSynth(parts[i], mood)
       const d = syn.ok ? Number(syn.dur) || 0 : 0
       dur += d
       const isLast = i === parts.length - 1

@@ -43,6 +43,12 @@ const LEAD_RE = /^(我跟你说|我跟你讲|其实呢|其实|说实话|说真�
 
 export function clip(s, n = MAX_LEN) {
   s = String(s || '').replace(/\s+/g, ' ').trim()
+  /* 🔴 2026-11-03：数字和汉字之间的空格**不是**分句符。
+   *    实测「我主人是广工 25 级自动化的，最厉害那个专业诶」——
+   *    下面按句读切时会拿空格切，于是切成「我主人是广工 / 25 / 级自动化的 / 最厉害…」，
+   *    再从后往前拼，拼出来的就是「25，级自动化的」，TTS 念成"二十五，级自动化的"。
+   *    先把这类空格吃掉（25 级 → 25级），切分才是对的。 */
+  s = s.replace(/(\d)[ ]+(?=[\u4e00-\u9fa5])/g, '$1')
   /* 去掉孤立代理字符（2026-10-27）。
    * 模型偶尔吐半个 emoji，`slice` 也可能正好从 emoji 中间劈开 ——
    * JS 里看不出来，但 JSON.stringify 会把它变成 `\udc80` 这种转义，
@@ -1954,8 +1960,56 @@ function songsBlock(r) {
   return `\n（${playing}${list}如果他问推荐、问有什么歌好听、想听点什么，就**从这份歌单里挑一首**直接说出歌名，再问一句要不要点。别反问他想听什么。歌单里没有的歌别编。）`
 }
 
-function userLine(kind, user, text, song = null, profile = null, video = null, facts = null, reco = null) {
+/**
+ * 主人（2026-11-03，zuige 要求"允许叫主人，但只是叫我"）。
+ *
+ * 🔴 为什么按 uid 不按昵称：昵称观众随时能改，改个「zuige」就能被叫主人；
+ *    uid 改不了。名字只作兜底（事件里没带 user.id 时会退成 `n:昵称`）。
+ * 🔴 配置读不到 = **没有主人**，谁都不叫 —— 宁可漏叫，不可乱叫。
+ *    文件在 cache/owner.json，按 mtime 热重载，改完下一条弹幕生效。
+ */
+const OWNER_FILE = path.join(DIR, 'cache', 'owner.json')
+let ownerCache = { mtime: -1, uids: new Set(), names: new Set() }
+
+function loadOwner() {
+  try {
+    const st = fs.statSync(OWNER_FILE)
+    if (st.mtimeMs === ownerCache.mtime) return ownerCache
+    const j = JSON.parse(fs.readFileSync(OWNER_FILE, 'utf8'))
+    ownerCache = {
+      mtime: st.mtimeMs,
+      uids: new Set((j.uids || []).map((x) => String(x).trim()).filter(Boolean)),
+      names: new Set((j.names || []).map((x) => String(x).trim()).filter(Boolean)),
+    }
+  } catch {
+    ownerCache = { mtime: -1, uids: new Set(), names: new Set() }
+  }
+  return ownerCache
+}
+
+/** 这条弹幕是不是主人本人发的 */
+function isOwner(user, uid) {
+  const o = loadOwner()
+  if (!o.uids.size && !o.names.size) return false
+  const u = String(uid || '').trim()
+  if (u && o.uids.has(u)) return true
+  // bridge 的 uidOf() 在没有 user.id 时会退成 `n:昵称`，这里跟着认
+  if (u.startsWith('n:') && o.names.has(u.slice(2))) return true
+  return o.names.has(String(user || '').trim())
+}
+
+/** 面板/healthz 用：现在配了几个主人、都是谁（只露数量，别把 uid 满天飞） */
+export function ownerInfo() {
+  const o = loadOwner()
+  return { uids: o.uids.size, names: [...o.names] }
+}
+
+function userLine(kind, user, text, song = null, profile = null, video = null, facts = null, reco = null, owner = false) {
   const who = profileLine(profile)
+  /* 「主人」是唯一允许的例外，所以必须**贴着他这一句**说 ——
+   * 人设卡里写的是"系统标了才能叫"，不标她就按规矩叫昵称。
+   * 没这一段，她永远不会开口叫；写错位置（比如塞进 system）又会变成谁都能叫。 */
+  const ownerLine = owner ? '\n（这条是**主人**本人。可以叫他「主人」。）' : ''
   // 知识：只有弹幕踩到触发词才有内容，绝大多数时候是空串
   const kb = kbPick(text)
   /* 白饭（2026-10-30）：给不给、给什么由桥注册的回调决定 ——
@@ -1972,8 +2026,8 @@ function userLine(kind, user, text, song = null, profile = null, video = null, f
       rice = '' // 桥那边算错不该让她哑掉
     }
   }
-  if (kind === 'gift') return `${user} 送了礼物：${text}。感谢他。${who}${rice}`
-  if (kind === 'welcome') return `${user} 刚进直播间。欢迎一句，别太热情，也别问问题。${who}`
+  if (kind === 'gift') return `${user} 送了礼物：${text}。感谢他。${who}${rice}${ownerLine}`
+  if (kind === 'welcome') return `${user} 刚进直播间。欢迎一句，别太热情，也别问问题。${who}${ownerLine}`
   if (kind === 'chitchat')
     return `直播间这会儿没人说话。你自己找个话头说一句，不要提问，不要喊人。${factsLine(facts)}`
   /* 放视频：跟点歌同理，桥已经**真的**放了，别让模型自己编「马上放」。
@@ -1984,7 +2038,7 @@ function userLine(kind, user, text, song = null, profile = null, video = null, f
       : video.why === '正在放'
         ? '屏幕上正放着一段，还没播完'
         : `系统这次没能放，原因：${video.why || '没有素材'}`
-    return `${user} 说：${text}。${fact}。按这个事实回一句，别说反。${who}${kb}`
+    return `${user} 说：${text}。${fact}。按这个事实回一句，别说反。${who}${kb}${ownerLine}`
   }
   /* 点歌：桥已经**真的**去操作播放器了，成没成只有它知道。
    * 不把结果写进来，模型就会自己编「好嘞，这就放《X》」—— 观众等一晚上也等不到，
@@ -2003,7 +2057,7 @@ function userLine(kind, user, text, song = null, profile = null, video = null, f
         ? `系统已经把《${song.title || song.name}》加进播放列表了（排在当前这首后面，还没开始放）${whoSang}${trial}`
         : `系统已经切到《${song.title || song.name}》开始放了${whoSang}${trial}`
       : `系统去搜了但没成，原因：${song.why || '搜不到这首歌'}`
-    return `${user} 说：${text}。${fact}。按这个事实回一句，别说反，也别承诺做不到的事。${who}${kb}`
+    return `${user} 说：${text}。${fact}。按这个事实回一句，别说反，也别承诺做不到的事。${who}${kb}${ownerLine}`
   }
   /* 深度问题要**在 user 行里**松绑（2026-10-29）。
    * 光把 clip 的上限放到 40 没用 —— 人设卡的铁律写着「一句话 20 字以内」，
@@ -2024,7 +2078,7 @@ function userLine(kind, user, text, song = null, profile = null, video = null, f
   const fake = kind !== 'gift' && isFakeGift(text)
     ? '\n（注意：他只是在打字，系统**一条礼物都没收到**。不许说「收到」「谢谢」，软软点破他一句。）'
     : ''
-  return `${user} 说：${text}。回他一句。${who}${kb}${deep}${fake}${rice}${songsBlock(reco)}`
+  return `${user} 说：${text}。回他一句。${who}${kb}${ownerLine}${deep}${fake}${rice}${songsBlock(reco)}`
 }
 
 /**
@@ -2149,7 +2203,7 @@ export function cacheStats() {
   }
 }
 
-async function llmReply(r, { user, text, kind, song = null, profile = null, video = null, facts = null, history = null, maxLen = MAX_LEN, reco = null }, timeoutMs = 6000) {
+async function llmReply(r, { user, text, kind, uid = '', song = null, profile = null, video = null, facts = null, history = null, maxLen = MAX_LEN, reco = null }, timeoutMs = 6000) {
   const ctl = new AbortController()
   const timer = setTimeout(() => ctl.abort(), timeoutMs)
   const headers = { 'content-type': 'application/json' }
@@ -2183,7 +2237,7 @@ async function llmReply(r, { user, text, kind, song = null, profile = null, vide
    * 只有没带历史的那条路（面板「试说一句」、启动探活）才用它兜住「别重复」。 */
   messages.push({
     role: 'user',
-    content: userLine(kind, user, text, song, profile, video, facts, reco) + (messages.length > 1 ? '' : saidHint()),
+    content: userLine(kind, user, text, song, profile, video, facts, reco, isOwner(user, uid)) + (messages.length > 1 ? '' : saidHint()),
   })
 
   const body = {
